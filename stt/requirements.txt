@@ -1,0 +1,16 @@
+# STT Sidecar dependencies
+# Install via: stt/setup.bat (Windows) or stt/setup.sh (Unix/Mac)
+
+# Speech-to-text (faster reimplementation of Whisper via CTranslate2)
+faster-whisper>=1.1.0
+
+# Audio capture (cross-platform, pre-built binaries)
+sounddevice>=0.4.6
+
+# Numerical computing (audio buffer operations)
+numpy>=1.24.0
+
+# VAD + tensor/audio ops (silero-vad loads via torch.hub)
+# CPU-only torch/torchaudio are installed separately in setup script.
+torch>=2.1.0
+torchaudio>=2.1.0
