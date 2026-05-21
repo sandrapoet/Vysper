@@ -149,6 +149,10 @@ class ChatWindowUI {
             });
             
             window.electronAPI.onLlmResponse((event, data) => {
+                if (data.metadata && data.metadata.fallbackNotice) {
+                    const notice = data.metadata.fallbackNotice;
+                    this.addMessage(`${notice.message} Recarga saldo aqui: ${notice.topUpUrl}`, 'error');
+                }
                 this.addMessage(`🤖 LLM Response: ${data.response}`, 'system');
             });
             
@@ -165,8 +169,16 @@ class ChatWindowUI {
                         return;
                     }
 
+                    if (data.metadata && data.metadata.fallbackNotice) {
+                        const notice = data.metadata.fallbackNotice;
+                        const message = `${notice.message} Recarga saldo aqui: ${notice.topUpUrl}`;
+                        this.addMessage(message, 'error');
+                    }
+
                     if (data.metadata && data.metadata.usedFallback && data.metadata.fallbackReason) {
-                        this.addMessage(`Gemini fallback: ${data.metadata.fallbackReason}`, 'error');
+                        if (data.metadata.fallbackReason !== 'primary_llm_billing_or_quota') {
+                            this.addMessage(`Gemini fallback: ${data.metadata.fallbackReason}`, 'error');
+                        }
                     }
                     
                     // Add assistant response with formatting
@@ -335,7 +347,14 @@ class ChatWindowUI {
             // Send to main process for session memory storage
             try {
                 if (window.electronAPI && window.electronAPI.sendChatMessage) {
-                    await window.electronAPI.sendChatMessage(text);
+                    const command = this.normalizeCommandText(text);
+                    if (command === '!!!' || command === '<<!!!>>' || command === '<<<!!!>>>') {
+                        await window.electronAPI.finalizeProgrammingContext();
+                    } else if (command === '|||') {
+                        await window.electronAPI.runSecondaryCodingFallback();
+                    } else {
+                        await window.electronAPI.sendChatMessage(text);
+                    }
                 }
             } catch (error) {
                 logger.error('Failed to send chat message to main process', { error: error.message });
@@ -343,6 +362,13 @@ class ChatWindowUI {
             
             logger.debug('User message sent', { textLength: text.length });
         }
+    }
+
+    normalizeCommandText(text) {
+        return String(text || '')
+            .trim()
+            .replace(/\s+/g, '')
+            .replace(/[.。]+$/g, '');
     }
 
     addMessage(text, type = 'user') {        

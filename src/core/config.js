@@ -47,8 +47,8 @@ class ConfigManager {
           enableFallbackMethod: true
         },
         anthropic: {
-          model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250929',
-          maxTokens: Number(process.env.ANTHROPIC_MAX_TOKENS || 4096),
+          model: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest',
+          maxTokens: Number(process.env.ANTHROPIC_MAX_TOKENS || 2048),
           timeout: Number(process.env.ANTHROPIC_TIMEOUT || 60000)
         }
       },

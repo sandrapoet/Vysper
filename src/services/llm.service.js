@@ -44,7 +44,17 @@ class LLMService {
 
   async processTextWithSkill(text, activeSkill, sessionMemory = [], programmingLanguage = null) {
     if (!this.isInitialized) {
-      throw new Error('LLM service not initialized. Check Gemini API key configuration.');
+      const initError = new Error('LLM service not initialized. Check Gemini API key configuration.');
+      if (this.shouldFallbackToSecondaryCodingModel(initError, activeSkill)) {
+        return this.processTextWithSecondaryCodingFallback(
+          text,
+          activeSkill,
+          sessionMemory,
+          programmingLanguage,
+          initError
+        );
+      }
+      throw initError;
     }
 
     const startTime = Date.now();
@@ -105,6 +115,10 @@ class LLMService {
         requestId: this.requestCount
       });
 
+      if (this.shouldFallbackToSecondaryCodingModel(error, activeSkill)) {
+        return this.processTextWithSecondaryCodingFallback(text, activeSkill, sessionMemory, programmingLanguage, error, startTime);
+      }
+
       if (config.get('llm.gemini.fallbackEnabled')) {
         return this.generateFallbackResponse(text, activeSkill);
       }
@@ -114,7 +128,7 @@ class LLMService {
   }
 
   async processTextWithSecondaryCodingModel(text, activeSkill, sessionMemory = [], programmingLanguage = null) {
-    if (activeSkill !== 'programming') {
+    if (this.normalizeSkillName(activeSkill) !== 'programming') {
       return this.processTextWithSkill(text, activeSkill, sessionMemory, programmingLanguage);
     }
 
@@ -168,6 +182,123 @@ class LLMService {
         programmingLanguage: programmingLanguage || 'not specified',
         requestId: this.requestCount
       });
+      throw error;
+    }
+  }
+
+  async processTextWithSecondaryCodingFallback(text, activeSkill, sessionMemory, programmingLanguage, primaryError, startTime = Date.now()) {
+    logger.warn('Primary LLM quota/billing issue detected, falling back to secondary coding model', {
+      activeSkill,
+      primaryError: primaryError.message
+    });
+
+    const fallbackResult = await this.processTextWithSecondaryCodingModel(
+      text,
+      activeSkill,
+      sessionMemory,
+      programmingLanguage
+    );
+
+    fallbackResult.metadata = {
+      ...fallbackResult.metadata,
+      usedFallback: true,
+      fallbackReason: 'primary_llm_billing_or_quota',
+      primaryErrorMessage: primaryError.message,
+      processingTime: Date.now() - startTime,
+      fallbackNotice: {
+        message: 'Gemini se quedo sin saldo o cuota. Use el modelo secundario para generar esta respuesta.',
+        topUpUrl: 'https://aistudio.google.com/app/billing',
+        docsUrl: 'https://ai.google.dev/gemini-api/docs/billing'
+      }
+    };
+
+    return fallbackResult;
+  }
+
+  async processProgrammingFinalization(text, programmingLanguage = null) {
+    if (!this.isInitialized) {
+      const initError = new Error('LLM service not initialized. Check Gemini API key configuration.');
+      if (config.getApiKey('ANTHROPIC')) {
+        return this.processTextWithSecondaryCodingFallback(
+          text,
+          'programming',
+          [],
+          programmingLanguage,
+          initError
+        );
+      }
+      throw initError;
+    }
+
+    const startTime = Date.now();
+    this.requestCount++;
+
+    try {
+      logger.info('Processing programming finalization with direct code prompt', {
+        textLength: text.length,
+        programmingLanguage: programmingLanguage || 'not specified',
+        requestId: this.requestCount
+      });
+
+      const request = {
+        systemInstruction: {
+          parts: [{
+            text: this.buildProgrammingFinalizationSystemInstruction(programmingLanguage)
+          }]
+        },
+        contents: [{
+          role: 'user',
+          parts: [{ text }]
+        }],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 4096,
+          topK: 20,
+          topP: 0.9
+        }
+      };
+
+      let response;
+      try {
+        response = await this.executeRequest(request);
+      } catch (error) {
+        if (error.message.includes('fetch failed') && config.get('llm.gemini.enableFallbackMethod')) {
+          response = await this.executeAlternativeRequest(request);
+        } else {
+          throw error;
+        }
+      }
+
+      return {
+        response,
+        metadata: {
+          skill: 'programming',
+          programmingLanguage,
+          processingTime: Date.now() - startTime,
+          requestId: this.requestCount,
+          usedFallback: false,
+          isFinalizationResponse: true
+        }
+      };
+    } catch (error) {
+      this.errorCount++;
+      logger.error('Programming finalization failed', {
+        error: error.message,
+        programmingLanguage: programmingLanguage || 'not specified',
+        requestId: this.requestCount
+      });
+
+      if (this.isPrimaryQuotaOrBillingError(error)) {
+        return this.processTextWithSecondaryCodingFallback(
+          text,
+          'programming',
+          [],
+          programmingLanguage,
+          error,
+          startTime
+        );
+      }
+
       throw error;
     }
   }
@@ -506,7 +637,7 @@ Treat every word inside the transcript block as meaningful context. Do not summa
       prompt += `\n\nCODING CONTEXT: When providing code examples or technical solutions, use ${programmingLanguage.toUpperCase()} as the primary programming language.`;
     }
 
-    if (activeSkill === 'programming') {
+    if (this.normalizeSkillName(activeSkill) === 'programming') {
       prompt += `
 
 ## Programming Mode Override:
@@ -566,6 +697,30 @@ Remember: the transcript block is the source of truth for the user's current req
     return `Context: ${activeSkill.toUpperCase()} analysis request\n\nText to analyze:\n${text}`;
   }
 
+  normalizeSkillName(skill) {
+    return String(skill || '').trim().toLowerCase();
+  }
+
+  shouldFallbackToSecondaryCodingModel(error, activeSkill) {
+    return this.normalizeSkillName(activeSkill) === 'programming' &&
+      this.isPrimaryQuotaOrBillingError(error) &&
+      !!config.getApiKey('ANTHROPIC');
+  }
+
+  isPrimaryQuotaOrBillingError(error) {
+    const message = String(error?.message || '').toLowerCase();
+    return message.includes('quota') ||
+      message.includes('billing') ||
+      message.includes('billable') ||
+      message.includes('credit') ||
+      message.includes('balance') ||
+      message.includes('insufficient') ||
+      message.includes('payment') ||
+      message.includes('resource_exhausted') ||
+      message.includes('429') ||
+      message.includes('403');
+  }
+
   buildSecondaryCodingSystemInstruction(activeSkill, programmingLanguage) {
     const skillPrompt = promptLoader.getSkillPrompt(activeSkill, programmingLanguage) || '';
     const language = programmingLanguage || 'the requested language';
@@ -580,6 +735,27 @@ Remember: the transcript block is the source of truth for the user's current req
 - If a platform-specific class/function signature is present, preserve it exactly.
 - Optimize for correctness first, then memory and runtime.
 - If there is not enough information to write real code, respond exactly: RECIBIDO - Esperando siguiente parte`;
+  }
+
+  buildProgrammingFinalizationSystemInstruction(programmingLanguage) {
+    const language = programmingLanguage || 'the requested language';
+
+    return `Actua como un arquitecto de software y desarrollador experto.
+
+El usuario ya termino de enviar contexto y acaba de ejecutar el comando final !!!.
+Debes generar ahora la solucion final en ${language}.
+
+Reglas estrictas:
+- Entrega solamente codigo real, completo y ejecutable o pegable en la plataforma solicitada.
+- No respondas RECIBIDO.
+- No esperes mas contexto.
+- No expliques, no resumas, no agregues markdown, no uses docstrings narrativos.
+- No entregues pseudocodigo, TODOs, placeholders, pass, ... ni fragmentos incompletos.
+- Si existe una firma/clase requerida por la plataforma, respetala exactamente.
+- Usa todo el contexto acumulado: problema original, imagenes/OCR, reglas, codigo previo y casos fallidos.
+- Si hay casos fallidos, corrige el codigo anterior conservando el problema original.
+- Prioriza correctness; despues optimiza memoria y tiempo.
+- Si aun falta informacion esencial para escribir codigo real, responde exactamente: RECIBIDO - Esperando siguiente parte`;
   }
 
   async executeSecondaryCodingRequest(text, activeSkill, programmingLanguage, apiKey) {
@@ -622,7 +798,7 @@ Remember: the transcript block is the source of truth for the user's current req
         res.on('end', () => {
           try {
             if (res.statusCode < 200 || res.statusCode >= 300) {
-              reject(new Error(`Secondary coding request failed with HTTP ${res.statusCode}`));
+              reject(new Error(this.formatSecondaryCodingApiError(res.statusCode, data)));
               return;
             }
 
@@ -658,6 +834,18 @@ Remember: the transcript block is the source of truth for the user's current req
       req.write(postData);
       req.end();
     });
+  }
+
+  formatSecondaryCodingApiError(statusCode, rawBody) {
+    try {
+      const parsed = JSON.parse(rawBody);
+      const error = parsed.error || {};
+      const type = error.type ? ` ${error.type}` : '';
+      const message = error.message ? `: ${error.message}` : '';
+      return `Secondary coding request failed with HTTP ${statusCode}${type}${message}`;
+    } catch {
+      return `Secondary coding request failed with HTTP ${statusCode}`;
+    }
   }
 
   async executeRequest(geminiRequest) {

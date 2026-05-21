@@ -660,6 +660,36 @@
       let listeningStartTime = null;
       let listeningTimer = null;
 
+      function normalizeCommandText(text) {
+        return String(text || '')
+          .trim()
+          .replace(/\s+/g, '')
+          .replace(/[.。]+$/g, '');
+      }
+
+      async function sendChatText(text) {
+        if (!whysperAPI) return;
+
+        const command = normalizeCommandText(text);
+        if (command === '!!!' || command === '<<!!!>>' || command === '<<<!!!>>>') {
+          if (whysperAPI.finalizeProgrammingContext) {
+            await whysperAPI.finalizeProgrammingContext();
+            return;
+          }
+        }
+
+        if (command === '|||') {
+          if (whysperAPI.runSecondaryCodingFallback) {
+            await whysperAPI.runSecondaryCodingFallback();
+            return;
+          }
+        }
+
+        if (whysperAPI.sendChatMessage) {
+          await whysperAPI.sendChatMessage(text);
+        }
+      }
+
       // Basic message function with markdown support for assistant messages
       function addMessage(text, type = 'user') {
         if (!chatMessages) {
@@ -938,9 +968,7 @@
             
             // Send to main process for session memory storage and LLM processing
             try {
-              if (whysperAPI && whysperAPI.sendChatMessage) {
-                await whysperAPI.sendChatMessage(text);
-              }
+              await sendChatText(text);
             } catch (error) {
               console.error('Failed to send chat message to main process:', error);
             }
@@ -963,9 +991,7 @@
               
               // Send to main process for session memory storage and LLM processing
               try {
-                if (whysperAPI && whysperAPI.sendChatMessage) {
-                  await whysperAPI.sendChatMessage(text);
-                }
+                await sendChatText(text);
               } catch (error) {
                 console.error('Failed to send chat message to main process:', error);
               }

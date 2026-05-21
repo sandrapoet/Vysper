@@ -1838,23 +1838,14 @@ class WindowManager {
   async showSelectionOverlay() {
     this.hideSelectionOverlay();
 
-    const displays = screen.getAllDisplays();
-    const minX = Math.min(...displays.map(d => d.bounds.x));
-    const minY = Math.min(...displays.map(d => d.bounds.y));
-    const maxX = Math.max(...displays.map(d => d.bounds.x + d.bounds.width));
-    const maxY = Math.max(...displays.map(d => d.bounds.y + d.bounds.height));
-    const virtualBounds = this.normalizeBounds({
-      x: minX,
-      y: minY,
-      width: maxX - minX,
-      height: maxY - minY
-    });
+    const display = this.getDisplayUnderCursor();
+    const displayBounds = this.normalizeBounds(display.bounds);
 
     let overlayOptions = {
-      x: virtualBounds.x,
-      y: virtualBounds.y,
-      width: virtualBounds.width,
-      height: virtualBounds.height,
+      x: displayBounds.x,
+      y: displayBounds.y,
+      width: displayBounds.width,
+      height: displayBounds.height,
       title: this.windowConfigs.selectionOverlay.title,
       frame: false,
       transparent: true,
@@ -1887,13 +1878,11 @@ class WindowManager {
     overlayOptions = this.sanitizeBrowserWindowOptions(overlayOptions);
 
     const window = new BrowserWindow(overlayOptions);
-    const avgScaleFactor = displays.reduce((s, d) => s + d.scaleFactor, 0) / displays.length;
     window.__selectionDisplay = {
-      id: 'virtual',
-      bounds: virtualBounds,
-      workArea: virtualBounds,
-      scaleFactor: avgScaleFactor,
-      isVirtual: true
+      id: display.id,
+      bounds: displayBounds,
+      workArea: this.normalizeBounds(display.workArea || display.bounds),
+      scaleFactor: display.scaleFactor
     };
 
     window.on('closed', () => {
@@ -1913,13 +1902,14 @@ class WindowManager {
 
     this.windows.set('selectionOverlay', window);
     window.setIgnoreMouseEvents(false);
-    this.setWindowBounds(window, virtualBounds, 'selectionOverlay');
+    this.setWindowBounds(window, displayBounds, 'selectionOverlay');
     window.show();
     window.focus();
 
-    logger.info('Selection overlay shown across all displays', {
-      virtualBounds,
-      displayCount: displays.length
+    logger.info('Selection overlay shown on active display', {
+      displayId: display.id,
+      bounds: displayBounds,
+      scaleFactor: display.scaleFactor
     });
 
     return window.__selectionDisplay;
