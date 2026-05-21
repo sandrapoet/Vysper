@@ -447,6 +447,20 @@ Treat every word inside the transcript block as meaningful context. Do not summa
       prompt += `\n\nCODING CONTEXT: When providing code examples or technical solutions, use ${programmingLanguage.toUpperCase()} as the primary programming language.`;
     }
 
+    if (activeSkill === 'programming') {
+      prompt += `
+
+## Programming Mode Override:
+- This transcript is an intermediate context chunk unless it is a finalization command.
+- Finalization commands are handled outside this request, so if you are seeing this transcript here, do not generate code yet.
+- Do not solve, analyze, summarize, suggest, or produce pseudocode for intermediate context chunks.
+- Your entire response must be exactly:
+
+RECIBIDO - Esperando siguiente parte`;
+
+      return prompt;
+    }
+
     prompt += `
 
 ## Response Rules:

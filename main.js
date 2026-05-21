@@ -160,6 +160,11 @@ class ApplicationController {
     });
 
     speechService.on("transcription", (text) => {
+      if (this.isResetCodingContextCommand(text)) {
+        this.handleCodingContextReset('speech');
+        return;
+      }
+
       const isFinalizationCommand = this.isFinalizationCommand(text);
 
       if (!isFinalizationCommand) {
@@ -340,6 +345,11 @@ class ApplicationController {
     });
 
     ipcMain.handle("send-chat-message", async (event, text) => {
+      if (this.isResetCodingContextCommand(text)) {
+        this.handleCodingContextReset('chat');
+        return { success: true, resetContextCommand: true };
+      }
+
       if (this.isFinalizationCommand(text)) {
         logger.info('Finalization command received from chat');
 
@@ -760,35 +770,68 @@ class ApplicationController {
       normalized === '<<<!!!>>>';
   }
 
+  isResetCodingContextCommand(text) {
+    return typeof text === 'string' && text.trim() === '°°°';
+  }
+
+  isProgrammingWaitingAck(text) {
+    if (typeof text !== 'string') return false;
+    const normalized = text.trim();
+    return normalized === 'RECIBIDO - Esperando siguiente parte' ||
+      normalized === 'RECIBIDO - Esperando primera parte';
+  }
+
+  handleCodingContextReset(source = 'chat') {
+    sessionManager.clear();
+    const response = 'RECIBIDO - Esperando primera parte';
+
+    this.broadcastTranscriptionLLMResponse({
+      response,
+      metadata: {
+        skill: this.activeSkill,
+        usedFallback: true,
+        processingTime: 0,
+        source,
+        isContextReset: true
+      }
+    });
+
+    logger.info('Coding context reset command processed', { source });
+  }
+
   buildFinalizationPrompt() {
     const conversationHistory = sessionManager.getConversationHistory(200);
-    const userEvents = [];
+    const contextEvents = [];
     const seen = new Set();
 
     for (const event of conversationHistory) {
-      if (event.role !== 'user') continue;
+      if (event.role !== 'user' && event.role !== 'model') continue;
 
       const content = typeof event.content === 'string' ? event.content.trim() : '';
       if (!content || this.isFinalizationCommand(content)) continue;
+      if (this.isResetCodingContextCommand(content)) continue;
+      if (this.isProgrammingWaitingAck(content)) continue;
 
-      const dedupeKey = content;
+      const dedupeKey = `${event.role}:${content}`;
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
 
-      userEvents.push({
+      contextEvents.push({
+        role: event.role,
         action: event.action || 'user_input',
         content
       });
     }
 
-    if (userEvents.length === 0) {
+    if (contextEvents.length === 0) {
       return null;
     }
 
-    const context = userEvents
+    const context = contextEvents
       .map((event, index) => {
         const source = event.action.replace(/_/g, ' ');
-        return `--- Parte ${index + 1} (${source}) ---\n${event.content}`;
+        const role = event.role === 'model' ? 'codigo/respuesta anterior del modelo' : 'contexto del usuario';
+        return `--- Parte ${index + 1} (${role}; ${source}) ---\n${event.content}`;
       })
       .join('\n\n');
 
@@ -796,6 +839,9 @@ class ApplicationController {
 
 Usa exclusivamente el contexto acumulado en las partes anteriores para producir la respuesta final solicitada.
 Si el propio contexto incluye instrucciones de espera como "RECIBIDO", ya terminaron: ahora debes ejecutar la tarea final.
+Si hay codigo/respuesta anterior del modelo y nuevas imagenes o casos fallidos, corrige ese codigo conservando el problema original.
+No inventes un programa vacio ni una salida trivial si falta informacion esencial del problema.
+Si falta informacion esencial para escribir codigo real, responde exactamente: RECIBIDO - Esperando siguiente parte.
 No respondas que el transcript esta vacio: el contexto consolidado esta debajo.
 
 CONTEXTO ACUMULADO:

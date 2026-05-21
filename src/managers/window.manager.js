@@ -599,9 +599,18 @@ class WindowManager {
       this.positionBoundWindows();
       return;
     }
-    
+
     // All windows positioned at top of screen with small margin
     const topMargin = 20;
+
+    // Clamp window size to fit in the current display's work area
+    const [currentWidth, currentHeight] = window.getSize();
+    const clampedWidth  = Math.min(currentWidth,  screenWidth  - 100);
+    const clampedHeight = Math.min(currentHeight, screenHeight - topMargin - 10);
+    if (clampedWidth !== currentWidth || clampedHeight !== currentHeight) {
+      window.setSize(Math.round(clampedWidth), Math.round(clampedHeight));
+    }
+
     const [windowWidth] = window.getSize();
     
     const positions = {
