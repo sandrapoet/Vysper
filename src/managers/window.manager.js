@@ -46,7 +46,7 @@ class WindowManager {
       },
       guide: {
         file: 'reference-guide.html',
-        title: 'Technical Lead Guide'
+        title: 'Terminal'
       },
       llmResponse: {
         width: 840,
@@ -551,6 +551,20 @@ class WindowManager {
       alwaysOnTop: true,
       visibleOnAllWorkspaces: true,
       skipTaskbar: true
+    });
+  }
+
+  getStealthWindowTitle() {
+    return (process.title || 'Terminal').trim() || 'Terminal';
+  }
+
+  lockStealthWindowTitle(window, type) {
+    window.setTitle(this.getStealthWindowTitle());
+
+    window.on('page-title-updated', (event) => {
+      event.preventDefault();
+      window.setTitle(this.getStealthWindowTitle());
+      logger.debug('Prevented identifying page title update', { type });
     });
   }
 
@@ -1696,6 +1710,7 @@ class WindowManager {
   async showGuideWindow() {
     const existingWindow = this.windows.get('guide');
     if (existingWindow && !existingWindow.isDestroyed()) {
+      existingWindow.setTitle(this.getStealthWindowTitle());
       this.positionGuideWindow(existingWindow);
       existingWindow.setIgnoreMouseEvents(false);
       this.showOnCurrentDesktop(existingWindow);
@@ -1712,7 +1727,7 @@ class WindowManager {
       y,
       width,
       height,
-      title: this.windowConfigs.guide.title,
+      title: this.getStealthWindowTitle(),
       frame: false,
       titleBarStyle: 'hidden',
       transparent: false,
@@ -1742,6 +1757,7 @@ class WindowManager {
       })
     });
     const guideWindow = new BrowserWindow(guideOptions);
+    this.lockStealthWindowTitle(guideWindow, 'guide');
 
     guideWindow.on('closed', () => {
       if (this.windows.get('guide') === guideWindow) {
@@ -1757,6 +1773,7 @@ class WindowManager {
     });
 
     await guideWindow.loadFile(this.windowConfigs.guide.file);
+    guideWindow.setTitle(this.getStealthWindowTitle());
     this.windows.set('guide', guideWindow);
 
     try {
@@ -1766,6 +1783,7 @@ class WindowManager {
     }
 
     guideWindow.setIgnoreMouseEvents(false);
+    this.applyStealthMeasures(guideWindow, 'guide');
     this.positionGuideWindow(guideWindow);
     this.showOnCurrentDesktop(guideWindow);
 

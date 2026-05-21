@@ -120,6 +120,7 @@ class ApplicationController {
       "CommandOrControl+Shift+I": () => windowManager.toggleInteraction(),
       "CommandOrControl+Shift+C": () => windowManager.switchToWindow("chat"),
       "CommandOrControl+Shift+H": () => windowManager.toggleGuideWindow(),
+      "CommandOrControl+Shift+/": () => windowManager.hideAllWindows(),
       "CommandOrControl+Shift+\\": () => this.clearSessionMemory(),
       "CommandOrControl+,": () => windowManager.showSettings(),
       "Alt+A": () => windowManager.toggleInteraction(),
@@ -139,6 +140,9 @@ class ApplicationController {
     Object.entries(shortcuts).forEach(([accelerator, handler]) => {
       const success = globalShortcut.register(accelerator, handler);
       logger.debug("Global shortcut registered", { accelerator, success });
+      if (!success) {
+        logger.warn("Global shortcut failed to register", { accelerator });
+      }
     });
   }
 
