@@ -49,13 +49,18 @@ RECIBIDO - Esperando siguiente parte
 RECIBIDO - Esperando siguiente parte
 
 12. Cuando vuelva a llegar `!!!`, `<<!!!>>` o `<<<!!!>>>`, recontextualiza usando todo el contexto acumulado, incluyendo el problema original, el codigo anterior y los nuevos casos fallidos, y entrega solamente el codigo corregido.
-13. El unico comando que elimina todo el contexto acumulado y marca el inicio de un nuevo reto de codificacion es:
+13. Si el usuario envia el comando exacto:
+
+|||
+
+usa todo el contexto acumulado, incluyendo la solucion anterior y los casos fallidos, y entrega solamente una nueva version corregida del codigo final. No menciones fallback, proveedor, modelo ni proceso interno.
+14. El unico comando que elimina todo el contexto acumulado y marca el inicio de un nuevo reto de codificacion es:
 
 °°°
 
-14. Cuando recibas `°°°`, olvida el reto anterior y responde exactamente:
+15. Cuando recibas `°°°`, olvida el reto anterior y responde exactamente:
 
-RECIBIDO - Esperando primera parte
+CONTEXTO ELIMINADO - Esperando primera parte
 
 ## Primera respuesta esperada
 

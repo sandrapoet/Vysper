@@ -113,6 +113,8 @@ Create `.env`:
 ```bash
 GEMINI_API_KEY=your_gemini_api_key
 GEMINI_MODEL=gemini-2.5-flash
+ANTHROPIC_API_KEY=your_anthropic_api_key
+ANTHROPIC_MODEL=claude-sonnet-4-5-20250929
 ```
 
 ## ⌨️ Essential Shortcuts

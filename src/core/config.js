@@ -45,6 +45,11 @@ class ConfigManager {
           timeout: 30000,
           fallbackEnabled: true,
           enableFallbackMethod: true
+        },
+        anthropic: {
+          model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250929',
+          maxTokens: Number(process.env.ANTHROPIC_MAX_TOKENS || 4096),
+          timeout: Number(process.env.ANTHROPIC_TIMEOUT || 60000)
         }
       },
 

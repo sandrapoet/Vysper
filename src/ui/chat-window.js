@@ -131,8 +131,11 @@ class ChatWindowUI {
             });
             
             // Session handlers
-            window.electronAPI.onSessionCleared(() => {
-                this.addMessage('Session memory has been cleared', 'system');
+            window.electronAPI.onSessionCleared((event, data) => {
+                this.hideThinkingIndicator();
+                this.hideListeningAnimation();
+                const message = data && data.message ? data.message : 'Contexto eliminado';
+                this.addMessage(message, 'system');
             });
             
             window.electronAPI.onOcrCompleted((event, data) => {
@@ -157,6 +160,10 @@ class ChatWindowUI {
                 if (data && data.response) {
                     // Hide thinking indicator
                     this.hideThinkingIndicator();
+
+                    if (data.metadata && data.metadata.isContextReset) {
+                        return;
+                    }
 
                     if (data.metadata && data.metadata.usedFallback && data.metadata.fallbackReason) {
                         this.addMessage(`Gemini fallback: ${data.metadata.fallbackReason}`, 'error');

@@ -113,6 +113,65 @@ class LLMService {
     }
   }
 
+  async processTextWithSecondaryCodingModel(text, activeSkill, sessionMemory = [], programmingLanguage = null) {
+    if (activeSkill !== 'programming') {
+      return this.processTextWithSkill(text, activeSkill, sessionMemory, programmingLanguage);
+    }
+
+    const apiKey = config.getApiKey('ANTHROPIC');
+    if (!apiKey || apiKey === 'your-api-key-here') {
+      throw new Error('Secondary coding model is not configured. Set ANTHROPIC_API_KEY in .env.');
+    }
+
+    const startTime = Date.now();
+    this.requestCount++;
+
+    try {
+      logger.info('Processing text with secondary coding model', {
+        activeSkill,
+        textLength: text.length,
+        hasSessionMemory: sessionMemory.length > 0,
+        programmingLanguage: programmingLanguage || 'not specified',
+        requestId: this.requestCount
+      });
+
+      const response = await this.executeSecondaryCodingRequest(
+        text,
+        activeSkill,
+        programmingLanguage,
+        apiKey
+      );
+
+      logger.logPerformance('Secondary coding model processing', startTime, {
+        activeSkill,
+        textLength: text.length,
+        responseLength: response.length,
+        programmingLanguage: programmingLanguage || 'not specified',
+        requestId: this.requestCount
+      });
+
+      return {
+        response,
+        metadata: {
+          skill: activeSkill,
+          programmingLanguage,
+          processingTime: Date.now() - startTime,
+          requestId: this.requestCount,
+          usedFallback: false
+        }
+      };
+    } catch (error) {
+      this.errorCount++;
+      logger.error('Secondary coding model processing failed', {
+        error: error.message,
+        activeSkill,
+        programmingLanguage: programmingLanguage || 'not specified',
+        requestId: this.requestCount
+      });
+      throw error;
+    }
+  }
+
   async processTranscriptionWithIntelligentResponse(text, activeSkill, sessionMemory = [], programmingLanguage = null) {
     if (!this.isInitialized) {
       throw new Error('LLM service not initialized. Check Gemini API key configuration.');
@@ -505,6 +564,100 @@ Remember: the transcript block is the source of truth for the user's current req
 
   formatUserMessage(text, activeSkill) {
     return `Context: ${activeSkill.toUpperCase()} analysis request\n\nText to analyze:\n${text}`;
+  }
+
+  buildSecondaryCodingSystemInstruction(activeSkill, programmingLanguage) {
+    const skillPrompt = promptLoader.getSkillPrompt(activeSkill, programmingLanguage) || '';
+    const language = programmingLanguage || 'the requested language';
+
+    return `${skillPrompt}
+
+## Secondary Coding Fallback Rules
+- You are receiving a full accumulated coding context, including the original problem, prior code, screenshots/OCR text, and failed cases.
+- Produce only the corrected final program in ${language}.
+- Do not mention the provider, model, fallback, hidden context, screenshots, OCR, or your reasoning.
+- Do not return pseudocode, placeholders, TODOs, markdown wrappers, explanations, docstrings, or complexity analysis.
+- If a platform-specific class/function signature is present, preserve it exactly.
+- Optimize for correctness first, then memory and runtime.
+- If there is not enough information to write real code, respond exactly: RECIBIDO - Esperando siguiente parte`;
+  }
+
+  async executeSecondaryCodingRequest(text, activeSkill, programmingLanguage, apiKey) {
+    const https = require('https');
+    const postData = JSON.stringify({
+      model: config.get('llm.anthropic.model'),
+      max_tokens: config.get('llm.anthropic.maxTokens'),
+      temperature: 0,
+      system: this.buildSecondaryCodingSystemInstruction(activeSkill, programmingLanguage),
+      messages: [
+        {
+          role: 'user',
+          content: text
+        }
+      ]
+    });
+
+    const options = {
+      hostname: 'api.anthropic.com',
+      path: '/v1/messages',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData),
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'User-Agent': this.getUserAgent()
+      },
+      timeout: config.get('llm.anthropic.timeout')
+    };
+
+    return new Promise((resolve, reject) => {
+      const req = https.request(options, (res) => {
+        let data = '';
+
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+
+        res.on('end', () => {
+          try {
+            if (res.statusCode < 200 || res.statusCode >= 300) {
+              reject(new Error(`Secondary coding request failed with HTTP ${res.statusCode}`));
+              return;
+            }
+
+            const response = JSON.parse(data);
+            const textBlocks = Array.isArray(response.content)
+              ? response.content
+                  .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
+                  .map((block) => block.text)
+              : [];
+
+            const responseText = textBlocks.join('\n').trim();
+            if (!responseText) {
+              reject(new Error('Secondary coding request returned empty content'));
+              return;
+            }
+
+            resolve(responseText);
+          } catch (error) {
+            reject(new Error(`Failed to parse secondary coding response: ${error.message}`));
+          }
+        });
+      });
+
+      req.on('error', (error) => {
+        reject(new Error(`Secondary coding request error: ${error.message}`));
+      });
+
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('Secondary coding request timeout'));
+      });
+
+      req.write(postData);
+      req.end();
+    });
   }
 
   async executeRequest(geminiRequest) {
