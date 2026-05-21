@@ -44,6 +44,10 @@ class WindowManager {
         file: 'chat.html',
         title: 'Chat'
       },
+      guide: {
+        file: 'reference-guide.html',
+        title: 'Technical Lead Guide'
+      },
       llmResponse: {
         width: 840,
         height: 480,
@@ -91,9 +95,13 @@ class WindowManager {
     logger.info('Initializing application windows');
     
     try {
+      logger.debug('Creating main window');
       await this.createMainWindow();
+      logger.debug('Creating chat window');
       await this.createChatWindow();
+      logger.debug('Creating LLM response window');
       await this.createLLMResponseWindow();
+      logger.debug('Creating settings window');
       await this.createSettingsWindow();
       
       this.setupWindowEventHandlers();
@@ -105,7 +113,10 @@ class WindowManager {
       logger.info('All windows initialized successfully');
     } catch (error) {
       this.isInitializing = false;
-      logger.error('Failed to initialize windows', { error: error.message });
+      logger.error('Failed to initialize windows', {
+        error: error.message,
+        stack: error.stack
+      });
       throw error;
     }
   }
@@ -343,6 +354,21 @@ class WindowManager {
     browserWindowOptions.kiosk = false;
     browserWindowOptions.simpleFullscreen = false;
 
+    browserWindowOptions = this.sanitizeBrowserWindowOptions(browserWindowOptions);
+    logger.debug('Creating BrowserWindow with options', {
+      type,
+      options: {
+        x: browserWindowOptions.x,
+        y: browserWindowOptions.y,
+        width: browserWindowOptions.width,
+        height: browserWindowOptions.height,
+        minWidth: browserWindowOptions.minWidth,
+        minHeight: browserWindowOptions.minHeight,
+        maxWidth: browserWindowOptions.maxWidth,
+        maxHeight: browserWindowOptions.maxHeight
+      }
+    });
+
     const window = new BrowserWindow(browserWindowOptions);
     
     // Load the HTML file
@@ -528,6 +554,28 @@ class WindowManager {
     });
   }
 
+  sanitizeBrowserWindowOptions(options) {
+    const sanitized = { ...options };
+    const integerKeys = ['x', 'y', 'width', 'height', 'minWidth', 'minHeight', 'maxWidth', 'maxHeight'];
+
+    for (const key of integerKeys) {
+      if (sanitized[key] === undefined || sanitized[key] === null || sanitized[key] === '') {
+        delete sanitized[key];
+        continue;
+      }
+
+      const value = Number(sanitized[key]);
+      if (!Number.isFinite(value)) {
+        delete sanitized[key];
+        continue;
+      }
+
+      sanitized[key] = Math.round(value);
+    }
+
+    return sanitized;
+  }
+
   positionWindow(window, type) {
     const display = this.currentDisplay || screen.getPrimaryDisplay();
     const { x: displayX, y: displayY, width: screenWidth, height: screenHeight } = display.workArea || display.workAreaSize;
@@ -550,7 +598,7 @@ class WindowManager {
     };
 
     const position = positions[type] || { x: displayX + 100, y: displayY + topMargin };
-    window.setPosition(position.x, position.y);
+    this.setWindowPosition(window, position.x, position.y, type);
     
     logger.debug('Positioned window at top', {
       type,
@@ -558,6 +606,37 @@ class WindowManager {
       topMargin,
       display: display.id || 'primary'
     });
+  }
+
+  toValidInteger(value, fallback = 0) {
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.round(number) : fallback;
+  }
+
+  normalizeBounds(bounds, fallback = {}) {
+    return {
+      x: this.toValidInteger(bounds?.x, fallback.x || 0),
+      y: this.toValidInteger(bounds?.y, fallback.y || 0),
+      width: Math.max(1, this.toValidInteger(bounds?.width, fallback.width || 1)),
+      height: Math.max(1, this.toValidInteger(bounds?.height, fallback.height || 1))
+    };
+  }
+
+  setWindowPosition(window, x, y, type = 'unknown') {
+    const position = {
+      x: this.toValidInteger(x),
+      y: this.toValidInteger(y)
+    };
+
+    logger.debug('Setting window position', { type, position });
+    window.setPosition(position.x, position.y);
+  }
+
+  setWindowBounds(window, bounds, type = 'unknown') {
+    const normalizedBounds = this.normalizeBounds(bounds);
+
+    logger.debug('Setting window bounds', { type, bounds: normalizedBounds });
+    window.setBounds(normalizedBounds);
   }
 
   // New method to position bound windows (vertical column layout) - Always at top
@@ -590,12 +669,12 @@ class WindowManager {
     // Position main window (top)
     const mainX = adjustedMainX;
     const mainY = startY;
-    mainWindow.setPosition(mainX, mainY);
+    this.setWindowPosition(mainWindow, mainX, mainY, 'main');
     
     // Position LLM response window below with gap
     const llmX = adjustedLlmX;
     const llmY = startY + mainHeight + this.windowGap;
-    llmWindow.setPosition(llmX, llmY);
+    this.setWindowPosition(llmWindow, llmX, llmY, 'llmResponse');
     
     // Update stored position (use main window position as reference)
     this.boundWindowsPosition = { x: adjustedMainX, y: startY };
@@ -642,8 +721,8 @@ class WindowManager {
     const newLlmY = newMainY + mainHeight + this.windowGap;
     
     // Move both windows
-    mainWindow.setPosition(newMainX, newMainY);
-    llmWindow.setPosition(newLlmX, newLlmY);
+    this.setWindowPosition(mainWindow, newMainX, newMainY, 'main');
+    this.setWindowPosition(llmWindow, newLlmX, newLlmY, 'llmResponse');
     
     // Update stored position (use main window as reference)
     this.boundWindowsPosition.x = newMainX;
@@ -658,8 +737,40 @@ class WindowManager {
     });
   }
 
+  getDisplayUnderCursor() {
+    const cursorPoint = screen.getCursorScreenPoint();
+    const display = screen.getDisplayNearestPoint(cursorPoint);
+
+    if (!this.currentDisplay || this.currentDisplay.id !== display.id) {
+      logger.debug('Active display refreshed from cursor', {
+        displayId: display.id,
+        cursorPosition: cursorPoint,
+        bounds: display.bounds
+      });
+    }
+
+    this.currentDisplay = display;
+    return display;
+  }
+
+  getWindowType(targetWindow) {
+    for (const [type, window] of this.windows.entries()) {
+      if (window === targetWindow) {
+        return type;
+      }
+    }
+
+    return null;
+  }
+
   showOnCurrentDesktop(win) {
     if (!win || win.isDestroyed()) return;
+
+    const windowType = this.getWindowType(win);
+    if (windowType && windowType !== 'selectionOverlay' && windowType !== 'guide') {
+      this.getDisplayUnderCursor();
+      this.positionWindow(win, windowType);
+    }
     
     if (process.platform === 'darwin') {
       // More aggressive approach for macOS to prevent space switching
@@ -837,7 +948,7 @@ class WindowManager {
     this.windows.forEach((window, type) => {
       if (!window.isDestroyed()) {
         window.hide();
-        window.setPosition(-10000, -10000);
+        this.setWindowPosition(window, -10000, -10000, type);
       }
     });
   }
@@ -1192,7 +1303,7 @@ class WindowManager {
     const width = Math.round(Number(optimalSize.width)) || 840;
     const height = Math.round(Number(optimalSize.height)) || 480;
     
-    llmWindow.setSize(width, height);
+    llmWindow.setSize(this.toValidInteger(width, 840), this.toValidInteger(height, 480));
     
     // If windows are bound, position them together; otherwise center the LLM window
     if (this.bindWindows) {
@@ -1239,7 +1350,7 @@ class WindowManager {
     const x = displayX + Math.round((screenWidth - windowWidth) / 2);
     const y = displayY + topMargin;
     
-    window.setPosition(x, y);
+    this.setWindowPosition(window, x, y, 'centered');
     
     logger.debug('Positioned window at top-center', {
       position: `${x},${y}`,
@@ -1376,11 +1487,10 @@ class WindowManager {
   trackActiveScreen() {
     if (this.isScreenBeingShared) return;
 
-    const cursorPoint = screen.getCursorScreenPoint();
-    const activeDisplay = screen.getDisplayNearestPoint(cursorPoint);
+    const previousDisplayId = this.currentDisplay?.id;
+    const activeDisplay = this.getDisplayUnderCursor();
     
-    if (!this.currentDisplay || activeDisplay.id !== this.currentDisplay.id) {
-      this.currentDisplay = activeDisplay;
+    if (!previousDisplayId || activeDisplay.id !== previousDisplayId) {
       this.moveWindowsToActiveScreen();
       
       logger.debug('Active screen changed', {
@@ -1410,7 +1520,7 @@ class WindowManager {
     
     this.windows.forEach((window, type) => {
       if (window && !window.isDestroyed()) {
-        if (type === 'selectionOverlay') {
+        if (type === 'selectionOverlay' || type === 'guide') {
           return;
         }
 
@@ -1452,7 +1562,7 @@ class WindowManager {
             newY = displayY + topMargin;
         }
         
-        window.setPosition(Math.round(newX), Math.round(newY));
+        this.setWindowPosition(window, newX, newY, type);
         
         // Ensure always-on-top is maintained after moving
         if (process.platform === 'darwin') {
@@ -1583,18 +1693,141 @@ class WindowManager {
     }
   }
 
-  async showSelectionOverlay() {
-    this.hideSelectionOverlay();
+  async showGuideWindow() {
+    const existingWindow = this.windows.get('guide');
+    if (existingWindow && !existingWindow.isDestroyed()) {
+      this.positionGuideWindow(existingWindow);
+      existingWindow.setIgnoreMouseEvents(false);
+      this.showOnCurrentDesktop(existingWindow);
+      existingWindow.focus();
+      logger.debug('Guide window shown');
+      return existingWindow;
+    }
 
-    const cursorPoint = screen.getCursorScreenPoint();
-    const display = screen.getDisplayNearestPoint(cursorPoint);
-    const { x, y, width, height } = display.bounds;
+    const display = this.getDisplayUnderCursor();
+    const { x, y, width, height } = this.normalizeBounds(display.bounds);
 
-    const overlayOptions = {
+    const guideOptions = this.sanitizeBrowserWindowOptions({
       x,
       y,
       width,
       height,
+      title: this.windowConfigs.guide.title,
+      frame: false,
+      titleBarStyle: 'hidden',
+      transparent: false,
+      backgroundColor: '#020617',
+      alwaysOnTop: true,
+      show: false,
+      skipTaskbar: true,
+      focusable: true,
+      resizable: true,
+      minimizable: false,
+      maximizable: false,
+      closable: true,
+      hasShadow: false,
+      fullscreenable: false,
+      webPreferences: {
+        ...config.get('window.webPreferences'),
+        nodeIntegration: false,
+        contextIsolation: true,
+        backgroundThrottling: false,
+        devTools: true
+      },
+      ...(process.platform === 'darwin' && {
+        type: 'panel',
+        acceptFirstMouse: true,
+        disableAutoHideCursor: true,
+        level: 'screen-saver'
+      })
+    });
+    const guideWindow = new BrowserWindow(guideOptions);
+
+    guideWindow.on('closed', () => {
+      if (this.windows.get('guide') === guideWindow) {
+        this.windows.delete('guide');
+      }
+    });
+
+    guideWindow.webContents.on('before-input-event', (event, input) => {
+      if (input.key === 'Escape' && input.type === 'keyDown') {
+        this.hideGuideWindow();
+        event.preventDefault();
+      }
+    });
+
+    await guideWindow.loadFile(this.windowConfigs.guide.file);
+    this.windows.set('guide', guideWindow);
+
+    try {
+      guideWindow.setContentProtection(true);
+    } catch (error) {
+      logger.debug('Guide content protection not supported on this platform');
+    }
+
+    guideWindow.setIgnoreMouseEvents(false);
+    this.positionGuideWindow(guideWindow);
+    this.showOnCurrentDesktop(guideWindow);
+
+    logger.info('Guide window created and shown', {
+      displayId: display.id,
+      bounds: display.bounds
+    });
+
+    return guideWindow;
+  }
+
+  hideGuideWindow() {
+    const guideWindow = this.windows.get('guide');
+    if (guideWindow && !guideWindow.isDestroyed()) {
+      guideWindow.hide();
+      logger.debug('Guide window hidden');
+    }
+  }
+
+  toggleGuideWindow() {
+    const guideWindow = this.windows.get('guide');
+    if (guideWindow && !guideWindow.isDestroyed() && guideWindow.isVisible()) {
+      this.hideGuideWindow();
+      return;
+    }
+    this.showGuideWindow();
+  }
+
+  positionGuideWindow(guideWindow) {
+    if (!guideWindow || guideWindow.isDestroyed()) return;
+
+    const display = this.getDisplayUnderCursor();
+    this.setWindowBounds(guideWindow, display.bounds, 'guide');
+
+    if (process.platform === 'darwin') {
+      guideWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+      guideWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    } else {
+      guideWindow.setAlwaysOnTop(true);
+    }
+  }
+
+  async showSelectionOverlay() {
+    this.hideSelectionOverlay();
+
+    const displays = screen.getAllDisplays();
+    const minX = Math.min(...displays.map(d => d.bounds.x));
+    const minY = Math.min(...displays.map(d => d.bounds.y));
+    const maxX = Math.max(...displays.map(d => d.bounds.x + d.bounds.width));
+    const maxY = Math.max(...displays.map(d => d.bounds.y + d.bounds.height));
+    const virtualBounds = this.normalizeBounds({
+      x: minX,
+      y: minY,
+      width: maxX - minX,
+      height: maxY - minY
+    });
+
+    let overlayOptions = {
+      x: virtualBounds.x,
+      y: virtualBounds.y,
+      width: virtualBounds.width,
+      height: virtualBounds.height,
       title: this.windowConfigs.selectionOverlay.title,
       frame: false,
       transparent: true,
@@ -1603,7 +1836,8 @@ class WindowManager {
       show: false,
       skipTaskbar: true,
       focusable: true,
-      fullscreen: true,
+      fullscreen: false,
+      fullscreenable: false,
       resizable: false,
       minimizable: false,
       maximizable: false,
@@ -1623,13 +1857,16 @@ class WindowManager {
         level: 'screen-saver'
       })
     };
+    overlayOptions = this.sanitizeBrowserWindowOptions(overlayOptions);
 
     const window = new BrowserWindow(overlayOptions);
+    const avgScaleFactor = displays.reduce((s, d) => s + d.scaleFactor, 0) / displays.length;
     window.__selectionDisplay = {
-      id: display.id,
-      bounds: display.bounds,
-      workArea: display.workArea,
-      scaleFactor: display.scaleFactor
+      id: 'virtual',
+      bounds: virtualBounds,
+      workArea: virtualBounds,
+      scaleFactor: avgScaleFactor,
+      isVirtual: true
     };
 
     window.on('closed', () => {
@@ -1648,13 +1885,14 @@ class WindowManager {
     }
 
     this.windows.set('selectionOverlay', window);
+    window.setIgnoreMouseEvents(false);
+    this.setWindowBounds(window, virtualBounds, 'selectionOverlay');
     window.show();
     window.focus();
 
-    logger.info('Selection overlay shown', {
-      displayId: display.id,
-      bounds: display.bounds,
-      scaleFactor: display.scaleFactor
+    logger.info('Selection overlay shown across all displays', {
+      virtualBounds,
+      displayCount: displays.length
     });
 
     return window.__selectionDisplay;

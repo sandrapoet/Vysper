@@ -264,9 +264,9 @@ echo "============================================================"
 echo
 
 if [ "$AUTO_START" -eq 1 ]; then
-    echo "[INFO] Launching Vysper with npm start..."
-    npm start
+    echo "[INFO] Launching Vysper with npm run dev..."
+    npm run dev
 else
     echo "Run Vysper later with:"
-    echo "  cd \"$PROJECT_ROOT\" && npm start"
+    echo "  cd \"$PROJECT_ROOT\" && npm run dev"
 fi

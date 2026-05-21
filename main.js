@@ -95,6 +95,7 @@ class ApplicationController {
     } catch (error) {
       logger.error("Application initialization failed", {
         error: error.message,
+        stack: error.stack
       });
       app.quit();
     }
@@ -118,6 +119,7 @@ class ApplicationController {
       "CommandOrControl+Shift+V": () => windowManager.toggleVisibility(),
       "CommandOrControl+Shift+I": () => windowManager.toggleInteraction(),
       "CommandOrControl+Shift+C": () => windowManager.switchToWindow("chat"),
+      "CommandOrControl+Shift+H": () => windowManager.toggleGuideWindow(),
       "CommandOrControl+Shift+\\": () => this.clearSessionMemory(),
       "CommandOrControl+,": () => windowManager.showSettings(),
       "Alt+A": () => windowManager.toggleInteraction(),
@@ -153,9 +155,13 @@ class ApplicationController {
       });
     });
 
-    speechService.on("transcription", (text) => {      
-      // Add transcription to session memory
-      sessionManager.addUserInput(text, 'speech');
+    speechService.on("transcription", (text) => {
+      const isFinalizationCommand = this.isFinalizationCommand(text);
+
+      if (!isFinalizationCommand) {
+        // Add transcription to session memory
+        sessionManager.addUserInput(text, 'speech');
+      }
       
       const windows = BrowserWindow.getAllWindows();
       
@@ -166,8 +172,12 @@ class ApplicationController {
       // Automatically process transcription with LLM for intelligent response
       setTimeout(async () => {
         try {
-          const sessionHistory = sessionManager.getOptimizedHistory();
-          await this.processTranscriptionWithLLM(text, sessionHistory);
+          if (isFinalizationCommand) {
+            await this.processFinalizationCommandWithLLM('speech');
+          } else {
+            const sessionHistory = sessionManager.getOptimizedHistory();
+            await this.processTranscriptionWithLLM(text, sessionHistory);
+          }
         } catch (error) {
           logger.error("Failed to process transcription with LLM", {
             error: error.message,
@@ -326,6 +336,23 @@ class ApplicationController {
     });
 
     ipcMain.handle("send-chat-message", async (event, text) => {
+      if (this.isFinalizationCommand(text)) {
+        logger.info('Finalization command received from chat');
+
+        setTimeout(async () => {
+          try {
+            await this.processFinalizationCommandWithLLM('chat');
+          } catch (error) {
+            logger.error("Failed to process finalization command", {
+              error: error.message
+            });
+            this.broadcastLLMError(error.message);
+          }
+        }, 500);
+
+        return { success: true, finalizationCommand: true };
+      }
+
       // Add chat message to session memory
       sessionManager.addUserInput(text, 'chat');
       logger.debug('Chat message added to session memory', { textLength: text.length });
@@ -718,6 +745,109 @@ class ApplicationController {
         }
       });
     }
+  }
+
+  isFinalizationCommand(text) {
+    if (typeof text !== 'string') return false;
+
+    const normalized = text.trim();
+    return normalized === '!!!' ||
+      normalized === '<<!!!>>' ||
+      normalized === '<<<!!!>>>';
+  }
+
+  buildFinalizationPrompt() {
+    const conversationHistory = sessionManager.getConversationHistory(200);
+    const userEvents = [];
+    const seen = new Set();
+
+    for (const event of conversationHistory) {
+      if (event.role !== 'user') continue;
+
+      const content = typeof event.content === 'string' ? event.content.trim() : '';
+      if (!content || this.isFinalizationCommand(content)) continue;
+
+      const dedupeKey = content;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+
+      userEvents.push({
+        action: event.action || 'user_input',
+        content
+      });
+    }
+
+    if (userEvents.length === 0) {
+      return null;
+    }
+
+    const context = userEvents
+      .map((event, index) => {
+        const source = event.action.replace(/_/g, ' ');
+        return `--- Parte ${index + 1} (${source}) ---\n${event.content}`;
+      })
+      .join('\n\n');
+
+    return `El usuario acaba de enviar el comando final de consolidacion (!!!).
+
+Usa exclusivamente el contexto acumulado en las partes anteriores para producir la respuesta final solicitada.
+Si el propio contexto incluye instrucciones de espera como "RECIBIDO", ya terminaron: ahora debes ejecutar la tarea final.
+No respondas que el transcript esta vacio: el contexto consolidado esta debajo.
+
+CONTEXTO ACUMULADO:
+${context}`;
+  }
+
+  async processFinalizationCommandWithLLM(source = 'chat') {
+    const finalPrompt = this.buildFinalizationPrompt();
+
+    if (!finalPrompt) {
+      const response = 'No encontre contexto previo para consolidar. Enviame las partes antes de usar !!!.';
+      sessionManager.addModelResponse(response, {
+        skill: this.activeSkill,
+        usedFallback: true,
+        isFinalizationResponse: true,
+        source
+      });
+      this.broadcastTranscriptionLLMResponse({
+        response,
+        metadata: {
+          skill: this.activeSkill,
+          usedFallback: true,
+          processingTime: 0,
+          source
+        }
+      });
+      return;
+    }
+
+    const skillsRequiringProgrammingLanguage = ['programming', 'dsa', 'devops', 'system-design', 'data-science'];
+    const needsProgrammingLanguage = skillsRequiringProgrammingLanguage.includes(this.activeSkill);
+    const sessionHistory = sessionManager.getOptimizedHistory();
+
+    sessionManager.addUserInput('[FINALIZATION COMMAND: !!!]', source);
+
+    const llmResult = await llmService.processTextWithSkill(
+      finalPrompt,
+      this.activeSkill,
+      sessionHistory.recent,
+      needsProgrammingLanguage ? this.codingLanguage : null
+    );
+
+    sessionManager.addModelResponse(llmResult.response, {
+      skill: this.activeSkill,
+      processingTime: llmResult.metadata.processingTime,
+      usedFallback: llmResult.metadata.usedFallback,
+      isFinalizationResponse: true,
+      source
+    });
+
+    this.broadcastTranscriptionLLMResponse(llmResult);
+    windowManager.showLLMResponse(llmResult.response, {
+      skill: this.activeSkill,
+      processingTime: llmResult.metadata.processingTime,
+      usedFallback: llmResult.metadata.usedFallback,
+    });
   }
 
   async processWithLLM(text, sessionHistory) {

@@ -1,0 +1,1086 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Technical Lead Decision Guide – Tech Holding</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: rgba(15, 23, 42, 0.88);
+      --card: rgba(30, 41, 59, 0.92);
+      --card-soft: rgba(51, 65, 85, 0.78);
+      --text: #f8fafc;
+      --muted: #cbd5e1;
+      --subtle: #94a3b8;
+      --accent: #8b5cf6;
+      --accent-2: #2dd4bf;
+      --warning: #fbbf24;
+      --danger: #fb7185;
+      --ok: #34d399;
+      --border: rgba(148, 163, 184, 0.24);
+      --shadow: 0 24px 80px rgba(0,0,0,0.35);
+      --radius: 26px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(139, 92, 246, 0.30), transparent 30%),
+        radial-gradient(circle at top right, rgba(45, 212, 191, 0.20), transparent 35%),
+        linear-gradient(135deg, #020617 0%, #0f172a 48%, #111827 100%);
+      color: var(--text);
+      line-height: 1.55;
+    }
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      backdrop-filter: blur(20px);
+      background: rgba(2, 6, 23, 0.82);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .topbar {
+      max-width: 1500px;
+      margin: 0 auto;
+      padding: 16px 24px;
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+
+    .brand {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: clamp(1.25rem, 2.5vw, 2rem);
+      letter-spacing: -0.04em;
+    }
+
+    .brand p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    input[type="search"] {
+      min-width: min(420px, 80vw);
+      padding: 13px 16px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.95);
+      color: var(--text);
+      outline: none;
+      font-size: 0.95rem;
+    }
+
+    button, .navlink {
+      border: 1px solid var(--border);
+      background: rgba(30, 41, 59, 0.86);
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 999px;
+      cursor: pointer;
+      text-decoration: none;
+      font-weight: 650;
+      font-size: 0.88rem;
+      transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+    }
+
+    button:hover, .navlink:hover {
+      transform: translateY(-1px);
+      border-color: rgba(45, 212, 191, 0.55);
+      background: rgba(51, 65, 85, 0.95);
+    }
+
+    main {
+      max-width: 1500px;
+      margin: 0 auto;
+      padding: 34px 24px 80px;
+    }
+
+    .hero {
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.22), rgba(45, 212, 191, 0.10));
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: clamp(24px, 4vw, 42px);
+      box-shadow: var(--shadow);
+      margin-bottom: 28px;
+    }
+
+    .hero h2 {
+      margin: 0 0 12px;
+      font-size: clamp(2rem, 5vw, 4rem);
+      line-height: 0.98;
+      letter-spacing: -0.06em;
+    }
+
+    .hero p {
+      max-width: 980px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 1.06rem;
+    }
+
+    .toc {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin: 22px 0 34px;
+    }
+
+    section {
+      margin: 34px 0 48px;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 14px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 12px;
+    }
+
+    .section-title h2 {
+      margin: 0;
+      font-size: clamp(1.45rem, 3vw, 2.3rem);
+      letter-spacing: -0.04em;
+    }
+
+    .section-title span {
+      color: var(--accent-2);
+      font-weight: 750;
+      font-size: 0.92rem;
+      white-space: nowrap;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      margin: 18px 0;
+      overflow: hidden;
+    }
+
+    .card-header {
+      padding: 22px 24px;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.17), rgba(45, 212, 191, 0.07));
+      border-bottom: 1px solid var(--border);
+    }
+
+    .card-header h3 {
+      margin: 0 0 6px;
+      font-size: 1.3rem;
+      letter-spacing: -0.03em;
+    }
+
+    .card-header p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .badge {
+      align-self: flex-start;
+      border: 1px solid rgba(45, 212, 191, 0.35);
+      color: var(--accent-2);
+      padding: 8px 11px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.05fr 1.2fr 1.35fr;
+      gap: 0;
+    }
+
+    .cell {
+      padding: 22px 24px;
+      border-right: 1px solid var(--border);
+      min-width: 0;
+    }
+
+    .cell:last-child { border-right: 0; }
+
+    .cell h4 {
+      margin: 0 0 12px;
+      color: var(--accent-2);
+      font-size: 0.88rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    ul { padding-left: 18px; margin: 10px 0 0; }
+    li { margin: 7px 0; color: var(--muted); }
+
+    .decision {
+      display: grid;
+      gap: 10px;
+    }
+
+    .chiprow { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+    .chip {
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.65);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 7px 10px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .glossary {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    details.term {
+      background: rgba(15, 23, 42, 0.58);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 12px 13px;
+      transition: all 0.16s ease;
+    }
+
+    details.term[open] {
+      background: rgba(15, 23, 42, 0.88);
+      border-color: rgba(45, 212, 191, 0.46);
+      transform: scale(1.015);
+      box-shadow: 0 12px 28px rgba(0,0,0,0.25);
+    }
+
+    details.term summary {
+      cursor: pointer;
+      font-weight: 850;
+      color: var(--text);
+      list-style: none;
+    }
+
+    details.term summary::-webkit-details-marker { display: none; }
+
+    details.term summary::after {
+      content: " +";
+      color: var(--accent-2);
+      float: right;
+    }
+
+    details.term[open] summary::after { content: " −"; }
+
+    .term p {
+      margin: 10px 0 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .zoomed {
+      outline: 2px solid var(--warning);
+      transform: scale(1.03) !important;
+      z-index: 5;
+      position: relative;
+    }
+
+    .quote {
+      margin-top: 14px;
+      padding: 14px 16px;
+      border-left: 4px solid var(--accent-2);
+      background: rgba(45, 212, 191, 0.08);
+      border-radius: 16px;
+      color: var(--text);
+      font-weight: 650;
+    }
+
+    .signal {
+      padding: 10px 12px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: var(--card-soft);
+      color: var(--muted);
+      margin: 8px 0;
+    }
+
+    .signal strong { color: var(--text); }
+
+    mark {
+      background: rgba(251, 191, 36, 0.24);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 0 4px;
+    }
+
+    .print-note {
+      color: var(--subtle);
+      font-size: 0.86rem;
+      margin-top: 20px;
+    }
+
+    @media (max-width: 1100px) {
+      .grid { grid-template-columns: 1fr; }
+      .cell { border-right: 0; border-bottom: 1px solid var(--border); }
+      .cell:last-child { border-bottom: 0; }
+      .glossary { grid-template-columns: 1fr; }
+    }
+
+    @media print {
+      header, .actions, .toc { display: none; }
+      body { background: white; color: black; }
+      .hero, .card { box-shadow: none; break-inside: avoid; background: white; color: black; }
+      .cell, .card-header, .hero { border-color: #bbb; }
+      li, .term p, .card-header p, .hero p { color: #222; }
+      details.term { background: #fff; }
+      details.term { background: #fff !important; border-color: #bbb !important; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="topbar">
+      <div class="brand">
+        <h1>Technical Lead Decision Guide</h1>
+        <p>Tech Holding interview strategy · scenario cards · contextual glossary · business-oriented architecture decisions</p>
+      </div>
+      <div class="actions">
+        <input id="search" type="search" placeholder="Search term, scenario, metric, technology..." />
+        <button onclick="expandAll()">Expand all terms</button>
+        <button onclick="collapseAll()">Collapse</button>
+        <button onclick="printAll()">Print / PDF</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="hero">
+      <h2>One-view decision cards for senior technical leadership.</h2>
+      <p>Use this guide to answer architecture questions with a Staff+/Tech Lead lens: define the term, explain when to use it, identify the trade-off, connect it to cost, risk, reliability, performance, and stakeholder value.</p>
+      <p class="print-note">Tip: click any glossary term to zoom into its definition. Use browser zoom for interview preparation or print it as PDF.</p>
+    </div>
+
+    <nav class="toc">
+      <a class="navlink" href="#frontend">Frontend Architecture</a>
+      <a class="navlink" href="#mobile">Mobile Ecosystem</a>
+      <a class="navlink" href="#backend">Backend & Observability</a>
+      <a class="navlink" href="#cloud">Cloud Infrastructure</a>
+      <a class="navlink" href="#search">Advanced Search & Data</a>
+      <a class="navlink" href="#leadership">Leadership Strategy</a>
+      <a class="navlink" href="#cms">Sanity CMS</a>
+      <a class="navlink" href="#elasticsearch">Elasticsearch</a>
+      <a class="navlink" href="#cicd">CI/CD &amp; IaC</a>
+      <a class="navlink" href="#process">Process &amp; Agile</a>
+    </nav>
+
+    <section id="frontend">
+      <div class="section-title"><h2>1. Frontend Architecture</h2><span>Strategic Delivery</span></div>
+
+      <article class="card" data-tags="next.js rendering ssr ssg isr cdn lcp ttfb ecommerce catalogs advanced rendering">
+        <div class="card-header">
+          <div><h3>Advanced Rendering with Next.js</h3><p>Choose the right rendering strategy based on freshness, personalization, SEO, latency, and infrastructure cost.</p></div>
+          <div class="badge">Performance + Cost</div>
+        </div>
+        <div class="grid">
+          <div class="cell">
+            <h4>Decision Strategy</h4>
+            <div class="decision">
+              <div class="signal"><strong>Use SSG</strong> for static or rarely changing content: marketing, documentation, blogs, landing pages.</div>
+              <div class="signal"><strong>Use ISR</strong> for large catalogs, product detail pages, news-like pages, and content that can tolerate a small stale window.</div>
+              <div class="signal"><strong>Use RSC</strong> as a bundle governance tool alongside ISR: keep heavy logic on the server and reduce client-side JS payloads to improve mobile LCP.</div>
+              <div class="signal"><strong>Use SSR</strong> only when data must be personalized or fresh per request.</div>
+            </div>
+            <div class="quote">Interview line: “I treat SSR, SSG, and ISR as a spectrum between data freshness and cost efficiency. I prefer ISR for massive catalogs because it maximizes CDN cacheability while controlling cloud egress and compute costs.”</div>
+            <div class="quote">Interview line: “I treat rendering as a spectrum between data freshness and infrastructure cost; ISR is my preference for global scale.”</div>
+          </div>
+          <div class="cell">
+            <h4>Decision Parameters</h4>
+            <ul>
+              <li><strong>Freshness:</strong> How quickly must the user see updated data?</li>
+              <li><strong>Personalization:</strong> Is the page unique per user/session?</li>
+              <li><strong>SEO:</strong> Does search visibility matter?</li>
+              <li><strong>Traffic pattern:</strong> predictable, bursty, global, or long-tail?</li>
+              <li><strong>Cost:</strong> Are repeated server renders creating unnecessary compute or egress?</li>
+              <li><strong>Latency:</strong> Is TTFB affected by server work or origin distance?</li>
+              <li><strong>Bundle Size:</strong> Will moving this logic to the server improve mobile LCP?</li>
+              <li><strong>Edge Utility:</strong> Can we handle auth or geolocation before hitting the origin?</li>
+            </ul>
+          </div>
+          <div class="cell">
+            <h4>Contextual Glossary</h4>
+            <div class="glossary">
+              <details class="term"><summary>SSR</summary><p>Server-Side Rendering. HTML is generated on the server for every request. Strong for personalization and fresh data, but less cacheable and more expensive at scale.</p></details>
+              <details class="term"><summary>SSG</summary><p>Static Site Generation. HTML is generated at build time and served as static files. Very fast and cheap, but not ideal for highly dynamic data.</p></details>
+              <details class="term"><summary>ISR</summary><p>Incremental Static Regeneration. Static pages can be regenerated in the background after a defined interval. Good balance for large catalogs.</p></details>
+              <details class="term"><summary>CDN</summary><p>Content Delivery Network. Globally distributed cache that serves assets closer to users, reducing latency, origin load, and egress cost.</p></details>
+              <details class="term"><summary>TTFB</summary><p>Time To First Byte. Measures how long the browser waits before receiving the first byte from the server. Heavy SSR can increase it.</p></details>
+              <details class="term"><summary>LCP</summary><p>Largest Contentful Paint. Core Web Vital measuring when the largest visible content appears. Improved through image optimization, caching, and reduced JS.</p></details>
+              <details class="term"><summary>Cache Invalidation</summary><p>The process of removing or refreshing stale cached content. Often the hardest part of CDN-heavy architectures.</p></details>
+              <details class="term"><summary>Revalidation Window</summary><p>The time interval after which ISR content becomes eligible for regeneration. Shorter windows increase freshness but may increase compute.</p></details>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="card" data-tags="react server components rsc hydration bundle size client server next.js mobile performance">
+        <div class="card-header">
+          <div><h3>React Server Components & Bundle Size Management</h3><p>Move non-interactive logic to the server to reduce client-side JavaScript and improve mobile experience.</p></div>
+          <div class="badge">UX + Bundle Control</div>
+        </div>
+        <div class="grid">
+          <div class="cell">
+            <h4>Decision Strategy</h4>
+            <div class="signal"><strong>Use RSC</strong> for data fetching, heavy libraries, formatting, and non-interactive UI sections.</div>
+            <div class="signal"><strong>Use Client Components</strong> for browser APIs, stateful interactions, forms, gestures, and real-time UI.</div>
+            <div class="quote">Interview line: “RSC is not only a rendering feature; it is a bundle governance tool. It prevents unnecessary JavaScript from reaching the client.”</div>
+            <div class="quote">Interview line: “I use RSC as a bundle governance tool to keep heavy logic on the server and reduce client-side JS payloads — the result is a noticeably faster mobile experience.”</div>
+          </div>
+          <div class="cell">
+            <h4>Decision Parameters</h4>
+            <ul>
+              <li>Does this component need interactivity?</li>
+              <li>Does it use browser-only APIs?</li>
+              <li>Can the logic stay on the server safely?</li>
+              <li>Will moving it server-side reduce client bundle size?</li>
+              <li>Does it improve LCP, INP, or mobile performance?</li>
+            </ul>
+          </div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>RSC</summary><p>React Server Components. Components rendered on the server that do not ship their logic to the browser unless interactivity is required.</p></details>
+            <details class="term"><summary>Client Component</summary><p>A React component that runs in the browser and supports state, effects, event handlers, and browser APIs.</p></details>
+            <details class="term"><summary>Hydration</summary><p>The process where React attaches interactivity to server-rendered HTML. Too much hydration can slow the page.</p></details>
+            <details class="term"><summary>Bundle Size</summary><p>Total JavaScript downloaded by the browser. Smaller bundles improve startup time and mobile performance.</p></details>
+            <details class="term"><summary>Code Splitting</summary><p>Breaking JavaScript into smaller chunks loaded only when needed.</p></details>
+            <details class="term"><summary>INP</summary><p>Interaction to Next Paint. Core Web Vital measuring responsiveness after user interactions.</p></details>
+          </div></div>
+        </div>
+      </article>
+
+      <article class="card" data-tags="edge runtime middleware geolocation ab testing auth rate limiting latency next.js">
+        <div class="card-header"><div><h3>Edge Runtime & Middleware</h3><p>Make request-level decisions before traffic reaches origin infrastructure.</p></div><div class="badge">Latency + Governance</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4><div class="signal"><strong>Use Edge</strong> for lightweight logic: redirects, localization, geolocation, feature flags, A/B tests, auth checks, bot filtering.</div><div class="signal"><strong>Avoid Edge</strong> for heavy computation, long-running tasks, large dependencies, or complex database access.</div><div class="quote">Interview line: “Middleware at the edge is my first line of defense for routing, segmentation, and lightweight policy enforcement.”</div></div>
+          <div class="cell"><h4>Decision Parameters</h4><ul><li>Can this decision be made without hitting the origin?</li><li>Does it reduce latency or origin load?</li><li>Is the logic deterministic and lightweight?</li><li>Does it require secrets, DB connections, or heavy packages?</li></ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>Edge Runtime</summary><p>Execution environment close to the user, often used for ultra-low-latency request processing.</p></details>
+            <details class="term"><summary>Middleware</summary><p>Code that intercepts requests before they reach routes or APIs. Useful for auth, redirects, and request enrichment.</p></details>
+            <details class="term"><summary>Origin Server</summary><p>The primary backend or hosting server that generates or stores the original response.</p></details>
+            <details class="term"><summary>A/B Testing</summary><p>Experiment method where users are routed to different variants to measure business or UX impact.</p></details>
+            <details class="term"><summary>Feature Flag</summary><p>Runtime switch used to enable, disable, or segment functionality without redeploying.</p></details>
+            <details class="term"><summary>Rate Limiting</summary><p>Controlling request volume to protect systems from abuse, overload, or cost spikes.</p></details>
+          </div></div>
+        </div>
+      </article>
+    </section>
+
+    <section id="mobile">
+      <div class="section-title"><h2>2. Mobile Ecosystem</h2><span>Native Performance</span></div>
+      <article class="card" data-tags="react native jsi turbomodules bridge c++ json serialization performance cryptography">
+        <div class="card-header"><div><h3>JSI & TurboModules Migration</h3><p>Reduce bridge overhead and enable faster native interoperability.</p></div><div class="badge">Native Bridge</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4><div class="signal"><strong>Use JSI/TurboModules</strong> when the app handles heavy native processing, cryptography, real-time data, or performance-sensitive SDKs.</div><div class="signal"><strong>Prioritize JSI</strong> specifically when JSON serialization becomes a structural bottleneck for high-frequency data crossing the native boundary.</div><div class="signal"><strong>Delay migration</strong> if the app is mostly forms/content and the bridge is not a bottleneck.</div><div class="quote">Interview line: “I would prioritize JSI when JSON serialization between JS and native becomes a structural bottleneck, not as a cosmetic migration.”</div><div class="quote">Interview line: “Business logic can be asynchronous, but the user interface must never feel blocked or stuttering.”</div></div>
+          <div class="cell"><h4>Decision Parameters</h4><ul><li>Is the app dropping frames during native calls?</li><li>Are large payloads crossing the JS-native boundary?</li><li>Do we need synchronous native access?</li><li>Are third-party native modules compatible?</li><li>Does the migration reduce startup time or memory pressure?</li></ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>JSI</summary><p>JavaScript Interface. Allows JavaScript to communicate directly with C++ objects, reducing bridge serialization overhead.</p></details>
+            <details class="term"><summary>TurboModules</summary><p>New native module system in React Native that supports lazy loading and faster access to native capabilities.</p></details>
+            <details class="term"><summary>Bridge</summary><p>Legacy communication layer between JavaScript and native code, often involving asynchronous serialized messages.</p></details>
+            <details class="term"><summary>JSON Serialization</summary><p>Conversion of data into JSON strings for transport. Can become expensive for large or frequent payloads.</p></details>
+            <details class="term"><summary>Native Module</summary><p>Code written in platform-native languages such as Swift, Objective-C, Kotlin, Java, or C++ and exposed to JS.</p></details>
+            <details class="term"><summary>Memory Pressure</summary><p>Condition where the app consumes excessive memory, increasing crash risk or OS-level termination.</p></details>
+          </div></div>
+        </div>
+      </article>
+      <article class="card" data-tags="fabric reanimated ui thread js thread gestures animations 60fps perceived quality">
+        <div class="card-header"><div><h3>Fabric & Reanimated for Perceived Quality</h3><p>Keep gestures and animations smooth even when business logic is asynchronous or delayed.</p></div><div class="badge">UX Fluidity</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4><div class="signal"><strong>Use Reanimated</strong> for gestures, transitions, and animations that must remain smooth under JS load.</div><div class="signal"><strong>Adopt Fabric</strong> when the app is ready for the new React Native architecture and needs better rendering coordination.</div><div class="quote">Interview line: “Business logic can be asynchronous; the interface should never feel blocked.”</div></div>
+          <div class="cell"><h4>Decision Parameters</h4><ul><li>Are gestures or animations stuttering?</li><li>Is the JS thread overloaded?</li><li>Does the app need 60fps interactions?</li><li>Are we building premium mobile experiences where perceived quality matters?</li></ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>Fabric</summary><p>New React Native rendering architecture that improves coordination between React and native UI rendering.</p></details>
+            <details class="term"><summary>Reanimated</summary><p>Animation library that can run animations on the UI thread, reducing dependency on the JS thread.</p></details>
+            <details class="term"><summary>UI Thread</summary><p>Native thread responsible for rendering and user interface responsiveness.</p></details>
+            <details class="term"><summary>JS Thread</summary><p>Thread running JavaScript business logic. If overloaded, it can delay UI updates unless animations are moved off it.</p></details>
+            <details class="term"><summary>60fps</summary><p>Target of 60 frames per second. A practical threshold for smooth visual interactions.</p></details>
+            <details class="term"><summary>Perceived Performance</summary><p>How fast and smooth the app feels to the user, even if backend operations are still pending.</p></details><details class="term"><summary>FlashList</summary><p>A high-performance list alternative to FlatList that uses view recycling to save memory and improve scroll performance.</p></details>
+          </div></div>
+        </div>
+      </article>
+    </section>
+
+    <section id="backend">
+      <div class="section-title"><h2>3. Backend & Observability</h2><span>Operational Excellence</span></div>
+      <article class="card" data-tags="fastify express ajv validation throughput node api performance consultancy margin">
+        <div class="card-header"><div><h3>Fastify vs Express for API Delivery</h3><p>Choose the Node.js framework based on throughput, validation discipline, ecosystem needs, and delivery speed.</p></div><div class="badge">Throughput + Delivery</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4><div class="signal"><strong>Choose Fastify</strong> for high-throughput APIs, schema-first validation, and lower per-request overhead.</div><div class="signal"><strong>Choose Express</strong> for legacy compatibility, simpler teams, broad middleware availability, or rapid prototypes.</div><div class="signal"><strong>Leverage AJV pre-compilation</strong> in Fastify to reject malformed traffic at the perimeter and protect downstream resources.</div><div class="quote">Interview line: “In consultancy, performance affects margin. Fastify can reduce malformed traffic and compute waste through schema-based validation.”</div><div class="quote">Interview line: “Performance affects margin. By rejecting malformed traffic early via schemas, we protect downstream resources.”</div></div>
+          <div class="cell"><h4>Decision Parameters</h4><ul><li>Expected request volume?</li><li>Schema validation requirements?</li><li>Team familiarity?</li><li>Legacy middleware dependencies?</li><li>Latency and compute cost sensitivity?</li></ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>Fastify</summary><p>High-performance Node.js web framework with schema-based validation and low overhead.</p></details>
+            <details class="term"><summary>Express</summary><p>Popular minimalist Node.js framework with broad ecosystem and middleware support.</p></details>
+            <details class="term"><summary>AJV</summary><p>Another JSON Validator. Fast JSON Schema validator commonly used to validate request bodies and responses.</p></details>
+            <details class="term"><summary>Schema-first API</summary><p>Approach where request/response contracts are defined upfront, improving validation and maintainability.</p></details>
+            <details class="term"><summary>Throughput</summary><p>Number of requests a service can process per unit of time.</p></details>
+            <details class="term"><summary>Malformed Request</summary><p>Request that does not meet expected contract. Early rejection protects business logic and downstream systems.</p></details>
+          </div></div>
+        </div>
+      </article>
+      <article class="card" data-tags="pino structured logging distributed tracing trace id opentelmetry mttr google cloud logging observability">
+        <div class="card-header"><div><h3>Structured Logging & Distributed Tracing</h3><p>Correlate logs, metrics, and traces to reduce incident resolution time.</p></div><div class="badge">MTTR Reduction</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4><div class="signal"><strong>Use structured logs</strong> for searchable, machine-readable events.</div><div class="signal"><strong>Inject trace IDs</strong> across services to connect frontend, API, queue, database, and external calls.</div><div class="quote">Interview line: “I would inject trace IDs into Pino logs so a Fastify error can be correlated with a specific trace in Google Cloud Logging, reducing MTTR.”</div><div class="quote">Interview line: “Inject Trace IDs into Pino logs to correlate errors across microservices in Cloud Logging — distributed observability is not optional at scale.”</div></div>
+          <div class="cell"><h4>Decision Parameters</h4><ul><li>Can we follow one request across services?</li><li>Are logs structured or plain text?</li><li>Do alerts include context?</li><li>Can support reproduce the issue quickly?</li><li>Are traces sampled appropriately?</li></ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>Structured Logging</summary><p>Logging as JSON or key-value records so tools can filter, aggregate, and correlate events reliably.</p></details>
+            <details class="term"><summary>Pino</summary><p>Fast Node.js logger optimized for low overhead and structured JSON logging.</p></details>
+            <details class="term"><summary>Trace ID</summary><p>Unique identifier attached to a request as it moves across distributed services.</p></details>
+            <details class="term"><summary>Distributed Tracing</summary><p>Technique for visualizing a request path across multiple services and infrastructure layers.</p></details>
+            <details class="term"><summary>OpenTelemetry</summary><p>Vendor-neutral standard for collecting traces, metrics, and logs.</p></details>
+            <details class="term"><summary>MTTR</summary><p>Mean Time To Resolution. Average time required to recover from incidents or resolve issues.</p></details>
+          </div></div>
+        </div>
+      </article>
+    </section>
+
+    <section id="cloud">
+      <div class="section-title"><h2>4. Cloud Infrastructure</h2><span>Scalability & Governance</span></div>
+      <article class="card" data-tags="cloud run gke kubernetes serverless containers scale to zero stateless service mesh stateful sets governance agility">
+        <div class="card-header"><div><h3>Cloud Run vs GKE</h3><p>Balance agility, control, governance, operational maturity, and workload complexity.</p></div><div class="badge">Governance vs Agility</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4><div class="signal"><strong>Use Cloud Run</strong> for stateless APIs, event-driven workloads, bursty traffic, and teams that need fast delivery with low ops overhead.</div><div class="signal"><strong>Use GKE</strong> for complex microservice platforms, service mesh, stateful workloads, custom networking, or stronger operational control.</div><div class="quote">Interview line: “Cloud Run optimizes agility and cost for stateless services; GKE is justified when platform complexity requires Kubernetes-level control.”</div></div>
+          <div class="cell"><h4>Decision Parameters</h4><ul><li>Stateless or stateful?</li><li>Need service mesh?</li><li>Need scale-to-zero?</li><li>Operational maturity of the team?</li><li>Traffic predictability?</li><li>Security/networking requirements?</li></ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>Cloud Run</summary><p>Managed container platform for stateless services with autoscaling and scale-to-zero behavior.</p></details>
+            <details class="term"><summary>GKE</summary><p>Google Kubernetes Engine. Managed Kubernetes for complex container orchestration and platform control.</p></details>
+            <details class="term"><summary>Scale-to-zero</summary><p>Serverless behavior where instances drop to zero when idle, reducing cost.</p></details>
+            <details class="term"><summary>Stateless API</summary><p>Service that does not store session-specific state locally, making it easier to scale horizontally.</p></details>
+            <details class="term"><summary>Service Mesh</summary><p>Infrastructure layer that manages service-to-service communication, retries, mTLS, observability, and traffic policy.</p></details>
+            <details class="term"><summary>Stateful Set</summary><p>Kubernetes workload type for applications requiring stable identity and persistent storage.</p></details>
+          </div></div>
+        </div>
+      </article>
+      <article class="card" data-tags="iap vpc service controls zero trust vpn identity aware proxy security governance gcp data exfiltration">
+        <div class="card-header"><div><h3>IAP & VPC Service Controls</h3><p>Move from network perimeter thinking to identity-aware, context-aware access.</p></div><div class="badge">Zero Trust</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4><div class="signal"><strong>Use IAP</strong> to secure internal tools based on user identity and context instead of exposing VPN-only access.</div><div class="signal"><strong>Use VPC Service Controls</strong> to reduce data exfiltration risk around sensitive GCP services.</div><div class="quote">Interview line: “I would move beyond traditional VPNs and apply Zero Trust: identity, device context, and service boundaries must be continuously evaluated.”</div></div>
+          <div class="cell"><h4>Decision Parameters</h4><ul><li>Who needs access and from where?</li><li>Are consultants or external teams involved?</li><li>Is access tied to identity and context?</li><li>Could data be exfiltrated outside approved boundaries?</li><li>Do we need auditability for regulated environments?</li></ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>IAP</summary><p>Identity-Aware Proxy. GCP access control layer that authorizes users based on identity and context before reaching applications.</p></details>
+            <details class="term"><summary>Zero Trust</summary><p>Security model that assumes no implicit trust and continuously verifies users, devices, and requests.</p></details>
+            <details class="term"><summary>VPC Service Controls</summary><p>GCP security mechanism that creates perimeters around cloud services to reduce data exfiltration risk.</p></details>
+            <details class="term"><summary>VPN</summary><p>Network tunnel that grants access to private resources. Useful, but weaker than identity-aware controls when used alone.</p></details>
+            <details class="term"><summary>Data Exfiltration</summary><p>Unauthorized movement of data outside approved environments.</p></details>
+            <details class="term"><summary>Least Privilege</summary><p>Principle of granting only the minimum access needed for a user or system to perform its function.</p></details>
+          </div></div>
+        </div>
+      </article>
+    </section>
+
+    <section id="search">
+      <div class="section-title"><h2>5. Advanced Search & Data</h2><span>Relevance + Efficiency</span></div>
+      <article class="card" data-tags="hybrid search rrf bm25 dense vectors semantic search embeddings product search cold weather gear relevance">
+        <div class="card-header"><div><h3>Hybrid Search with RRF</h3><p>Combine keyword precision with semantic understanding to improve search relevance.</p></div><div class="badge">Search Quality</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4><div class="signal"><strong>Use BM25</strong> when exact keywords, titles, SKUs, product names, or legal text matter.</div><div class="signal"><strong>Use dense vectors</strong> when user intent is ambiguous, natural language driven, or semantically broad.</div><div class="signal"><strong>Use RRF</strong> to combine rankings without overfitting to one search method.</div><div class="signal"><strong>Evaluate search intent</strong>: if the query is conceptual use semantic, if it is SKU/title-based use lexical, and when uncertain blend both with RRF.</div><div class="quote">Interview line: “Hybrid search helps users who do not know the exact keyword. It combines lexical precision with semantic intent.”</div><div class="quote">Interview line: “Hybrid search bridges the gap between what users type and what they actually intend to find.”</div></div>
+          <div class="cell"><h4>Decision Parameters</h4><ul><li>Do users search exact terms or natural language?</li><li>Is recall more important than precision?</li><li>Are synonyms and intent common?</li><li>Do we need explainability?</li><li>Can we afford vector index cost?</li></ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>BM25</summary><p>Keyword ranking algorithm that scores documents based on term frequency and relevance. Strong for exact lexical matching.</p></details>
+            <details class="term"><summary>Dense Vectors</summary><p>Numerical representations of meaning generated by embedding models. Useful for semantic similarity.</p></details>
+            <details class="term"><summary>Embeddings</summary><p>Vector representations of text, images, or entities used for semantic search and recommendations.</p></details>
+            <details class="term"><summary>Semantic Search</summary><p>Search based on meaning and intent rather than exact keyword overlap.</p></details>
+            <details class="term"><summary>Hybrid Search</summary><p>Combination of lexical and semantic search to improve relevance.</p></details>
+            <details class="term"><summary>RRF</summary><p>Reciprocal Rank Fusion. Method for combining multiple ranked result lists into a more balanced final ranking.</p></details>
+          </div></div>
+        </div>
+      </article>
+      <article class="card" data-tags="valkey redis multi tenancy memorystore cache sessions pubsub noisy neighbor sprawl">
+        <div class="card-header"><div><h3>Valkey & Multi-tenancy</h3><p>Consolidate cache infrastructure while managing isolation, cost, and operational simplicity.</p></div><div class="badge">Cache Governance</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4><div class="signal"><strong>Use consolidated Valkey</strong> when tenants can be safely isolated through namespaces, quotas, and access controls.</div><div class="signal"><strong>Use isolated instances</strong> when regulatory, noisy-neighbor, or blast-radius risks are unacceptable.</div><div class="signal"><strong>Audit unit economics</strong>: are we paying for unnecessary idle cache instances that could be consolidated under namespaces to reduce TCO?</div><div class="quote">Interview line: “I would avoid Memorystore sprawl by consolidating tenants where isolation can be enforced technically and operationally.”</div><div class="quote">Interview line: “Consolidate Valkey tenants using namespaces to avoid Memorystore sprawl and reduce TCO — isolation can be enforced technically without requiring separate instances.”</div></div>
+          <div class="cell"><h4>Decision Parameters</h4><ul><li>How sensitive is tenant data?</li><li>Can namespaces and ACLs enforce isolation?</li><li>What is the blast radius of failure?</li><li>Are usage patterns predictable?</li><li>Are we creating operational sprawl?</li></ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>Valkey</summary><p>Open-source Redis-compatible in-memory data store used for cache, sessions, queues, counters, and pub/sub.</p></details>
+            <details class="term"><summary>Redis</summary><p>Popular in-memory data store historically used for caching, queues, sessions, and low-latency data access.</p></details>
+            <details class="term"><summary>Multi-tenancy</summary><p>Architecture where multiple customers or workloads share infrastructure while remaining logically isolated.</p></details>
+            <details class="term"><summary>Noisy Neighbor</summary><p>One tenant consumes excessive resources and degrades performance for others.</p></details>
+            <details class="term"><summary>Blast Radius</summary><p>Scope of impact when a component fails or is compromised.</p></details>
+            <details class="term"><summary>Memorystore Sprawl</summary><p>Uncontrolled growth of many managed cache instances, increasing cost and operational burden.</p></details>
+          </div></div>
+        </div>
+      </article>
+    </section>
+
+    <section id="leadership">
+      <div class="section-title"><h2>6. Leadership Strategy</h2><span>Expert vs Mediocre Responses</span></div>
+      <article class="card" data-tags="business bridge money cost scale to zero cloud run leadership expert interview">
+        <div class="card-header"><div><h3>Connect Technology to Money</h3><p>Translate architecture choices into business outcomes, cost control, margin, and risk reduction.</p></div><div class="badge">Business Bridge</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4><div class="signal"><strong>Mediocre:</strong> “Cloud Run is easier.”</div><div class="signal"><strong>Expert:</strong> “Cloud Run aligns infrastructure cost with demand through scale-to-zero, reducing idle spend.”</div><div class="quote">Use this pattern: technology choice → operational impact → financial or risk outcome.</div></div>
+          <div class="cell"><h4>Decision Parameters</h4><ul><li>What cost does this reduce?</li><li>What risk does this mitigate?</li><li>What delivery speed does this enable?</li><li>What operational burden does this remove?</li><li>What user/business metric improves?</li></ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>TCO</summary><p>Total Cost of Ownership. Full cost of building, running, maintaining, securing, and operating a system.</p></details>
+            <details class="term"><summary>Unit Economics</summary><p>Cost and margin behavior at the level of one request, tenant, transaction, or customer.</p></details>
+            <details class="term"><summary>Egress Cost</summary><p>Cloud cost associated with data leaving a provider or region. Important for media, SSR, APIs, and cross-region traffic.</p></details>
+            <details class="term"><summary>Opportunity Cost</summary><p>Value lost when engineering capacity is spent on low-impact complexity instead of strategic delivery.</p></details>
+          </div></div>
+        </div>
+      </article>
+
+      <article class="card" data-tags="correlation risk high availability regions redundancy disaster recovery resilience">
+        <div class="card-header"><div><h3>Address Correlation Risk</h3><p>Move beyond basic redundancy and identify shared failure modes.</p></div><div class="badge">Senior Lens</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4><div class="signal"><strong>Mediocre:</strong> “We use multiple servers.”</div><div class="signal"><strong>Expert:</strong> “We must ensure redundant components do not share the same regional, network, identity, or deployment failure mode.”</div><div class="signal"><strong>Map shared dependencies</strong>: one region, one database, one IAM provider, one DNS, or one CI/CD pipeline can all become a single point of correlated failure.</div><div class="quote">Interview line: “Redundancy is not enough if all redundant components fail together.”</div><div class="quote">Interview line: “Redundancy is an illusion if every backup fails for the same underlying reason.”</div></div>
+          <div class="cell"><h4>Decision Parameters</h4><ul><li>Are services in one region?</li><li>Do they share one database, IAM dependency, DNS provider, or CI/CD pipeline?</li><li>Can a bad deployment affect all environments?</li><li>Is failover tested?</li></ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>Correlation Risk</summary><p>Risk that supposedly redundant components fail together because they share the same hidden dependency.</p></details>
+            <details class="term"><summary>High Availability</summary><p>Design goal to keep systems operational despite component failure.</p></details>
+            <details class="term"><summary>Failover</summary><p>Switching traffic or workload to a backup system after failure.</p></details>
+            <details class="term"><summary>RTO</summary><p>Recovery Time Objective. Maximum acceptable time to restore service after disruption.</p></details>
+            <details class="term"><summary>RPO</summary><p>Recovery Point Objective. Maximum acceptable data loss measured in time.</p></details>
+          </div></div>
+        </div>
+      </article>
+
+      <article class="card" data-tags="technical debt phased rollout stakeholder conflict data blameless postmortem ci cd risk leadership">
+        <div class="card-header"><div><h3>Conflict, Technical Debt & Blameless Post-mortems</h3><p>Lead with data, transparency, and systemic improvement rather than blame or opinion.</p></div><div class="badge">Executive Maturity</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4><div class="signal"><strong>For deadline conflict:</strong> quantify technical debt, offer phased rollout, preserve business value, and schedule hardening.</div><div class="signal"><strong>For incidents:</strong> lead blameless post-mortems and convert findings into automated controls.</div><div class="signal"><strong>Convert post-mortem findings</strong> into CI/CD prevention gates — systemic improvements must outlive the incident conversation.</div><div class="quote">Interview line: “I do not frame technical debt as resistance. I quantify it as delivery risk and propose a phased plan.”</div></div>
+          <div class="cell"><h4>Decision Parameters</h4><ul><li>Can we deliver core value safely now?</li><li>What risk is deferred?</li><li>Is the debt intentional and visible?</li><li>What guardrail prevents recurrence?</li><li>Can CI/CD automate the prevention?</li></ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>Technical Debt</summary><p>Future cost created by current shortcuts. Acceptable when intentional, visible, bounded, and scheduled for repayment.</p></details>
+            <details class="term"><summary>Phased Rollout</summary><p>Gradual release strategy that delivers value incrementally while limiting risk.</p></details>
+            <details class="term"><summary>Blameless Post-mortem</summary><p>Incident review focused on systemic causes and prevention rather than individual blame.</p></details>
+            <details class="term"><summary>Guardrail</summary><p>Preventive control that reduces the chance of unsafe changes, such as tests, linting, policy checks, or deployment gates.</p></details>
+            <details class="term"><summary>CI/CD</summary><p>Continuous Integration and Continuous Delivery. Automated pipeline for building, testing, scanning, and deploying software.</p></details>
+            <details class="term"><summary>Stakeholder Buy-in</summary><p>Agreement from business, product, or leadership obtained through transparency, trade-off framing, and measurable impact.</p></details>
+          </div></div>
+        </div>
+      </article>
+    </section>
+
+    <section id="cms">
+      <div class="section-title"><h2>7. Sanity CMS</h2><span>Headless Content</span></div>
+
+      <article class="card" data-tags="sanity headless cms groq schemas webhooks isr preview portable text content lake">
+        <div class="card-header"><div><h3>Sanity Architecture & GROQ Queries</h3><p>Model content schemas, query with GROQ, and connect Sanity to Next.js via ISR webhooks.</p></div><div class="badge">Content Architecture</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4>
+            <div class="signal"><strong>Design schemas top-down:</strong> start from content types (article, product, author) and model relationships as references, not embedded objects, to avoid duplication.</div>
+            <div class="signal"><strong>Use GROQ projections</strong> to fetch only the fields the frontend needs — avoid over-fetching from the Content Lake.</div>
+            <div class="signal"><strong>Trigger ISR revalidation</strong> via Sanity webhooks on document publish so Next.js pages regenerate without a full redeploy.</div>
+            <div class="signal"><strong>Use Preview Mode</strong> with draft=true GROQ filter to let editors see unpublished content on the live site securely.</div>
+            <div class="quote">Interview line: "I treat Sanity as the single source of truth for content structure. I model references over embedding, so editors can reuse content without duplication, and GROQ projections keep the API surface lean."</div>
+          </div>
+          <div class="cell"><h4>Decision Parameters</h4><ul>
+            <li>Are content types reused across pages? Use references, not inline objects.</li>
+            <li>Does the frontend need real-time preview? Configure draft-mode API route.</li>
+            <li>How fast must edits appear? Wire webhooks to Next.js revalidate endpoint.</li>
+            <li>Are images handled efficiently? Use Sanity CDN image pipeline with auto-format and width params.</li>
+            <li>Do multiple teams edit? Use roles and document-level access control.</li>
+            <li>Is content structured or rich text? Use Portable Text for flexible rendering.</li>
+          </ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>GROQ</summary><p>Graph-Relational Object Queries. Sanity's query language. Supports filtering, projections, joins via references, and ordering. Example: <code>*[_type == "article" &amp;&amp; !(_id in path("drafts.**"))] | order(publishedAt desc) { title, slug, author->{name} }</code></p></details>
+            <details class="term"><summary>Content Lake</summary><p>Sanity's hosted document store. Stores all content as JSON documents. Queried via GROQ over HTTPS.</p></details>
+            <details class="term"><summary>Portable Text</summary><p>Structured rich-text format stored as JSON arrays of blocks. Rendered on the frontend via @portabletext/react. Supports custom block types (images, embeds, callouts).</p></details>
+            <details class="term"><summary>Schema</summary><p>TypeScript/JS definition of document types and their fields. Lives in the Sanity Studio config. Defines field types, validation rules, and UI hints.</p></details>
+            <details class="term"><summary>References</summary><p>Links between Sanity documents. Allow content reuse without duplication. Resolved at query time with the arrow operator: author->{name, image}.</p></details>
+            <details class="term"><summary>Webhook (Sanity)</summary><p>HTTP POST triggered when documents are created, updated, or published. Used to call Next.js revalidate API and invalidate ISR cache pages.</p></details>
+          </div></div>
+        </div>
+      </article>
+
+      <article class="card" data-tags="sanity studio preview mode live content versioning deployment roles access control dataset">
+        <div class="card-header"><div><h3>Sanity Studio, Preview & Deployment</h3><p>Configure the CMS editing experience, access control, and multi-environment content strategy.</p></div><div class="badge">CMS Operations</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4>
+            <div class="signal"><strong>Deploy Studio embedded</strong> inside the Next.js app at /studio for a unified deployment pipeline, or standalone if editorial teams need independence.</div>
+            <div class="signal"><strong>Use multiple datasets</strong> (production, staging) to isolate editorial experiments from live content, but sync schemas carefully.</div>
+            <div class="signal"><strong>Configure roles</strong> (editor, developer, admin) to limit who can publish or delete documents — especially important for regulated or high-traffic content.</div>
+            <div class="quote">Interview line: "I embed Sanity Studio inside the Next.js monorepo so content schema changes and frontend rendering changes ship together, reducing the risk of a schema migration breaking the live site."</div>
+          </div>
+          <div class="cell"><h4>Decision Parameters</h4><ul>
+            <li>Does the editorial team need independence from deploys? Use standalone Studio.</li>
+            <li>Are there multiple environments (staging, prod)? Use datasets per environment.</li>
+            <li>How sensitive is content access? Configure RBAC roles.</li>
+            <li>Does the site need live-preview while editing? Use Sanity Presentation tool.</li>
+            <li>Are schema changes frequent? Use migrations CLI to evolve documents safely.</li>
+          </ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>Sanity Studio</summary><p>React-based CMS editing interface. Configurable via schema definitions. Can be embedded in Next.js or deployed standalone.</p></details>
+            <details class="term"><summary>Dataset</summary><p>A scoped content store within a Sanity project. Commonly used to separate production from staging content.</p></details>
+            <details class="term"><summary>Preview Mode (Next.js + Sanity)</summary><p>API route that sets a cookie enabling draft document fetching. Allows editors to see unpublished changes on the live Next.js site.</p></details>
+            <details class="term"><summary>RBAC (Sanity)</summary><p>Role-Based Access Control. Controls which users can read, edit, publish, or delete documents in Sanity Studio.</p></details>
+            <details class="term"><summary>Sanity Image Pipeline</summary><p>On-the-fly image transformation CDN. Supports width, height, format (webp/avif), fit, and crop params via URL query strings.</p></details>
+            <details class="term"><summary>Schema Migration</summary><p>Process of evolving existing Sanity documents when field names or types change. Use the @sanity/migrate CLI to batch-transform documents safely.</p></details>
+          </div></div>
+        </div>
+      </article>
+    </section>
+
+    <section id="elasticsearch">
+      <div class="section-title"><h2>8. Elasticsearch</h2><span>Search + Personalization</span></div>
+
+      <article class="card" data-tags="elasticsearch index mapping shards replicas inverted index relevance scoring tf-idf bm25 query dsl">
+        <div class="card-header"><div><h3>Elasticsearch Fundamentals & Index Design</h3><p>Model indices for search and personalization workloads on a sports/media platform.</p></div><div class="badge">Index Architecture</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4>
+            <div class="signal"><strong>Design mappings explicitly:</strong> never rely on dynamic mapping in production. Define field types (keyword vs text vs dense_vector) upfront to control how data is indexed and queried.</div>
+            <div class="signal"><strong>Use keyword fields</strong> for exact matches, filtering, sorting, and facets (categories, IDs, tags). Use text fields for full-text search with analyzers.</div>
+            <div class="signal"><strong>Size shards conservatively:</strong> target 10–50 GB per shard. Over-sharding causes coordination overhead; under-sharding limits parallelism.</div>
+            <div class="signal"><strong>Separate indices by use case:</strong> a search index (optimized for query relevance) should be distinct from an analytics or personalization index.</div>
+            <div class="quote">Interview line: "I would never let Elasticsearch auto-map a new index in production. Explicit mappings are the contract between data engineering and search — changing them later requires a full reindex."</div>
+          </div>
+          <div class="cell"><h4>Decision Parameters</h4><ul>
+            <li>Is the query exact match or full-text? Use keyword vs text field type.</li>
+            <li>Do we need faceted search (filters by category/brand)? Use keyword + aggregations.</li>
+            <li>Does personalization require vector similarity? Add dense_vector field + kNN query.</li>
+            <li>What is the document update frequency? High churn = consider alias + reindex strategy.</li>
+            <li>Do we need real-time data? Use upsert + refresh_interval tuning.</li>
+            <li>Is this a cold index? Set refresh_interval: -1 and disable replicas during bulk load.</li>
+          </ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>Index</summary><p>A collection of documents in Elasticsearch. Analogous to a database table. Has a mapping (schema) and is divided into shards.</p></details>
+            <details class="term"><summary>Mapping</summary><p>Schema definition for an Elasticsearch index. Defines field names, types (text, keyword, integer, dense_vector), and analyzer settings.</p></details>
+            <details class="term"><summary>Inverted Index</summary><p>Core data structure behind full-text search. Maps tokens to the documents that contain them, enabling fast lookups by term.</p></details>
+            <details class="term"><summary>Shard</summary><p>A horizontal partition of an index. Enables distribution across nodes. Primary shards are set at index creation and cannot be changed without reindexing.</p></details>
+            <details class="term"><summary>Analyzer</summary><p>Pipeline that tokenizes and normalizes text during indexing and querying. Includes a tokenizer (splits text) and filters (lowercase, stemming, stop words).</p></details>
+            <details class="term"><summary>Alias</summary><p>A named pointer to one or more indices. Used for zero-downtime reindexing: build the new index, then atomically swap the alias.</p></details>
+          </div></div>
+        </div>
+      </article>
+
+      <article class="card" data-tags="elasticsearch query dsl aggregations relevance tuning boost function score personalization knn vector search sports media">
+        <div class="card-header"><div><h3>Query DSL, Relevance Tuning & Personalization</h3><p>Build queries that blend relevance, business rules, and user personalization signals.</p></div><div class="badge">Search Relevance</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4>
+            <div class="signal"><strong>Use bool query</strong> to combine must (required match), should (relevance boost), filter (non-scoring exact match), and must_not clauses.</div>
+            <div class="signal"><strong>Use function_score</strong> to inject business signals: boost by recency, popularity, editorial weight, or user affinity score.</div>
+            <div class="signal"><strong>Use kNN (k-Nearest Neighbors)</strong> with dense_vector fields to implement semantic personalization — match content to a user's embedding profile.</div>
+            <div class="signal"><strong>Cache filter context</strong> aggressively: filters (non-scoring clauses) are cached by Elasticsearch automatically — move non-scoring conditions to filter, not must.</div>
+            <div class="quote">Interview line: "Relevance is a product decision expressed as a query. I use function_score to encode business rules like recency bias or editorial boost, keeping search results aligned with platform goals, not just TF-IDF math."</div>
+          </div>
+          <div class="cell"><h4>Decision Parameters</h4><ul>
+            <li>Should results change per user? Add personalization signals via function_score or kNN.</li>
+            <li>Are business rules changing often? Externalize boost weights to config, not hardcoded queries.</li>
+            <li>Is query latency too high? Profile with _explain, move conditions to filter context, add replicas for read throughput.</li>
+            <li>Does search need to handle synonyms? Configure a synonym token filter in the analyzer.</li>
+            <li>Is scroll-based pagination needed for large exports? Use search_after for deep pagination instead of from/size (memory-safe).</li>
+          </ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>Bool Query</summary><p>Compound query combining must (scoring match), filter (non-scoring), should (optional boost), and must_not clauses. The primary building block of Elasticsearch queries.</p></details>
+            <details class="term"><summary>Function Score</summary><p>Wraps a query and adds scoring functions (field_value_factor, gauss decay, random) to blend relevance with business signals.</p></details>
+            <details class="term"><summary>kNN Search</summary><p>k-Nearest Neighbor search over dense_vector fields. Returns the k most semantically similar documents to a query vector. Used for personalization and semantic search.</p></details>
+            <details class="term"><summary>Aggregations</summary><p>Analytics queries that compute metrics (counts, averages, min/max) or buckets (group by category, date histogram). Used for faceted navigation and dashboards.</p></details>
+            <details class="term"><summary>TF-IDF / BM25</summary><p>Scoring algorithms that rank documents by term frequency and inverse document frequency. Elasticsearch uses BM25 by default for text relevance.</p></details>
+            <details class="term"><summary>search_after</summary><p>Cursor-based deep pagination mechanism. Uses the last document&apos;s sort values as a pointer, avoiding the memory cost of from/size at high offsets.</p></details>
+          </div></div>
+        </div>
+      </article>
+
+      <article class="card" data-tags="elasticsearch operations reindex zero downtime index lifecycle management ilm hot warm cold rollover cluster health monitoring">
+        <div class="card-header"><div><h3>Elasticsearch Operations & Cluster Health</h3><p>Manage index lifecycle, zero-downtime reindexing, and cluster stability at scale.</p></div><div class="badge">Operational Excellence</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4>
+            <div class="signal"><strong>Use aliases for zero-downtime reindexing:</strong> create the new index, reindex documents into it, then atomically swap the alias. The application never knows there was a change.</div>
+            <div class="signal"><strong>Use ILM (Index Lifecycle Management)</strong> for time-series data: automatically move indices from hot (fast SSD) to warm (slower, read-only) to cold (archive) based on age or size.</div>
+            <div class="signal"><strong>Monitor cluster health:</strong> Green = all primary + replica shards assigned. Yellow = primaries assigned, replicas missing (degraded, not failed). Red = primary shards missing (data loss risk).</div>
+            <div class="quote">Interview line: "Reindexing is the Elasticsearch equivalent of a schema migration. I always use the alias swap pattern so the application sees zero downtime while the new mapping is built in the background."</div>
+          </div>
+          <div class="cell"><h4>Decision Parameters</h4><ul>
+            <li>Has the mapping changed? Use reindex API + alias swap for zero-downtime migration.</li>
+            <li>Is the cluster yellow? Check unassigned replicas — may need more nodes or reduced replica count.</li>
+            <li>Is indexing throughput too low? Increase refresh_interval, batch bulk requests, disable replicas during load.</li>
+            <li>Are queries slow? Profile with _explain, reduce shard count, add read replicas.</li>
+            <li>Is storage growing unbounded? Implement ILM policy with rollover and delete phases.</li>
+          </ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>Reindex API</summary><p>Copies documents from a source index to a destination index. Used to apply new mappings, change shard count, or clean up data.</p></details>
+            <details class="term"><summary>ILM (Index Lifecycle Management)</summary><p>Automated policy that transitions indices through hot, warm, cold, and delete phases based on age, size, or document count.</p></details>
+            <details class="term"><summary>Cluster Health</summary><p>Summary of shard allocation status. Green: all shards assigned. Yellow: replica shards missing. Red: primary shards missing — potential data loss.</p></details>
+            <details class="term"><summary>Bulk API</summary><p>Batch indexing endpoint. Significantly more efficient than individual document index requests. Used for initial data loads and high-throughput ingestion.</p></details>
+            <details class="term"><summary>refresh_interval</summary><p>How often a new segment is made visible to search. Default 1s. Set to -1 during bulk indexing for maximum throughput, then restore after load.</p></details>
+            <details class="term"><summary>Rollover</summary><p>ILM action that creates a new index when the current one exceeds a size or age threshold. Used with aliases to maintain continuous ingestion.</p></details>
+          </div></div>
+        </div>
+      </article>
+    </section>
+
+    <section id="cicd">
+      <div class="section-title"><h2>9. CI/CD &amp; Infrastructure as Code</h2><span>Delivery Excellence</span></div>
+
+      <article class="card" data-tags="cicd github actions cloud build pipeline canary deployment rollback testing stages docker artifact registry gcp">
+        <div class="card-header"><div><h3>CI/CD Pipeline Design</h3><p>Build reliable, fast pipelines with staged deployments, automated quality gates, and safe rollbacks.</p></div><div class="badge">Delivery Safety</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4>
+            <div class="signal"><strong>Structure pipelines in stages:</strong> lint → unit tests → build → integration tests → security scan → deploy to staging → smoke tests → deploy to production.</div>
+            <div class="signal"><strong>Use canary deployments</strong> for Cloud Run and GKE to route a small traffic percentage to the new version before full rollout — reduces blast radius of bad deploys.</div>
+            <div class="signal"><strong>Automate rollback triggers:</strong> if error rate or latency crosses a threshold after deploy, pipeline should auto-rollback or alert with one-click revert.</div>
+            <div class="signal"><strong>Cache aggressively in pipelines:</strong> node_modules, Docker layer cache, and test results. A 10-minute pipeline that runs 50x/day wastes 8+ hours per engineer per week.</div>
+            <div class="quote">Interview line: "A CI/CD pipeline is the automated enforcement of team standards. Every quality decision — linting rules, test coverage thresholds, security scans — should live in the pipeline so it cannot be bypassed under deadline pressure."</div>
+          </div>
+          <div class="cell"><h4>Decision Parameters</h4><ul>
+            <li>How fast must changes reach production? Optimize for pipeline speed without sacrificing safety gates.</li>
+            <li>Can the team recover from a bad deploy in minutes? Implement one-step rollback.</li>
+            <li>Are secrets managed securely? Use GCP Secret Manager or GitHub Secrets, never env files in repo.</li>
+            <li>Are Docker images immutable and tagged by commit SHA? Enables reproducible deployments.</li>
+            <li>Are integration tests isolated from production data? Use ephemeral test environments.</li>
+            <li>Does the pipeline block on flaky tests? Identify and quarantine them separately.</li>
+          </ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>Cloud Build</summary><p>GCP-native CI/CD service. Runs build steps defined in cloudbuild.yaml. Integrates natively with Artifact Registry, GKE, and Cloud Run.</p></details>
+            <details class="term"><summary>GitHub Actions</summary><p>CI/CD workflows defined in .github/workflows YAML files. Triggers on push, PR, or schedule. Common alternative to Cloud Build for non-GCP-centric teams.</p></details>
+            <details class="term"><summary>Canary Deployment</summary><p>Routing a small percentage of production traffic (5–10%) to a new version before full rollout. Reduces risk of widespread regression.</p></details>
+            <details class="term"><summary>Artifact Registry</summary><p>GCP service for storing and versioning Docker images, npm packages, and Maven artifacts. Integrates with Cloud Build and Cloud Run.</p></details>
+            <details class="term"><summary>Rollback</summary><p>Redeployment of a previous known-good version. In Cloud Run: traffic split revert. In GKE: kubectl rollout undo or Helm rollback.</p></details>
+            <details class="term"><summary>Quality Gate</summary><p>A mandatory pass/fail check in a pipeline (test coverage %, lint errors, SAST findings) that blocks deployment if not met.</p></details>
+          </div></div>
+        </div>
+      </article>
+
+      <article class="card" data-tags="terraform pulumi infrastructure as code iac gcp state management modules cloud run gke dns cloud sql">
+        <div class="card-header"><div><h3>Infrastructure as Code (Terraform / Pulumi)</h3><p>Manage GCP infrastructure declaratively for reproducibility, auditability, and team consistency.</p></div><div class="badge">IaC Governance</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4>
+            <div class="signal"><strong>Use Terraform for GCP resources:</strong> Cloud Run services, GKE clusters, Cloud SQL, VPCs, DNS, IAP, and Secret Manager configurations should all be defined as code, not manually provisioned.</div>
+            <div class="signal"><strong>Modularize by concern:</strong> separate modules for networking, compute, data, and identity. Each module is versioned and reusable across environments (dev, staging, prod).</div>
+            <div class="signal"><strong>Store state remotely:</strong> use GCS backend with state locking via Cloud Storage. Never store .tfstate locally or in git — it contains sensitive resource metadata.</div>
+            <div class="signal"><strong>Choose Pulumi over Terraform</strong> when the team is TypeScript-first and wants type safety, loops, and conditionals without HCL limitations.</div>
+            <div class="quote">Interview line: "Infrastructure as Code is non-negotiable for a consultancy platform. Without it, every new environment is a manual snowflake. With it, spinning up a staging environment is a terraform apply away from being identical to production."</div>
+          </div>
+          <div class="cell"><h4>Decision Parameters</h4><ul>
+            <li>Is the team familiar with HCL or prefers TypeScript? Terraform vs Pulumi.</li>
+            <li>Are environments consistent? IaC ensures dev = staging = prod, minus config.</li>
+            <li>Can infrastructure changes be reviewed? Use terraform plan in CI for PR reviews.</li>
+            <li>Is state accessible to all team members? Use remote GCS backend, not local files.</li>
+            <li>Are secrets in IaC? They should reference Secret Manager, never be hardcoded.</li>
+          </ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>Terraform</summary><p>HashiCorp IaC tool using HCL syntax. Defines infrastructure as declarative config. Plan shows changes before apply. Widely used for GCP, AWS, and Azure.</p></details>
+            <details class="term"><summary>Pulumi</summary><p>IaC tool using general-purpose languages (TypeScript, Python, Go). Offers type safety and full language features. Good fit for TypeScript-heavy teams.</p></details>
+            <details class="term"><summary>State File (.tfstate)</summary><p>Terraform&apos;s record of managed resources. Must be stored remotely (GCS, S3) with locking. Contains sensitive data — never commit to git.</p></details>
+            <details class="term"><summary>Terraform Module</summary><p>Reusable, versioned Terraform configuration. Encapsulates a logical group of resources (e.g. a Cloud Run service with its IAM bindings and DNS record).</p></details>
+            <details class="term"><summary>terraform plan</summary><p>Dry-run command that shows what changes will be made without applying them. Used in CI pipelines for PR review of infrastructure changes.</p></details>
+            <details class="term"><summary>Remote Backend (GCS)</summary><p>Stores Terraform state in a GCS bucket with object locking. Enables team collaboration, prevents state conflicts, and survives local machine loss.</p></details>
+          </div></div>
+        </div>
+      </article>
+
+      <article class="card" data-tags="kubernetes hpa rolling update resource limits namespaces rbac k8s deployment strategy liveness readiness probe">
+        <div class="card-header"><div><h3>Kubernetes Operations on GKE</h3><p>Manage workloads, autoscaling, access control, and safe rollouts on GKE in production.</p></div><div class="badge">K8s Governance</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4>
+            <div class="signal"><strong>Always set resource requests and limits:</strong> without them, a single noisy workload can starve the entire node. Requests define scheduling placement; limits cap consumption.</div>
+            <div class="signal"><strong>Use HPA for stateless services:</strong> scale on CPU or custom metrics (RPS via KEDA, queue depth) rather than manual replica counts.</div>
+            <div class="signal"><strong>Separate workloads into namespaces:</strong> use namespaces per team or per environment tier to apply RBAC, network policies, and resource quotas independently.</div>
+            <div class="signal"><strong>Configure liveness and readiness probes:</strong> liveness restarts stuck containers; readiness gates traffic routing — a missing readiness probe causes traffic to reach unready pods.</div>
+            <div class="quote">Interview line: "Kubernetes resource limits are the equivalent of thread-pool sizing in a monolith. Skip them and you get unpredictable cascading failures when one service spikes. Set them and the scheduler becomes a reliable admission controller."</div>
+          </div>
+          <div class="cell"><h4>Decision Parameters</h4><ul>
+            <li>Is the service stateless? Use HPA + Deployment. Stateful? Use StatefulSet + PVC.</li>
+            <li>Do pods need predictable memory? Set requests = limits for memory to avoid OOM evictions.</li>
+            <li>Are teams sharing a cluster? Enforce RBAC and ResourceQuotas per namespace.</li>
+            <li>Is rollout safe? Use RollingUpdate strategy with maxSurge/maxUnavailable tuning.</li>
+            <li>Does the app need graceful shutdown? Implement SIGTERM handler and preStop hook.</li>
+          </ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>HPA (Horizontal Pod Autoscaler)</summary><p>K8s controller that scales the number of pod replicas based on CPU, memory, or custom metrics. Requires resource requests to function correctly.</p></details>
+            <details class="term"><summary>Resource Requests / Limits</summary><p>Requests: minimum guaranteed CPU/memory for scheduling. Limits: maximum allowed before throttling (CPU) or OOM kill (memory).</p></details>
+            <details class="term"><summary>Liveness Probe</summary><p>Checks if a container is alive. On failure, K8s restarts the container. Use for detecting deadlocks or hung processes.</p></details>
+            <details class="term"><summary>Readiness Probe</summary><p>Checks if a container is ready to receive traffic. On failure, the pod is removed from service endpoints. Use for startup delays and graceful traffic control.</p></details>
+            <details class="term"><summary>RBAC (K8s)</summary><p>Role-Based Access Control for Kubernetes API resources. Defines who (ServiceAccount, user, group) can perform which verbs (get, list, create, delete) on which resources.</p></details>
+            <details class="term"><summary>RollingUpdate</summary><p>Default K8s deployment strategy. Replaces pods incrementally. Controlled by maxSurge (extra pods during rollout) and maxUnavailable (pods allowed down).</p></details>
+          </div></div>
+        </div>
+      </article>
+    </section>
+
+    <section id="process">
+      <div class="section-title"><h2>10. Process, Agile &amp; Stakeholder Leadership</h2><span>Team Coordination</span></div>
+
+      <article class="card" data-tags="sprint planning standup retrospective agile scrum velocity definition of done distributed team async remote us timezones">
+        <div class="card-header"><div><h3>Sprint Ceremonies &amp; Distributed Team Coordination</h3><p>Facilitate effective agile processes across timezones and disciplines without ceremony overhead.</p></div><div class="badge">Team Effectiveness</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4>
+            <div class="signal"><strong>Sprint planning:</strong> separate capacity planning (how many points?) from scope alignment (which stories?). Involve all disciplines — mobile, frontend, backend, DevOps — to surface dependency risks before the sprint starts, not mid-sprint.</div>
+            <div class="signal"><strong>Standups with distributed teams:</strong> async-first (Slack thread or Loom) for cross-timezone updates, synchronous standup only for the timezone overlap window. Focus on blockers, not status reports.</div>
+            <div class="signal"><strong>Retrospectives:</strong> use structured formats (Start/Stop/Continue or 4Ls) with anonymous input tools (EasyRetro, Miro) so remote engineers feel safe surfacing issues. Convert every action item to a ticket with an owner.</div>
+            <div class="signal"><strong>Definition of Done</strong> must include: code reviewed, tests passing, feature flagged if risky, deployed to staging, and documented. Standardize across all disciplines.</div>
+            <div class="quote">Interview line: "A standup is not a status report — it is a blocker-removal meeting. If it runs over 15 minutes, it has become a design session and needs to be scheduled separately."</div>
+          </div>
+          <div class="cell"><h4>Decision Parameters</h4><ul>
+            <li>Are timezones more than 4h apart? Shift to async-first with recorded updates.</li>
+            <li>Is velocity predictable? If not, check: unclear acceptance criteria, missing DoD, or dependency surprises.</li>
+            <li>Are retros safe? Psychological safety is a precondition — anonymous inputs reduce hierarchy effects.</li>
+            <li>Are stories too large? Split by deliverable value, not technical layer.</li>
+            <li>Does sprint planning take too long? Pre-refine tickets 1 week ahead in a backlog grooming session.</li>
+            <li>Are blockers resolved fast? Tech lead owns blocker removal as primary responsibility.</li>
+          </ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>Velocity</summary><p>Average story points completed per sprint. Used for capacity planning, not performance evaluation. Fluctuates naturally — meaningful only as a 4–6 sprint trend.</p></details>
+            <details class="term"><summary>Definition of Done (DoD)</summary><p>Team agreement on what "complete" means for any story. Typically includes code review, tests, staging deploy, and documentation. Prevents scope creep and rework.</p></details>
+            <details class="term"><summary>Sprint Review vs Retro</summary><p>Review = inspect the product increment with stakeholders (what did we build?). Retro = inspect the team process (how did we work?). Do not conflate them.</p></details>
+            <details class="term"><summary>Backlog Grooming</summary><p>Session to refine upcoming stories: clarify acceptance criteria, estimate size, resolve dependencies. Prevents planning sessions from being derailed by unclear tickets.</p></details>
+            <details class="term"><summary>Async-first</summary><p>Default to written, non-real-time communication for non-urgent coordination across timezones. Preserves focus time and creates a searchable decision log.</p></details>
+            <details class="term"><summary>Story Splitting</summary><p>Technique to break large stories into smaller deliverable slices. Prefer splitting by user value (thin vertical slice) over technical layer (backend then frontend).</p></details>
+          </div></div>
+        </div>
+      </article>
+
+      <article class="card" data-tags="stakeholder management client communication risk reporting us timezones scope change escalation technical risk register">
+        <div class="card-header"><div><h3>Client Stakeholder Communication &amp; Risk Reporting</h3><p>Translate technical risk into business language and maintain trust with US-based clients.</p></div><div class="badge">Client Trust</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4>
+            <div class="signal"><strong>Lead with impact, not mechanism:</strong> "This architectural risk could delay the launch by 2 weeks and increase infra cost by ~$3K/month" lands better than "we have a N+1 query problem in the ORM layer."</div>
+            <div class="signal"><strong>Maintain a living risk register:</strong> a simple table of risks, probability (H/M/L), impact (H/M/L), owner, and mitigation status. Share it in the weekly stakeholder update — no surprises.</div>
+            <div class="signal"><strong>For scope changes:</strong> respond with a trade-off, not a yes or a no. "We can add that feature in Sprint 6 if we defer X, or we can fast-track it by reducing test coverage — which risk is acceptable to the business?"</div>
+            <div class="signal"><strong>US timezone alignment:</strong> schedule the weekly stakeholder sync at a time that works for US morning (EST/PST) — typically 9–10 AM EST (Mexico City: 8–9 AM CST). Record it for async review.</div>
+            <div class="quote">Interview line: "My job as technical lead is to make sure the client never hears about a risk for the first time on the day it becomes a crisis. I surface risks early, quantify them, and come with options — not just problems."</div>
+          </div>
+          <div class="cell"><h4>Decision Parameters</h4><ul>
+            <li>Is the risk technical or delivery? Technical risks get mitigation plans; delivery risks get scope trade-off options.</li>
+            <li>Does the client understand the domain? Adjust abstraction level — avoid internal jargon.</li>
+            <li>Is a decision urgent? Escalate async (Slack/email with clear deadline) rather than waiting for the weekly call.</li>
+            <li>Is scope expanding? Document every addition as a change request with effort and trade-off visible.</li>
+            <li>Is trust eroding? Increase transparency — more frequent (but shorter) updates beat less frequent but detailed ones.</li>
+          </ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>Risk Register</summary><p>A living document listing known risks with probability, impact, owner, and mitigation status. Updated weekly. Shared with stakeholders to prevent surprises.</p></details>
+            <details class="term"><summary>Scope Creep</summary><p>Gradual expansion of project requirements without formal change control. Managed by making the cost of additions visible and explicit.</p></details>
+            <details class="term"><summary>Change Request</summary><p>Formal record of a scope addition or modification, including estimated effort, impact on timeline, and trade-offs. Creates accountability and shared expectation.</p></details>
+            <details class="term"><summary>Escalation Path</summary><p>Defined route for raising blockers or risks that cannot be resolved at the team level. Should be agreed upon at project kickoff, not discovered during crisis.</p></details>
+            <details class="term"><summary>Status Update Format</summary><p>Effective format: what we shipped, what is in progress, what is blocked, risks to watch. 3–5 bullets per section. Consistent cadence builds trust more than occasional long reports.</p></details>
+            <details class="term"><summary>RACI</summary><p>Responsibility matrix: Responsible, Accountable, Consulted, Informed. Clarifies decision ownership across client, PM, and tech lead to prevent decision paralysis.</p></details>
+          </div></div>
+        </div>
+      </article>
+
+      <article class="card" data-tags="code review standards pull request pr best practices engineering culture mentoring junior engineers quality gates typescript linting">
+        <div class="card-header"><div><h3>Code Reviews &amp; Engineering Standards</h3><p>Use code review as a quality and knowledge-sharing tool, not a gatekeeping bottleneck.</p></div><div class="badge">Quality Culture</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4>
+            <div class="signal"><strong>Automate what machines can enforce:</strong> linting (ESLint), formatting (Prettier), type checking (tsc --noEmit), test coverage thresholds. Code review is for logic, architecture, and learning — not style arguments.</div>
+            <div class="signal"><strong>Review for intent, not just correctness:</strong> "Does this PR solve the right problem?" is more valuable than "Is this the most clever implementation?"</div>
+            <div class="signal"><strong>Set PR size norms:</strong> PRs over 400 lines are rarely reviewed well. Encourage feature flags to merge smaller, safer increments. Use stacked PRs for large features.</div>
+            <div class="signal"><strong>Use code review for mentoring:</strong> explain the why behind change requests, not just the what. A question ("have you considered X?") teaches more than a command ("change this to X").</div>
+            <div class="quote">Interview line: "I treat code review as the team's primary knowledge-sharing mechanism. Automate everything a machine can enforce, so human reviewers focus on architecture, intent, and team growth — not semicolons."</div>
+          </div>
+          <div class="cell"><h4>Decision Parameters</h4><ul>
+            <li>Are reviews blocking delivery? Check PR size, review turnaround SLA, and bus factor on reviewers.</li>
+            <li>Are style debates consuming review time? Add ESLint + Prettier + pre-commit hooks.</li>
+            <li>Are juniors getting useful feedback? Ensure reviews include explanations, not just change requests.</li>
+            <li>Is TypeScript strict mode enabled? Prevents entire categories of runtime bugs at compile time.</li>
+            <li>Are security issues caught? Add SAST tools (Snyk, SonarQube) to the pipeline as a quality gate.</li>
+            <li>Is coverage regressing? Enforce coverage thresholds in CI — fail the build, not the person.</li>
+          </ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>ESLint</summary><p>JavaScript/TypeScript static analysis tool. Enforces coding rules (no unused vars, no any, import order). Configured via .eslintrc. Runs in CI and as IDE plugin.</p></details>
+            <details class="term"><summary>TypeScript strict mode</summary><p>Enables strictNullChecks, noImplicitAny, strictFunctionTypes, and others. Catches most common JS runtime bugs at compile time. Should be enabled from project start.</p></details>
+            <details class="term"><summary>Stacked PRs</summary><p>Series of small, dependent pull requests where each builds on the previous. Enables large feature development in reviewable increments without long-lived feature branches.</p></details>
+            <details class="term"><summary>SAST</summary><p>Static Application Security Testing. Scans code for known vulnerability patterns (SQL injection, XSS, hardcoded secrets) without executing it. Run in CI pipeline.</p></details>
+            <details class="term"><summary>Pre-commit Hook</summary><p>Script triggered before a git commit completes. Used to run lint, format, and type checks locally, preventing fixable issues from reaching CI.</p></details>
+            <details class="term"><summary>PR Review SLA</summary><p>Team agreement on maximum review turnaround time (e.g. 24h). Without it, PRs age, create merge conflicts, and block the next ticket.</p></details>
+          </div></div>
+        </div>
+      </article>
+
+      <article class="card" data-tags="mobile workflows eas build expo codepush ota updates app store play store native modules react native deployment">
+        <div class="card-header"><div><h3>React Native Deployment &amp; Mobile Workflows</h3><p>Manage builds, OTA updates, and app store releases for React Native platforms.</p></div><div class="badge">Mobile DevOps</div></div>
+        <div class="grid">
+          <div class="cell"><h4>Decision Strategy</h4>
+            <div class="signal"><strong>Use EAS Build</strong> for cloud-based native builds — avoids maintaining macOS build machines for iOS. Produces .ipa and .apk/.aab with reproducible environments.</div>
+            <div class="signal"><strong>Use OTA (Over-the-Air) updates</strong> for JS-only changes to bypass app store review timelines. EAS Update or CodePush can deliver JS bundle updates in minutes vs days.</div>
+            <div class="signal"><strong>Limit native module additions:</strong> every new native module requires a binary rebuild and new app store submission. Evaluate JS-based alternatives first.</div>
+            <div class="signal"><strong>Maintain separate build profiles:</strong> development (dev menu, debug), preview (internal testing, no debug), production (store release). Each targets different API environments.</div>
+            <div class="quote">Interview line: "OTA updates are the mobile equivalent of ISR — you push a JS change and users get it without waiting for app store review. I use them for hotfixes and content changes, but never for changes that touch native code or require binary updates."</div>
+          </div>
+          <div class="cell"><h4>Decision Parameters</h4><ul>
+            <li>Is the change JS-only? Eligible for OTA update without store submission.</li>
+            <li>Does the change touch native code? Requires full EAS Build + store release cycle.</li>
+            <li>Are builds reproducible across team members? Use EAS Build to eliminate local environment drift.</li>
+            <li>Are internal testers getting builds quickly? Use EAS preview profile + TestFlight / Internal Testing track.</li>
+            <li>Is the app using limited native modules? Document them — each one is a build dependency and upgrade risk.</li>
+          </ul></div>
+          <div class="cell"><h4>Contextual Glossary</h4><div class="glossary">
+            <details class="term"><summary>EAS Build</summary><p>Expo Application Services Build. Cloud-based build service for React Native apps. Produces signed iOS/Android binaries without local Xcode or Android Studio setup.</p></details>
+            <details class="term"><summary>OTA Update (EAS Update)</summary><p>Delivers a new JavaScript bundle to users without requiring an app store submission. Limited to JS changes — cannot modify native modules or binary code.</p></details>
+            <details class="term"><summary>CodePush (AppCenter)</summary><p>Microsoft OTA update service for React Native. Alternative to EAS Update. Targets a specific deployment key; rolls back automatically on crash spikes.</p></details>
+            <details class="term"><summary>Build Profile</summary><p>EAS configuration variant (development, preview, production). Controls signing certificates, environment variables, and distribution target (simulator, internal, store).</p></details>
+            <details class="term"><summary>TestFlight</summary><p>Apple&apos;s beta distribution platform for iOS apps. Used to distribute pre-release builds to internal testers before App Store submission.</p></details>
+            <details class="term"><summary>AAB (Android App Bundle)</summary><p>Android&apos;s preferred publishing format. Google Play optimizes delivery per device configuration. Replaces APK for store submissions.</p></details>
+          </div></div>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <script>
+    const search = document.getElementById('search');
+    const cards = [...document.querySelectorAll('.card')];
+
+    search.addEventListener('input', () => {
+      const q = search.value.trim().toLowerCase();
+      cards.forEach(card => {
+        const text = card.innerText.toLowerCase() + ' ' + (card.dataset.tags || '').toLowerCase();
+        card.style.display = !q || text.includes(q) ? '' : 'none';
+      });
+    });
+
+    function expandAll() {
+      document.querySelectorAll('details.term').forEach(d => d.open = true);
+    }
+
+    function collapseAll() {
+      window.printAll = function() {
+      const details = [...document.querySelectorAll('details.term')];
+      const wasOpen = details.map(d => d.open);
+      details.forEach(d => d.open = true);
+      window.print();
+      // Restore state after print dialog closes
+      setTimeout(() => {
+        details.forEach((d, i) => d.open = wasOpen[i]);
+      }, 500);
+    }
+
+    document.querySelectorAll('details.term').forEach(d => {
+        d.open = false;
+        d.classList.remove('zoomed');
+      });
+    }
+
+    document.querySelectorAll('details.term').forEach(d => {
+      d.addEventListener('toggle', () => {
+        if (d.open) {
+          d.classList.add('zoomed');
+          setTimeout(() => d.classList.remove('zoomed'), 900);
+        }
+      });
+    });
+  </script>
+</body>
+</html>

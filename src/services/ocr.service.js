@@ -87,12 +87,14 @@ class OCRService {
 
     try {
       const { screen } = require('electron');
-      const display = this.normalizeDisplay(bounds.display) || screen.getPrimaryDisplay();
-      const cropRect = this.normalizeCropRect(bounds);
+      const requestedDisplay = this.normalizeDisplay(bounds.display) || screen.getPrimaryDisplay();
+      const requestedCropRect = this.normalizeCropRect(bounds);
+      const { display, cropRect } = this.resolveCaptureTarget(requestedDisplay, requestedCropRect);
 
       logger.info('Starting regional screenshot capture and OCR processing', {
         displayId: display.id,
-        cropRect
+        cropRect,
+        requestedDisplayId: requestedDisplay.id
       });
 
       const croppedImage = await this.robustScreenCapture(display, cropRect);
@@ -137,7 +139,8 @@ class OCRService {
         height: Number(display.bounds.height) || 0
       },
       workArea: display.workArea,
-      scaleFactor: Number(display.scaleFactor) || 1
+      scaleFactor: Number(display.scaleFactor) || 1,
+      isVirtual: display.isVirtual || false
     };
   }
 
@@ -156,6 +159,98 @@ class OCRService {
     return cropRect;
   }
 
+  resolveCaptureTarget(display, cropRect) {
+    if (!display?.isVirtual) {
+      return { display, cropRect };
+    }
+
+    const { screen } = require('electron');
+    const displays = screen.getAllDisplays().map(item => this.normalizeDisplay(item));
+    const globalRect = {
+      x: display.bounds.x + cropRect.x,
+      y: display.bounds.y + cropRect.y,
+      width: cropRect.width,
+      height: cropRect.height
+    };
+
+    const targetDisplay = this.findDisplayForGlobalRect(displays, globalRect) ||
+      this.normalizeDisplay(screen.getPrimaryDisplay());
+    const localCropRect = {
+      x: Math.max(0, globalRect.x - targetDisplay.bounds.x),
+      y: Math.max(0, globalRect.y - targetDisplay.bounds.y),
+      width: cropRect.width,
+      height: cropRect.height
+    };
+
+    const clampedCropRect = this.clampLogicalRectToDisplay(localCropRect, targetDisplay);
+
+    if (clampedCropRect.width < 10 || clampedCropRect.height < 10) {
+      throw new Error('Selected region does not fit inside a single display');
+    }
+
+    logger.debug('Resolved virtual selection to physical display', {
+      virtualBounds: display.bounds,
+      globalRect,
+      targetDisplayId: targetDisplay.id,
+      targetDisplayBounds: targetDisplay.bounds,
+      localCropRect,
+      clampedCropRect
+    });
+
+    return {
+      display: targetDisplay,
+      cropRect: clampedCropRect
+    };
+  }
+
+  findDisplayForGlobalRect(displays, globalRect) {
+    const center = {
+      x: globalRect.x + (globalRect.width / 2),
+      y: globalRect.y + (globalRect.height / 2)
+    };
+
+    const containingCenter = displays.find(display =>
+      center.x >= display.bounds.x &&
+      center.x < display.bounds.x + display.bounds.width &&
+      center.y >= display.bounds.y &&
+      center.y < display.bounds.y + display.bounds.height
+    );
+
+    if (containingCenter) {
+      return containingCenter;
+    }
+
+    return displays
+      .map(display => ({
+        display,
+        area: this.getIntersectionArea(globalRect, display.bounds)
+      }))
+      .sort((a, b) => b.area - a.area)[0]?.display || null;
+  }
+
+  getIntersectionArea(rect, bounds) {
+    const x1 = Math.max(rect.x, bounds.x);
+    const y1 = Math.max(rect.y, bounds.y);
+    const x2 = Math.min(rect.x + rect.width, bounds.x + bounds.width);
+    const y2 = Math.min(rect.y + rect.height, bounds.y + bounds.height);
+
+    return Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+  }
+
+  clampLogicalRectToDisplay(rect, display) {
+    const x = Math.max(0, Math.min(rect.x, display.bounds.width - 1));
+    const y = Math.max(0, Math.min(rect.y, display.bounds.height - 1));
+    const maxWidth = display.bounds.width - x;
+    const maxHeight = display.bounds.height - y;
+
+    return {
+      x,
+      y,
+      width: Math.max(0, Math.min(rect.width, maxWidth)),
+      height: Math.max(0, Math.min(rect.height, maxHeight))
+    };
+  }
+
   calculateOptimalThumbnailSize(display) {
     const width = Math.ceil(display.bounds.width * display.scaleFactor);
     const height = Math.ceil(display.bounds.height * display.scaleFactor);
@@ -169,11 +264,28 @@ class OCRService {
   }
 
   findSourceForDisplay(sources, targetDisplay) {
+    // Virtual desktop overlay: prefer the global/combined source
+    if (targetDisplay.isVirtual) {
+      const global = sources.find(s => {
+        const name = String(s.name || '').toLowerCase();
+        return name.includes('entire') || name.includes('toda la pantalla') ||
+          name.includes('whole') || name.includes('desktop');
+      });
+      const fallback = global || sources[0];
+      logger.debug('Virtual display: using global source for capture', {
+        sourceName: fallback?.name,
+        sourceDisplayId: fallback?.display_id
+      });
+      return fallback;
+    }
+
+    // 1. Exact match por display_id (funciona en X11, Windows, macOS)
     const byId = sources.find(source => source.display_id === String(targetDisplay.id));
     if (byId) {
       return byId;
     }
 
+    // 2. Regex de posición en nombre (formato varía por plataforma)
     const byPosition = sources.find(source => {
       const match = String(source.name || '').match(/screen[-\s](\d+)[-\s](\d+)/i);
       if (!match) {
@@ -192,22 +304,73 @@ class OCRService {
       return byPosition;
     }
 
-    const nonGlobal = sources.filter(source => {
-      const name = String(source.name || '').toLowerCase();
-      return !name.includes('entire') && !name.includes('toda la pantalla');
-    });
+    // Clasificar sources en globales y por-display
+    const isGlobalName = name => name.includes('entire') || name.includes('toda la pantalla') ||
+      name.includes('whole') || name.includes('desktop');
+    const globalSources = sources.filter(s => isGlobalName(String(s.name || '').toLowerCase()));
+    const nonGlobalSources = sources.filter(s => !isGlobalName(String(s.name || '').toLowerCase()));
 
-    const fallback = nonGlobal[0] || sources[0];
-    if (fallback) {
-      logger.warn('Falling back to best available screen source', {
+    // 3. Match por índice posicional cuando conteo de sources coincide con displays del sistema.
+    // En Linux, desktopCapturer devuelve sources en el mismo orden que los displays físicos.
+    const { screen } = require('electron');
+    const allDisplays = screen.getAllDisplays();
+    if (nonGlobalSources.length > 0 && nonGlobalSources.length === allDisplays.length) {
+      const sortedDisplays = [...allDisplays].sort((a, b) =>
+        a.bounds.x !== b.bounds.x ? a.bounds.x - b.bounds.x : a.bounds.y - b.bounds.y
+      );
+      const displayIndex = sortedDisplays.findIndex(d => d.id === targetDisplay.id);
+      if (displayIndex !== -1 && displayIndex < nonGlobalSources.length) {
+        const candidate = nonGlobalSources[displayIndex];
+        logger.warn('Matched display source by positional index', {
+          displayId: targetDisplay.id,
+          displayIndex,
+          sourceName: candidate.name,
+          sourceDisplayId: candidate.display_id,
+          totalDisplays: allDisplays.length
+        });
+        return candidate;
+      }
+    }
+
+    // 4. Preferir source global sobre source per-display arbitrario.
+    // getCaptureFrame maneja globales correctamente con frame de virtual desktop.
+    const globalFallback = globalSources[0];
+    if (globalFallback) {
+      logger.warn('Falling back to global screen source — positional match failed', {
         displayId: targetDisplay.id,
-        sourceName: fallback.name,
-        sourceDisplayId: fallback.display_id,
+        sourceName: globalFallback.name,
+        nonGlobalCount: nonGlobalSources.length,
+        displayCount: allDisplays.length
+      });
+      return globalFallback;
+    }
+
+    if (allDisplays.length > 1 && sources.length > 1) {
+      const sourceSummary = sources.map(source => ({
+        name: source.name,
+        displayId: source.display_id
+      }));
+
+      logger.error('Unable to match screen source to target display', {
+        displayId: targetDisplay.id,
+        displayBounds: targetDisplay.bounds,
+        sources: sourceSummary
+      });
+
+      throw new Error(`Unable to match screen source for display ${targetDisplay.id}`);
+    }
+
+    // Último recurso para setups de una sola fuente/display.
+    const lastResort = nonGlobalSources[0] || sources[0];
+    if (lastResort) {
+      logger.warn('Last resort: returning arbitrary screen source', {
+        displayId: targetDisplay.id,
+        sourceName: lastResort.name,
+        sourceDisplayId: lastResort.display_id,
         sourceCount: sources.length
       });
     }
-
-    return fallback;
+    return lastResort;
   }
 
   getAdjustedScale(display, actualImageSize) {
@@ -328,6 +491,17 @@ class OCRService {
   }
 
   getCaptureFrame(source, display, sourceCount) {
+    // Virtual desktop overlay always uses the full virtual desktop frame
+    if (display.isVirtual) {
+      const { screen } = require('electron');
+      const displays = screen.getAllDisplays();
+      const minX = Math.min(...displays.map(d => d.bounds.x));
+      const minY = Math.min(...displays.map(d => d.bounds.y));
+      const maxX = Math.max(...displays.map(d => d.bounds.x + d.bounds.width));
+      const maxY = Math.max(...displays.map(d => d.bounds.y + d.bounds.height));
+      return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+    }
+
     const sourceName = String(source.name || '').toLowerCase();
     const isExactDisplay = source.display_id === String(display.id);
     const looksGlobal = sourceName.includes('entire') ||
