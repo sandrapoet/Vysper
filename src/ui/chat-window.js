@@ -59,6 +59,7 @@ class ChatWindowUI {
         // Initialize listening timer
         this.listeningStartTime = null;
         this.listeningTimer = null;
+        this.thinkingIndicatorTimer = null;
     }
 
     setupEventListeners() {
@@ -132,7 +133,7 @@ class ChatWindowUI {
             
             // Session handlers
             window.electronAPI.onSessionCleared((event, data) => {
-                this.hideThinkingIndicator();
+                this.clearPendingThinkingIndicator();
                 this.hideListeningAnimation();
                 const message = data && data.message ? data.message : 'Contexto eliminado';
                 this.addMessage(message, 'system');
@@ -162,8 +163,7 @@ class ChatWindowUI {
             
             window.electronAPI.onTranscriptionLlmResponse((event, data) => {
                 if (data && data.response) {
-                    // Hide thinking indicator
-                    this.hideThinkingIndicator();
+                    this.clearPendingThinkingIndicator();
 
                     if (data.metadata && data.metadata.isContextReset) {
                         return;
@@ -288,7 +288,8 @@ class ChatWindowUI {
                 this.addMessage(text, 'transcription');
                 
                 // Show thinking indicator after transcription
-                setTimeout(() => {
+                this.thinkingIndicatorTimer = setTimeout(() => {
+                    this.thinkingIndicatorTimer = null;
                     this.showThinkingIndicator();
                 }, 300);
             }, 200);
@@ -448,6 +449,7 @@ class ChatWindowUI {
 
     showThinkingIndicator() {
         if (!this.elements.chatMessages) return;
+        this.hideThinkingIndicator();
 
         const thinkingDiv = document.createElement('div');
         thinkingDiv.className = 'message assistant thinking';
@@ -473,6 +475,14 @@ class ChatWindowUI {
         if (thinkingIndicator) {
             thinkingIndicator.remove();
         }
+    }
+
+    clearPendingThinkingIndicator() {
+        if (this.thinkingIndicatorTimer) {
+            clearTimeout(this.thinkingIndicatorTimer);
+            this.thinkingIndicatorTimer = null;
+        }
+        this.hideThinkingIndicator();
     }
 
     showInteractionIndicator(text, interactive) {

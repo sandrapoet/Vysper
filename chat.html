@@ -659,6 +659,7 @@
       let isInteractive = true;
       let listeningStartTime = null;
       let listeningTimer = null;
+      let thinkingIndicatorTimer = null;
 
       function normalizeCommandText(text) {
         return String(text || '')
@@ -747,6 +748,8 @@
 
       // Show thinking indicator
       function showThinkingIndicator() {
+        hideThinkingIndicator();
+
         const thinkingDiv = document.createElement('div');
         thinkingDiv.className = 'message assistant thinking';
         thinkingDiv.id = 'thinking-indicator';
@@ -772,6 +775,14 @@
         if (thinkingIndicator) {
           thinkingIndicator.remove();
         }
+      }
+
+      function clearPendingThinkingIndicator() {
+        if (thinkingIndicatorTimer) {
+          clearTimeout(thinkingIndicatorTimer);
+          thinkingIndicatorTimer = null;
+        }
+        hideThinkingIndicator();
       }
 
       // Minimalist Listening Animation Functions
@@ -858,7 +869,8 @@
             addMessage(text.trim(), 'transcription');
             
             // Show thinking indicator after transcription
-            setTimeout(() => {
+            thinkingIndicatorTimer = setTimeout(() => {
+              thinkingIndicatorTimer = null;
               showThinkingIndicator();
             }, 300);
           }, 200);
@@ -915,14 +927,20 @@
           handleRecordingStopped();
         });
 
-        whysperAPI.onSessionCleared(() => {
-          addMessage('Session memory has been cleared', 'system');
+        whysperAPI.onSessionCleared((event, data) => {
+          clearPendingThinkingIndicator();
+          hideListeningAnimation();
+          const message = data && data.message ? data.message : 'Session memory has been cleared';
+          addMessage(message, 'system');
         });
 
         whysperAPI.onTranscriptionLlmResponse((event, data) => {
           if (data && data.response) {
-            // Hide thinking indicator
-            hideThinkingIndicator();
+            clearPendingThinkingIndicator();
+
+            if (data.metadata && data.metadata.isContextReset) {
+              return;
+            }
             
             // Add assistant response with formatting
             addMessage(data.response, 'assistant');
@@ -962,7 +980,8 @@
             messageInput.value = '';
             
             // Show thinking indicator after user message
-            setTimeout(() => {
+            thinkingIndicatorTimer = setTimeout(() => {
+              thinkingIndicatorTimer = null;
               showThinkingIndicator();
             }, 300);
             
@@ -985,7 +1004,8 @@
               messageInput.value = '';
               
               // Show thinking indicator after user message
-              setTimeout(() => {
+              thinkingIndicatorTimer = setTimeout(() => {
+                thinkingIndicatorTimer = null;
                 showThinkingIndicator();
               }, 300);
               

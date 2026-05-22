@@ -734,7 +734,7 @@ Remember: the transcript block is the source of truth for the user's current req
 - Do not return pseudocode, placeholders, TODOs, markdown wrappers, explanations, docstrings, or complexity analysis.
 - If a platform-specific class/function signature is present, preserve it exactly.
 - Optimize for correctness first, then memory and runtime.
-- If there is not enough information to write real code, respond exactly: RECIBIDO - Esperando siguiente parte`;
+- If context is incomplete, still produce the best final code possible from the accumulated context. Never respond RECIBIDO.`;
   }
 
   buildProgrammingFinalizationSystemInstruction(programmingLanguage) {
@@ -755,7 +755,7 @@ Reglas estrictas:
 - Usa todo el contexto acumulado: problema original, imagenes/OCR, reglas, codigo previo y casos fallidos.
 - Si hay casos fallidos, corrige el codigo anterior conservando el problema original.
 - Prioriza correctness; despues optimiza memoria y tiempo.
-- Si aun falta informacion esencial para escribir codigo real, responde exactamente: RECIBIDO - Esperando siguiente parte`;
+- Si el contexto esta incompleto, aun asi genera el mejor codigo final posible con lo disponible. Nunca respondas RECIBIDO.`;
   }
 
   async executeSecondaryCodingRequest(text, activeSkill, programmingLanguage, apiKey) {
