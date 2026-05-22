@@ -427,8 +427,20 @@ class ApplicationController {
 
     ipcMain.handle("run-secondary-coding-fallback", async () => {
       logger.info('Explicit secondary coding fallback command received');
-      await this.processSecondaryCodingFallbackCommandWithLLM('chat');
-      return { success: true, secondaryCodingFallbackCommand: true };
+      try {
+        await this.processSecondaryCodingFallbackCommandWithLLM('chat');
+        return { success: true, secondaryCodingFallbackCommand: true };
+      } catch (error) {
+        logger.error("Failed to process secondary coding fallback command", {
+          error: error.message
+        });
+        this.broadcastLLMError(error.message);
+        return {
+          success: false,
+          secondaryCodingFallbackCommand: true,
+          error: error.message
+        };
+      }
     });
 
     ipcMain.handle("get-skill-prompt", (event, skillName) => {

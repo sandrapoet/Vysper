@@ -41,15 +41,19 @@ class ConfigManager {
       llm: {
         gemini: {
           model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-          maxRetries: 3,
-          timeout: 30000,
+          maxRetries: Number(process.env.GEMINI_MAX_RETRIES || 3),
+          timeout: Number(process.env.GEMINI_TIMEOUT || 120000),
+          maxOutputTokens: Number(process.env.GEMINI_MAX_OUTPUT_TOKENS || 8192),
+          codingMaxOutputTokens: Number(process.env.GEMINI_CODING_MAX_OUTPUT_TOKENS || 16384),
+          finalizationMaxOutputTokens: Number(process.env.GEMINI_FINALIZATION_MAX_OUTPUT_TOKENS || 16384),
           fallbackEnabled: true,
           enableFallbackMethod: true
         },
         anthropic: {
           model: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest',
-          maxTokens: Number(process.env.ANTHROPIC_MAX_TOKENS || 2048),
-          timeout: Number(process.env.ANTHROPIC_TIMEOUT || 60000)
+          maxTokens: Number(process.env.ANTHROPIC_MAX_TOKENS || 8192),
+          maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES || 3),
+          timeout: Number(process.env.ANTHROPIC_TIMEOUT || 120000)
         }
       },
 

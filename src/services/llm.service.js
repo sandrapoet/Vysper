@@ -252,7 +252,7 @@ class LLMService {
         }],
         generationConfig: {
           temperature: 0.1,
-          maxOutputTokens: 4096,
+          maxOutputTokens: this.getGeminiOutputTokenLimit('programming', 'finalization'),
           topK: 20,
           topP: 0.9
         }
@@ -397,7 +397,7 @@ class LLMService {
       contents: [],
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 2048,
+        maxOutputTokens: this.getGeminiOutputTokenLimit(activeSkill),
         topK: 40,
         topP: 0.95
       }
@@ -430,7 +430,7 @@ class LLMService {
       contents: [],
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 2048,
+        maxOutputTokens: this.getGeminiOutputTokenLimit(activeSkill),
         topK: 40,
         topP: 0.95
       }
@@ -515,7 +515,7 @@ class LLMService {
       contents: [],
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 2048, // Full responses for transcriptions (same as regular processing)
+        maxOutputTokens: this.getGeminiOutputTokenLimit(activeSkill, 'transcription'),
         topK: 40,
         topP: 0.95
       }
@@ -551,7 +551,7 @@ class LLMService {
       contents: [],
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 2048, // Full responses for transcriptions (same as regular processing)
+        maxOutputTokens: this.getGeminiOutputTokenLimit(activeSkill, 'transcription'),
         topK: 40,
         topP: 0.95
       }
@@ -701,6 +701,23 @@ Remember: the transcript block is the source of truth for the user's current req
     return String(skill || '').trim().toLowerCase();
   }
 
+  getGeminiOutputTokenLimit(activeSkill, mode = 'default') {
+    if (mode === 'finalization') {
+      return config.get('llm.gemini.finalizationMaxOutputTokens') ||
+        config.get('llm.gemini.codingMaxOutputTokens') ||
+        config.get('llm.gemini.maxOutputTokens') ||
+        8192;
+    }
+
+    if (this.normalizeSkillName(activeSkill) === 'programming') {
+      return config.get('llm.gemini.codingMaxOutputTokens') ||
+        config.get('llm.gemini.maxOutputTokens') ||
+        8192;
+    }
+
+    return config.get('llm.gemini.maxOutputTokens') || 8192;
+  }
+
   shouldFallbackToSecondaryCodingModel(error, activeSkill) {
     return this.normalizeSkillName(activeSkill) === 'programming' &&
       this.isPrimaryQuotaOrBillingError(error) &&
@@ -731,8 +748,9 @@ Remember: the transcript block is the source of truth for the user's current req
 - You are receiving a full accumulated coding context, including the original problem, prior code, screenshots/OCR text, and failed cases.
 - Produce only the corrected final program in ${language}.
 - Do not mention the provider, model, fallback, hidden context, screenshots, OCR, or your reasoning.
-- Do not return pseudocode, placeholders, TODOs, markdown wrappers, explanations, docstrings, or complexity analysis.
+- Do not return pseudocode, placeholders, TODOs, markdown wrappers, explanations, comments, docstrings, or complexity analysis.
 - If a platform-specific class/function signature is present, preserve it exactly.
+- If the accumulated context contains code snippets, use the most relevant/recent snippet as the base implementation. Preserve compatible signatures, classes, imports, names, and structure, then complete or correct that code instead of starting from scratch without need.
 - Optimize for correctness first, then memory and runtime.
 - If context is incomplete, still produce the best final code possible from the accumulated context. Never respond RECIBIDO.`;
   }
@@ -749,17 +767,19 @@ Reglas estrictas:
 - Entrega solamente codigo real, completo y ejecutable o pegable en la plataforma solicitada.
 - No respondas RECIBIDO.
 - No esperes mas contexto.
-- No expliques, no resumas, no agregues markdown, no uses docstrings narrativos.
+- No expliques, no resumas, no agregues markdown, no agregues comentarios al codigo, no uses docstrings narrativos.
 - No entregues pseudocodigo, TODOs, placeholders, pass, ... ni fragmentos incompletos.
 - Si existe una firma/clase requerida por la plataforma, respetala exactamente.
 - Usa todo el contexto acumulado: problema original, imagenes/OCR, reglas, codigo previo y casos fallidos.
+- Si el contexto incluye fragmentos de codigo, usalos como base principal: conserva firmas, clases, imports, nombres y estructura compatibles, y completa o corrige sobre ese codigo en lugar de reemplazarlo desde cero sin necesidad.
+- Si hay varios fragmentos, toma como base el mas reciente o el que corresponda a los casos fallidos.
 - Si hay casos fallidos, corrige el codigo anterior conservando el problema original.
 - Prioriza correctness; despues optimiza memoria y tiempo.
 - Si el contexto esta incompleto, aun asi genera el mejor codigo final posible con lo disponible. Nunca respondas RECIBIDO.`;
   }
 
   async executeSecondaryCodingRequest(text, activeSkill, programmingLanguage, apiKey) {
-    const https = require('https');
+    const maxRetries = config.get('llm.anthropic.maxRetries') || 3;
     const postData = JSON.stringify({
       model: config.get('llm.anthropic.model'),
       max_tokens: config.get('llm.anthropic.maxTokens'),
@@ -787,6 +807,35 @@ Reglas estrictas:
       timeout: config.get('llm.anthropic.timeout')
     };
 
+    let lastError = null;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.executeSecondaryCodingHttpRequest(options, postData);
+      } catch (error) {
+        lastError = error;
+        const shouldRetry = this.isRetryableSecondaryCodingError(error) && attempt < maxRetries;
+
+        logger.warn('Secondary coding request attempt failed', {
+          attempt,
+          maxRetries,
+          retrying: shouldRetry,
+          error: error.message
+        });
+
+        if (!shouldRetry) {
+          throw error;
+        }
+
+        await this.sleep(1000 * attempt);
+      }
+    }
+
+    throw lastError;
+  }
+
+  executeSecondaryCodingHttpRequest(options, postData) {
+    const https = require('https');
+
     return new Promise((resolve, reject) => {
       const req = https.request(options, (res) => {
         let data = '';
@@ -798,7 +847,10 @@ Reglas estrictas:
         res.on('end', () => {
           try {
             if (res.statusCode < 200 || res.statusCode >= 300) {
-              reject(new Error(this.formatSecondaryCodingApiError(res.statusCode, data)));
+              const apiError = new Error(this.formatSecondaryCodingApiError(res.statusCode, data));
+              apiError.statusCode = res.statusCode;
+              apiError.apiErrorType = this.getSecondaryCodingApiErrorType(data);
+              reject(apiError);
               return;
             }
 
@@ -834,6 +886,35 @@ Reglas estrictas:
       req.write(postData);
       req.end();
     });
+  }
+
+  isRetryableSecondaryCodingError(error) {
+    const message = (error.message || '').toLowerCase();
+    return (
+      error.statusCode === 529 ||
+      error.statusCode === 500 ||
+      error.statusCode === 502 ||
+      error.statusCode === 503 ||
+      error.statusCode === 504 ||
+      error.apiErrorType === 'overloaded_error' ||
+      message.includes('overloaded') ||
+      message.includes('timeout') ||
+      message.includes('econnreset') ||
+      message.includes('socket hang up')
+    );
+  }
+
+  getSecondaryCodingApiErrorType(rawBody) {
+    try {
+      const parsed = JSON.parse(rawBody);
+      return parsed.error?.type || null;
+    } catch {
+      return null;
+    }
+  }
+
+  sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   formatSecondaryCodingApiError(statusCode, rawBody) {
@@ -882,6 +963,14 @@ Reglas estrictas:
         
         if (!result.response) {
           throw new Error('Empty response from Gemini API');
+        }
+
+        const candidate = result.response.candidates?.[0];
+        if (candidate?.finishReason === 'MAX_TOKENS') {
+          logger.warn('Gemini response reached max output token limit', {
+            attempt,
+            maxOutputTokens: geminiRequest.generationConfig?.maxOutputTokens
+          });
         }
 
         const responseText = result.response.text();
@@ -1268,7 +1357,19 @@ Reglas estrictas:
               return;
             }
             
-            const text = response.candidates[0].content.parts[0].text;
+            const candidate = response.candidates[0];
+            if (candidate.finishReason === 'MAX_TOKENS') {
+              logger.warn('Alternative Gemini response reached max output token limit', {
+                maxOutputTokens: geminiRequest.generationConfig?.maxOutputTokens
+              });
+            }
+
+            const text = Array.isArray(candidate.content.parts)
+              ? candidate.content.parts
+                  .filter((part) => part && typeof part.text === 'string')
+                  .map((part) => part.text)
+                  .join('\n')
+              : '';
             
             if (!text || text.trim().length === 0) {
               reject(new Error('Empty text content in Gemini response'));
