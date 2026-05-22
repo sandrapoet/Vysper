@@ -98,7 +98,20 @@ class OCRService {
       });
 
       const croppedImage = await this.robustScreenCapture(display, cropRect);
-      const extractedText = await this.performOCR({ image: croppedImage });
+      let extractedText = await this.performOCR({ image: croppedImage });
+
+      if (this.isLowConfidenceOCRText(extractedText)) {
+        const candidateText = await this.performOCRFromCandidateSources(display, cropRect, extractedText);
+        if (this.getOCRTextScore(candidateText) > this.getOCRTextScore(extractedText)) {
+          logger.warn('Using better OCR text from alternate screen source', {
+            originalText: extractedText,
+            originalScore: this.getOCRTextScore(extractedText),
+            candidateLength: candidateText.length,
+            candidateScore: this.getOCRTextScore(candidateText)
+          });
+          extractedText = candidateText;
+        }
+      }
 
       logger.logPerformance('Regional OCR processing', startTime, {
         textLength: extractedText.length,
@@ -490,6 +503,101 @@ class OCRService {
     return thumbnail.crop(clampedRect);
   }
 
+  isLowConfidenceOCRText(text) {
+    const normalized = String(text || '').trim();
+    return normalized.length < 20 || this.getOCRTextScore(normalized) < 30;
+  }
+
+  getOCRTextScore(text) {
+    const normalized = String(text || '').trim();
+    const words = normalized.match(/[a-zA-Z0-9_]{2,}/g) || [];
+    const alphaNumericCount = (normalized.match(/[a-zA-Z0-9]/g) || []).length;
+    return alphaNumericCount + (words.length * 4);
+  }
+
+  async performOCRFromCandidateSources(display, cropRect, currentText = '') {
+    const thumbnailSize = this.calculateOptimalThumbnailSize(display);
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: {
+        width: thumbnailSize.width,
+        height: thumbnailSize.height
+      }
+    });
+
+    let bestText = currentText || '';
+    let bestScore = this.getOCRTextScore(bestText);
+
+    logger.warn('Primary OCR crop was low confidence; trying alternate screen sources', {
+      displayId: display.id,
+      cropRect,
+      currentText,
+      currentScore: bestScore,
+      sourceCount: sources.length,
+      sources: sources.map(source => ({
+        name: source.name,
+        displayId: source.display_id,
+        thumbnailSize: source.thumbnail?.getSize?.()
+      }))
+    });
+
+    for (const source of sources) {
+      try {
+        const thumbnail = source.thumbnail;
+        if (!thumbnail || thumbnail.isEmpty()) continue;
+
+        const actualSize = thumbnail.getSize();
+        const captureFrame = this.getCaptureFrame(source, display, sources.length);
+        const scaleX = actualSize.width / captureFrame.width;
+        const scaleY = actualSize.height / captureFrame.height;
+        const cropXInFrame = display.bounds.x - captureFrame.x + cropRect.x;
+        const cropYInFrame = display.bounds.y - captureFrame.y + cropRect.y;
+        const scaledRect = {
+          x: Math.floor(cropXInFrame * scaleX),
+          y: Math.floor(cropYInFrame * scaleY),
+          width: Math.floor(cropRect.width * scaleX),
+          height: Math.floor(cropRect.height * scaleY)
+        };
+        const clampedRect = this.clampCropRect(scaledRect, actualSize);
+        if (clampedRect.width < 1 || clampedRect.height < 1) continue;
+
+        const candidateImage = thumbnail.crop(clampedRect);
+        const candidateText = await this.performOCR({ image: candidateImage });
+
+        logger.debug('Alternate OCR source attempted', {
+          displayId: display.id,
+          sourceName: source.name,
+          sourceDisplayId: source.display_id,
+          actualSize,
+          captureFrame,
+          clampedRect,
+          textLength: candidateText.trim().length
+        });
+
+        const candidateScore = this.getOCRTextScore(candidateText);
+        if (candidateScore > bestScore) {
+          bestText = candidateText;
+          bestScore = candidateScore;
+          logger.warn('Alternate OCR source produced text', {
+            displayId: display.id,
+            sourceName: source.name,
+            sourceDisplayId: source.display_id,
+            textLength: candidateText.trim().length,
+            candidateScore
+          });
+        }
+      } catch (error) {
+        logger.debug('Alternate OCR source failed', {
+          sourceName: source.name,
+          sourceDisplayId: source.display_id,
+          error: error.message
+        });
+      }
+    }
+
+    return bestText;
+  }
+
   getCaptureFrame(source, display, sourceCount) {
     // Virtual desktop overlay always uses the full virtual desktop frame
     if (display.isVirtual) {
@@ -557,10 +665,15 @@ class OCRService {
   }
 
   async performOCR(screenshot) {
-    const tempPath = this.createTempFile(screenshot.image);
-    
+    const image = this.prepareImageForOCR(screenshot.image);
+    const tempPath = this.createTempFile(image);
+
     try {
-      logger.debug('Starting OCR text extraction', { tempPath });
+      logger.debug('Starting OCR text extraction', {
+        tempPath,
+        originalSize: screenshot.image.getSize(),
+        ocrSize: image.getSize()
+      });
       
       const { data: { text } } = await Tesseract.recognize(tempPath, config.get('ocr.language'), {
         logger: progress => {
@@ -583,6 +696,20 @@ class OCRService {
       logger.error('OCR processing failed', { error: error.message, tempPath });
       throw new Error(`Text extraction failed: ${error.message}`);
     }
+  }
+
+  prepareImageForOCR(image) {
+    const size = image.getSize();
+    if (size.width >= 1000 && size.height >= 500) {
+      return image;
+    }
+
+    const scale = size.width < 700 || size.height < 300 ? 3 : 2;
+    return image.resize({
+      width: Math.max(1, size.width * scale),
+      height: Math.max(1, size.height * scale),
+      quality: 'best'
+    });
   }
 
   createTempFile(image) {

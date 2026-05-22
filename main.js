@@ -231,7 +231,7 @@ class ApplicationController {
     ipcMain.handle("take-screenshot", () => this.triggerScreenshotOCR());
 
     ipcMain.on("region-selected", async (event, bounds) => {
-      const display = windowManager.getSelectionOverlayDisplay();
+      const display = windowManager.getSelectionOverlayDisplay(event.sender);
       windowManager.hideSelectionOverlay();
 
       await this.triggerRegionOCR({
@@ -774,6 +774,32 @@ class ApplicationController {
         return;
       }
 
+      if (!this.isUsefulOCRText(ocrResult.text)) {
+        const preview = `OCR capturado:\n${ocrResult.text.trim()}\n\nTexto muy corto o poco claro; selecciona una region mas grande si quieres procesarlo.`;
+        windowManager.showLLMResponse(preview, {
+          skill: this.activeSkill,
+          processingTime: Date.now() - startTime,
+          usedFallback: false,
+          isOCRPreview: true
+        });
+        this.broadcastTranscriptionLLMResponse({
+          response: preview,
+          metadata: {
+            skill: this.activeSkill,
+            processingTime: Date.now() - startTime,
+            usedFallback: false,
+            isOCRPreview: true
+          }
+        });
+        this.broadcastOCRError("OCR text too short or unclear. Select a larger region with more readable text.");
+        logger.warn("Ignoring low-confidence OCR text", {
+          text: ocrResult.text,
+          textLength: ocrResult.text.length,
+          duration: Date.now() - startTime
+        });
+        return;
+      }
+
       // Add OCR extracted text to session memory
       sessionManager.addOCREvent(ocrResult.text, {
         processingTime: ocrResult.metadata?.processingTime,
@@ -784,9 +810,10 @@ class ApplicationController {
 
       this.broadcastOCRSuccess(ocrResult);
 
-      if (this.isProgrammingSkill()) {
-        this.acknowledgeProgrammingContextChunk('screenshot-region');
-        logger.info("Programming OCR context stored without immediate code generation", {
+      if (this.isCodingAccumulationSkill()) {
+        this.acknowledgeCodingContextChunk('screenshot-region', ocrResult.text, Date.now() - startTime);
+        logger.info("Coding OCR context stored without immediate LLM generation", {
+          skill: this.activeSkill,
           textLength: ocrResult.text.length,
           duration: Date.now() - startTime
         });
@@ -833,6 +860,22 @@ class ApplicationController {
     return this.getNormalizedSkill(skill) === 'programming';
   }
 
+  isCodingAccumulationSkill(skill = this.activeSkill) {
+    return ['programming', 'dsa'].includes(this.getNormalizedSkill(skill));
+  }
+
+  isUsefulOCRText(text) {
+    if (typeof text !== 'string') return false;
+
+    const normalized = text.trim();
+    if (normalized.length < 20) return false;
+
+    const alphaNumericCount = (normalized.match(/[a-zA-Z0-9]/g) || []).length;
+    const wordCount = (normalized.match(/[a-zA-Z0-9_]{2,}/g) || []).length;
+
+    return alphaNumericCount >= 12 && wordCount >= 3;
+  }
+
   isSecondaryCodingFallbackCommand(text) {
     return typeof text === 'string' && this.normalizeCommandText(text) === '|||';
   }
@@ -855,10 +898,13 @@ class ApplicationController {
       normalized === 'RECIBIDO - Esperando primera parte';
   }
 
-  acknowledgeProgrammingContextChunk(source = 'chat') {
-    const response = 'RECIBIDO - Esperando siguiente parte';
+  acknowledgeCodingContextChunk(source = 'chat', ocrText = '', processingTime = 0) {
+    const ack = 'RECIBIDO - Esperando siguiente parte';
+    const previewText = typeof ocrText === 'string' && ocrText.trim()
+      ? `OCR capturado:\n${ocrText.trim()}\n\n${ack}`
+      : ack;
 
-    sessionManager.addModelResponse(response, {
+    sessionManager.addModelResponse(ack, {
       skill: this.activeSkill,
       usedFallback: false,
       isContextAck: true,
@@ -866,20 +912,20 @@ class ApplicationController {
     });
 
     const llmResult = {
-      response,
+      response: previewText,
       metadata: {
         skill: this.activeSkill,
         usedFallback: false,
-        processingTime: 0,
+        processingTime,
         source,
         isContextAck: true
       }
     };
 
     this.broadcastTranscriptionLLMResponse(llmResult);
-    windowManager.showLLMResponse(response, {
+    windowManager.showLLMResponse(previewText, {
       skill: this.activeSkill,
-      processingTime: 0,
+      processingTime,
       usedFallback: false,
       isContextAck: true
     });

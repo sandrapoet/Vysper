@@ -19,6 +19,7 @@ class WindowManager {
     this.isInitialized = false;
     this.isInitializing = false;
     this.isRecording = false;
+    this.selectionOverlayWindows = [];
     
     // Add debouncing to prevent excessive operations
     this.lastEnforceTime = 0;
@@ -1838,14 +1839,17 @@ class WindowManager {
   async showSelectionOverlay() {
     this.hideSelectionOverlay();
 
-    const display = this.getDisplayUnderCursor();
-    const displayBounds = this.normalizeBounds(display.bounds);
+    const displays = screen.getAllDisplays();
+    const overlays = [];
 
-    let overlayOptions = {
-      x: displayBounds.x,
-      y: displayBounds.y,
-      width: displayBounds.width,
-      height: displayBounds.height,
+    for (const display of displays) {
+      const displayBounds = this.normalizeBounds(display.bounds);
+
+      let overlayOptions = {
+        x: displayBounds.x,
+        y: displayBounds.y,
+        width: displayBounds.width,
+        height: displayBounds.height,
       title: this.windowConfigs.selectionOverlay.title,
       frame: false,
       transparent: true,
@@ -1874,58 +1878,75 @@ class WindowManager {
         disableAutoHideCursor: true,
         level: 'screen-saver'
       })
-    };
-    overlayOptions = this.sanitizeBrowserWindowOptions(overlayOptions);
+      };
+      overlayOptions = this.sanitizeBrowserWindowOptions(overlayOptions);
 
-    const window = new BrowserWindow(overlayOptions);
-    window.__selectionDisplay = {
-      id: display.id,
-      bounds: displayBounds,
-      workArea: this.normalizeBounds(display.workArea || display.bounds),
-      scaleFactor: display.scaleFactor
-    };
+      const window = new BrowserWindow(overlayOptions);
+      window.__selectionDisplay = {
+        id: display.id,
+        bounds: displayBounds,
+        workArea: this.normalizeBounds(display.workArea || display.bounds),
+        scaleFactor: display.scaleFactor
+      };
 
-    window.on('closed', () => {
-      if (this.windows.get('selectionOverlay') === window) {
-        this.windows.delete('selectionOverlay');
+      window.on('closed', () => {
+        this.selectionOverlayWindows = this.selectionOverlayWindows.filter(item => item !== window);
+        if (this.windows.get('selectionOverlay') === window) {
+          this.windows.delete('selectionOverlay');
+        }
+      });
+
+      await window.loadFile(this.windowConfigs.selectionOverlay.file);
+
+      if (process.platform === 'darwin') {
+        window.setAlwaysOnTop(true, 'screen-saver', 1);
+        window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      } else {
+        window.setAlwaysOnTop(true);
       }
-    });
 
-    await window.loadFile(this.windowConfigs.selectionOverlay.file);
-
-    if (process.platform === 'darwin') {
-      window.setAlwaysOnTop(true, 'screen-saver', 1);
-      window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    } else {
-      window.setAlwaysOnTop(true);
+      window.setIgnoreMouseEvents(false);
+      this.setWindowBounds(window, displayBounds, 'selectionOverlay');
+      window.show();
+      overlays.push(window);
     }
 
-    this.windows.set('selectionOverlay', window);
-    window.setIgnoreMouseEvents(false);
-    this.setWindowBounds(window, displayBounds, 'selectionOverlay');
-    window.show();
-    window.focus();
+    this.selectionOverlayWindows = overlays;
+    if (overlays[0]) {
+      this.windows.set('selectionOverlay', overlays[0]);
+      overlays[0].focus();
+    }
 
-    logger.info('Selection overlay shown on active display', {
-      displayId: display.id,
-      bounds: displayBounds,
-      scaleFactor: display.scaleFactor
+    logger.info('Selection overlays shown on all displays', {
+      displayCount: displays.length,
+      displays: displays.map(display => ({
+        id: display.id,
+        bounds: display.bounds,
+        scaleFactor: display.scaleFactor
+      }))
     });
 
-    return window.__selectionDisplay;
+    return overlays.map(window => window.__selectionDisplay);
   }
 
   hideSelectionOverlay() {
-    const window = this.windows.get('selectionOverlay');
-    if (window && !window.isDestroyed()) {
-      window.close();
+    for (const window of this.selectionOverlayWindows) {
+      if (window && !window.isDestroyed()) {
+        window.close();
+      }
     }
+    this.selectionOverlayWindows = [];
     this.windows.delete('selectionOverlay');
     logger.debug('Selection overlay hidden');
   }
 
-  getSelectionOverlayDisplay() {
-    const window = this.windows.get('selectionOverlay');
+  getSelectionOverlayDisplay(sender = null) {
+    const senderWindow = sender ? BrowserWindow.fromWebContents(sender) : null;
+    if (senderWindow && !senderWindow.isDestroyed()) {
+      return senderWindow.__selectionDisplay || null;
+    }
+
+    const window = this.selectionOverlayWindows[0] || this.windows.get('selectionOverlay');
     if (!window || window.isDestroyed()) {
       return null;
     }
