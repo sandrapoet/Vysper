@@ -125,7 +125,7 @@ class ApplicationController {
       "CommandOrControl+Shift+I": () => windowManager.toggleInteraction(),
       "CommandOrControl+Shift+C": () => windowManager.switchToWindow("chat"),
       "CommandOrControl+Shift+H": () => windowManager.toggleGuideWindow(),
-      "CommandOrControl+Shift+/": () => windowManager.hideAllWindows(),
+      "CommandOrControl+Shift+|": () => windowManager.hideAllWindows(),
       "CommandOrControl+Shift+\\": () => this.clearSessionMemory(),
       "CommandOrControl+,": () => windowManager.showSettings(),
       "Alt+A": () => windowManager.toggleInteraction(),
@@ -238,6 +238,7 @@ class ApplicationController {
     ipcMain.on("region-selected", async (event, bounds) => {
       const display = windowManager.getSelectionOverlayDisplay(event.sender);
       windowManager.hideSelectionOverlay();
+      await new Promise(resolve => setTimeout(resolve, 250));
 
       await this.triggerRegionOCR({
         ...bounds,
@@ -247,6 +248,7 @@ class ApplicationController {
 
     ipcMain.on("selection-cancelled", () => {
       windowManager.hideSelectionOverlay();
+      windowManager.restoreWindowsAfterScreenshotCapture();
     });
 
     ipcMain.handle("start-speech-recognition", () => {
@@ -781,9 +783,8 @@ class ApplicationController {
     const startTime = Date.now();
 
     try {
-      windowManager.showLLMLoading();
-
       const ocrResult = await ocrService.captureAndProcessRegion(bounds);
+      windowManager.restoreWindowsAfterScreenshotCapture();
 
       if (!ocrResult.text || ocrResult.text.trim().length === 0) {
         windowManager.hideLLMResponse();
@@ -838,8 +839,10 @@ class ApplicationController {
       }
 
       const sessionHistory = sessionManager.getOptimizedHistory();
+      windowManager.showLLMLoading();
       await this.processWithLLM(ocrResult.text, sessionHistory);
     } catch (error) {
+      windowManager.restoreWindowsAfterScreenshotCapture();
       logger.error("Regional screenshot OCR process failed", {
         error: error.message,
         duration: Date.now() - startTime,

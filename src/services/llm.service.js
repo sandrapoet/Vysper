@@ -61,6 +61,19 @@ class LLMService {
     return process.env.VYSPER_RAG_ENV_FILE || '/media/san/Miscosas6/Desarrollo/MiRag/LightRAG/.env';
   }
 
+  getRagStorageDir() {
+    const configuredStorageDir = process.env.VYSPER_RAG_STORAGE_DIR ||
+      this.readEnvValue(this.getRagEnvFilePath(), 'WORKING_DIR');
+
+    if (configuredStorageDir) {
+      return configuredStorageDir.endsWith('rag_storage')
+        ? configuredStorageDir
+        : path.join(configuredStorageDir, 'rag_storage');
+    }
+
+    return path.join(path.dirname(this.getRagEnvFilePath()), 'data', 'rag_storage');
+  }
+
   readEnvValue(filePath, key) {
     try {
       if (!filePath || !fs.existsSync(filePath)) return '';
@@ -90,12 +103,26 @@ class LLMService {
     return ragEnvApiKey || process.env.LIGHTRAG_API_KEY || '';
   }
 
+  readJsonFile(filePath) {
+    try {
+      if (!filePath || !fs.existsSync(filePath)) return null;
+      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch (error) {
+      logger.warn('Unable to read JSON file', {
+        filePath,
+        error: error.message
+      });
+      return null;
+    }
+  }
+
   getRagCurlExample(query = 'Sandra Esmeralda Senior Software Engineer experience') {
+    const isCompensationQuery = this.isCompensationQuestion(query);
     const payload = JSON.stringify({
       query,
       mode: 'mix',
-      top_k: 8,
-      chunk_top_k: 6
+      top_k: isCompensationQuery ? 16 : 8,
+      chunk_top_k: isCompensationQuery ? 12 : 6
     });
     const ragDir = path.dirname(this.getRagEnvFilePath());
     return `cd '${ragDir}' && set -a && source .env && set +a && curl -sS -X POST '${this.getRagDataEndpoint()}' -H "X-API-Key: $LIGHTRAG_API_KEY" -H 'Content-Type: application/json' --data '${payload}'`;
@@ -118,8 +145,12 @@ class LLMService {
     return headers;
   }
 
-  shouldUseRagFirst(activeSkill) {
-    return this.normalizeSkillName(activeSkill) === 'behavioral';
+  shouldUseRagFirst(activeSkill, text = '') {
+    const skillName = this.normalizeSkillName(activeSkill);
+    const isCompensationQuestion = this.isCompensationQuestion(text);
+    return skillName === 'behavioral' ||
+      (skillName === 'negotiation' && isCompensationQuestion) ||
+      isCompensationQuestion;
   }
 
   isBehavioralRagDebugRequest(text) {
@@ -132,14 +163,110 @@ class LLMService {
       .trim();
   }
 
-  buildBehavioralRagQuery(userQuestion) {
+  isCompensationQuestion(text) {
+    const normalized = String(text || '').toLowerCase();
+    return /\b(salary|compensation|pay|gross|net|annual|annually|monthly|month|yearly|expectation|expected|desired|benefits|working conditions|sueldo|salario|compensaci[oó]n|bruto|neto|mensual|anual|prestaciones|beneficios)\b/i.test(normalized);
+  }
+
+  buildCompensationRagQuery(userQuestion) {
     const question = String(userQuestion || '').trim();
-    const profileAnchor = [
+    return [
       'Sandra Esmeralda Reyes Galvan',
       'Sandra Esmeralda Reyes Galván',
-      'Sandra Reyes',
+      'category: compensation_target',
+      'time_scope: current',
+      'intent: compensation_expectation',
+      'desired salary expectations',
+      'gross net monthly annual currency range_min range_max period modality payroll contractor negotiable_items non_negotiables',
+      'If the target period is monthly and the interviewer asks annual salary, retrieve the monthly gross target so it can be multiplied by 12.',
+      `Interview question: ${question}`
+    ].join(' | ');
+  }
+
+  hasCurrentCompensationTargetEvidence(context) {
+    const normalized = String(context || '').toLowerCase();
+    return normalized.includes('category: compensation_target') &&
+      normalized.includes('time_scope: current') &&
+      normalized.includes('period: monthly') &&
+      normalized.includes('type: gross') &&
+      (normalized.includes('range_min') || normalized.includes('range_max'));
+  }
+
+  extractLocalCompensationTargetContext() {
+    const storageDir = this.getRagStorageDir();
+    const stores = [
+      path.join(storageDir, 'kv_store_text_chunks.json'),
+      path.join(storageDir, 'kv_store_full_docs.json')
+    ];
+
+    const matches = [];
+    const seenContent = new Set();
+    for (const storePath of stores) {
+      const store = this.readJsonFile(storePath);
+      if (!store || typeof store !== 'object') continue;
+
+      for (const [id, item] of Object.entries(store)) {
+        if (!item || typeof item !== 'object') continue;
+        const content = String(item.content || item.text || item.page_content || '');
+        if (!this.hasCurrentCompensationTargetEvidence(content)) continue;
+        const cleanedContent = this.cleanRagContent(content);
+        if (seenContent.has(cleanedContent)) continue;
+        seenContent.add(cleanedContent);
+
+        matches.push({
+          id,
+          filePath: item.file_path || item.source || path.basename(storePath),
+          content: cleanedContent
+        });
+      }
+    }
+
+    if (!matches.length) return '';
+
+    return matches
+      .map(match => `${match.filePath} / ${match.id}: ${match.content}`)
+      .join('\n\n')
+      .trim();
+  }
+
+  buildDerivedCompensationContext(context) {
+    if (!this.hasCurrentCompensationTargetEvidence(context)) return '';
+
+    const minLine = String(context).match(/range_min:\s*([^\n]+)/i)?.[1] || '';
+    const maxLine = String(context).match(/range_max:\s*([^\n]+)/i)?.[1] || '';
+    const contractorMin = Number.parseInt(minLine.match(/(\d+(?:,\d+)*)\s+as contractor/i)?.[1]?.replace(/,/g, '') || '', 10);
+    const contractorMax = Number.parseInt(maxLine.match(/(\d+(?:,\d+)*)\s+as contractor/i)?.[1]?.replace(/,/g, '') || '', 10);
+    const payrollMin = Number.parseInt(minLine.match(/(\d+(?:,\d+)*)\s+as employee/i)?.[1]?.replace(/,/g, '') || '', 10);
+    const payrollMax = Number.parseInt(maxLine.match(/(\d+(?:,\d+)*)\s+as employee/i)?.[1]?.replace(/,/g, '') || '', 10);
+
+    const lines = [
+      'Derived compensation calculations from current monthly gross target:',
+      'currency: USD',
+      'period_source: monthly',
+      'type: gross',
+      'annualization_rule: monthly gross amount * 12'
+    ];
+
+    if (Number.isFinite(contractorMin) && Number.isFinite(contractorMax)) {
+      lines.push(`contractor_annual_gross_range: ${contractorMin * 12}-${contractorMax * 12} USD`);
+    }
+
+    if (Number.isFinite(payrollMin) && Number.isFinite(payrollMax)) {
+      lines.push(`employee_payroll_annual_gross_range: ${payrollMin * 12}-${payrollMax * 12} USD`);
+    }
+
+    return lines.length > 5 ? lines.join('\n') : '';
+  }
+
+  buildBehavioralRagQuery(userQuestion) {
+    const question = String(userQuestion || '').trim();
+    if (this.isCompensationQuestion(question)) {
+      return this.buildCompensationRagQuery(question);
+    }
+
+    const profileAnchor = [
+      'Sandra Esmeralda Reyes Galvan',
       'personal resume CV professional profile',
-      'Senior Software Engineer experience',
       'software engineering leadership experience',
       'VestaOS Scotiabank AI ML MLOps RAG systems cloud transformation projects'
     ].join(' | ');
@@ -155,9 +282,20 @@ class LLMService {
     const endpoint = this.getRagDataEndpoint();
     const ragQuery = this.buildBehavioralRagQuery(userQuestion);
     let lastRaw = null;
+    const isCompensationQuery = this.isCompensationQuestion(userQuestion);
     const payloads = [
-      { query: ragQuery, mode: 'mix', top_k: 8, chunk_top_k: 6 },
-      { query: ragQuery, mode: 'naive', top_k: 8, chunk_top_k: 6 }
+      {
+        query: ragQuery,
+        mode: 'mix',
+        top_k: isCompensationQuery ? 16 : 8,
+        chunk_top_k: isCompensationQuery ? 12 : 6
+      },
+      {
+        query: ragQuery,
+        mode: 'naive',
+        top_k: isCompensationQuery ? 16 : 8,
+        chunk_top_k: isCompensationQuery ? 12 : 6
+      }
     ];
 
     for (const payload of payloads) {
@@ -187,8 +325,8 @@ class LLMService {
         if (contentType.includes('application/json')) {
           const data = await response.json();
           lastRaw = data;
-          const context = this.extractRagContext(data);
-          if (context) {
+          const context = this.extractRagContext(data, { preferCompensation: isCompensationQuery });
+          if (context && (!isCompensationQuery || this.hasCurrentCompensationTargetEvidence(context))) {
             return { context, raw: data, endpoint };
           }
         } else {
@@ -201,6 +339,17 @@ class LLMService {
           error: error.message,
           timeoutMs: this.getRagTimeoutMs()
         });
+      }
+    }
+
+    if (isCompensationQuery) {
+      const localCompensationContext = this.extractLocalCompensationTargetContext();
+      if (localCompensationContext) {
+        logger.info('Using local LightRAG compensation target fallback', {
+          storageDir: this.getRagStorageDir(),
+          contextLength: localCompensationContext.length
+        });
+        return { context: localCompensationContext, raw: lastRaw, endpoint: `${endpoint} + local_storage_fallback` };
       }
     }
 
@@ -220,14 +369,41 @@ class LLMService {
       .trim();
   }
 
-  extractRagContext(data) {
+  getRagEvidencePriority(item, options = {}) {
+    if (!options.preferCompensation || !item || typeof item !== 'object') return 0;
+
+    const searchable = [
+      item.content,
+      item.text,
+      item.chunk,
+      item.page_content,
+      item.file_path,
+      item.document_id,
+      item.source,
+      item.chunk_id,
+      item.id
+    ].map(value => String(value || '').toLowerCase()).join(' ');
+
+    let priority = 0;
+    if (searchable.includes('compensation_target')) priority += 100;
+    if (searchable.includes('time_scope: current') || searchable.includes('time_scope current')) priority += 40;
+    if (searchable.includes('compensation_expectation')) priority += 30;
+    if (searchable.includes('range_min') || searchable.includes('range_max')) priority += 25;
+    if (searchable.includes('gross') || searchable.includes('bruto')) priority += 15;
+    if (searchable.includes('monthly') || searchable.includes('mensual')) priority += 10;
+    if (searchable.includes('<!doctype html') || searchable.includes('<html')) priority -= 50;
+    return priority;
+  }
+
+  extractRagContext(data, options = {}) {
     if (!data || typeof data === 'string') return '';
 
     const dataSection = data.data && typeof data.data === 'object' ? data.data : data;
     const sourceArrays = [dataSection.chunks, dataSection.references].filter(Array.isArray);
 
     for (const sourceArray of sourceArrays) {
-      const context = sourceArray
+      const context = [...sourceArray]
+        .sort((left, right) => this.getRagEvidencePriority(right, options) - this.getRagEvidencePriority(left, options))
         .map((item, index) => {
           if (!item || typeof item !== 'object') return '';
           const content = this.cleanRagContent(item.content || item.text || item.chunk || item.page_content);
@@ -304,7 +480,7 @@ class LLMService {
       ? rawSummary.chunks.map(chunk => `- ${chunk.filePath} / ${chunk.chunkId}: content=${chunk.hasContent ? 'yes' : 'no'}, bytes=${chunk.contentLength}\n  preview: ${chunk.preview}`).join('\n')
       : '- No chunks returned.';
 
-    return `# RAG Debug\n\n## Curl usado\n\`\`\`bash\n${this.getRagCurlExample(ragQuery)}\n\`\`\`\n\n## Query enviada al RAG\n${ragQuery}\n\n## Resultado\n- Endpoint: ${ragResult.endpoint}\n- Contexto verificable usado por Vysper: ${hasVerifiableContext ? 'SI' : 'NO'}\n- Longitud de contexto verificable: ${context.length}\n- Keys del JSON: ${rawSummary.keys.join(', ') || 'none'}\n- Keys de data: ${(rawSummary.dataKeys || []).join(', ') || 'none'}\n- Longitud del campo generado response/answer/result: ${rawSummary.responseLength}\n\n## Chunks usados como evidencia\n${chunks}\n\n## Referencias\n${references}\n\n## Preview de respuesta generada por LightRAG\n${generatedPreview}`;
+    return `# RAG Debug\n\n## Curl usado\n\`\`\`bash\n${this.getRagCurlExample(ragQuery)}\n\`\`\`\n\n## Query enviada al RAG\n${ragQuery}\n\n## Resultado\n- Endpoint: ${ragResult.endpoint}\n- Contexto verificable usado por Vysper: ${hasVerifiableContext ? 'SI' : 'NO'}\n- Longitud de contexto verificable: ${context.length}\n- Tipo de query: ${this.isCompensationQuestion(userQuestion) ? 'compensation_target/current' : 'behavioral_profile'}\n- Keys del JSON: ${rawSummary.keys.join(', ') || 'none'}\n- Keys de data: ${(rawSummary.dataKeys || []).join(', ') || 'none'}\n- Longitud del campo generado response/answer/result: ${rawSummary.responseLength}\n\n## Chunks usados como evidencia\n${chunks}\n\n## Referencias\n${references}\n\n## Preview de respuesta generada por LightRAG\n${generatedPreview}`;
   }
 
   async debugBehavioralRag(userQuestion) {
@@ -328,6 +504,12 @@ class LLMService {
     const question = String(userQuestion || '').trim();
     const isEnglish = /^[\x00-\x7F]*$/.test(question);
 
+    if (this.isCompensationQuestion(question)) {
+      return isEnglish
+        ? 'I did not find the current compensation target in RAG, so I should not infer a salary expectation. Please confirm the current gross/net amount, period, currency, and modality.'
+        : 'No encontré el objetivo de compensación actual en RAG, así que no debo inferir una expectativa salarial. Confirma el monto bruto/neto actual, periodo, moneda y modalidad.';
+    }
+
     if (isEnglish) {
       return 'I do not have matching profile evidence in the RAG for that question, so I should not claim specific roles, companies, dates, projects, or metrics. A safe generic answer structure would be: "I have worked with AI-assisted development workflows, but I would need the exact project details to give a grounded STAR example."';
     }
@@ -336,7 +518,7 @@ class LLMService {
   }
 
   async enrichGeminiRequestWithBehavioralRag(geminiRequest, userQuestion, activeSkill) {
-    if (!this.shouldUseRagFirst(activeSkill)) {
+    if (!this.shouldUseRagFirst(activeSkill, userQuestion)) {
       return { geminiRequest, ragUsed: false, ragEndpoint: null, ragContextLength: 0 };
     }
 
@@ -345,8 +527,18 @@ class LLMService {
     if (this.isInsufficientRagContext(ragContext)) {
       ragContext = '';
     }
+    const derivedCompensationContext = this.isCompensationQuestion(userQuestion)
+      ? this.buildDerivedCompensationContext(ragContext)
+      : '';
+    if (derivedCompensationContext) {
+      ragContext = `${derivedCompensationContext}\n\n${ragContext}`;
+    }
 
-    const profileGroundingRules = `\n\n# Mandatory Profile Grounding Rules\nFor behavioral interview answers about the user's specific profile, resume, past roles, companies, projects, metrics, agentic coding experience, achievements, or career history:\n- Use ONLY facts present in the Retrieved Behavioral RAG Context and the user's current transcript.\n- Treat Retrieved Behavioral RAG Context as raw source evidence, not as a draft to embellish. Preserve company names, job titles, dates, project names, and metrics exactly as stated.\n- Do NOT invent job titles, employers, dates, seniority, teams, products, metrics, credentials, or projects.\n- If the retrieved context does not contain enough evidence, say so briefly and ask for the missing detail or offer a generic answer template without personal claims.\n- You may provide general behavioral interview structure, but label it as a generic template when it is not grounded in retrieved profile context.\n- Never include shell commands, curl commands, environment variable snippets, or RAG diagnostics in behavioral answers unless the user explicitly asks for debugging help.`;
+    const compensationRules = this.isCompensationQuestion(userQuestion)
+      ? `\n\n# Mandatory Compensation Grounding Rules\nFor salary, benefits, or working-condition questions:\n- Use ONLY current compensation target evidence from Retrieved Behavioral RAG Context, especially category: compensation_target and time_scope: current.\n- Ignore compensation_history for setting expectations unless the user explicitly asks for history.\n- Confirm currency, gross/net, period, modality, and location when available.\n- If the retrieved target is monthly and the interviewer asks for desired annual salary, annualize by multiplying the monthly gross range by 12. State that conversion clearly.\n- Use ranges when range_min and range_max are available. Do not collapse a range into a single fixed number unless the user explicitly asks.\n- Do NOT infer salary expectations from resume HTML, role seniority, market averages, or generic salary data.`
+      : '';
+
+    const profileGroundingRules = `\n\n# Mandatory Profile Grounding Rules\nFor behavioral interview answers about the user's specific profile, resume, past roles, companies, projects, metrics, agentic coding experience, achievements, or career history:\n- Use ONLY facts present in the Retrieved Behavioral RAG Context and the user's current transcript.\n- Treat Retrieved Behavioral RAG Context as raw source evidence, not as a draft to embellish. Preserve company names, job titles, dates, project names, and metrics exactly as stated.\n- Do NOT invent job titles, employers, dates, seniority, teams, products, metrics, credentials, or projects.\n- If the retrieved context does not contain enough evidence, say so briefly and ask for the missing detail or offer a generic answer template without personal claims.\n- You may provide general behavioral interview structure, but label it as a generic template when it is not grounded in retrieved profile context.\n- Never include shell commands, curl commands, environment variable snippets, or RAG diagnostics in behavioral answers unless the user explicitly asks for debugging help.${compensationRules}`;
 
     const ragInstruction = ragContext
       ? `\n\n# Retrieved Behavioral RAG Context\nUse this retrieved context first when crafting the behavioral interview answer. Prefer these facts over generic examples. Do not invent facts beyond the transcript and retrieved context.\n\n${ragContext}`
@@ -409,7 +601,7 @@ class LLMService {
         requestId: this.requestCount
       });
 
-      if (this.shouldUseRagFirst(activeSkill) && this.isBehavioralRagDebugRequest(text)) {
+      if (this.shouldUseRagFirst(activeSkill, text) && this.isBehavioralRagDebugRequest(text)) {
         const debugResult = await this.debugBehavioralRag(text);
         debugResult.metadata.processingTime = Date.now() - startTime;
         debugResult.metadata.requestId = this.requestCount;
@@ -421,7 +613,7 @@ class LLMService {
       const ragMetadata = await this.enrichGeminiRequestWithBehavioralRag(geminiRequest, text, activeSkill);
       geminiRequest = ragMetadata.geminiRequest;
 
-      if (this.shouldUseRagFirst(activeSkill) && !ragMetadata.ragUsed) {
+      if (this.shouldUseRagFirst(activeSkill, text) && !ragMetadata.ragUsed) {
         const response = this.buildNoRagEvidenceResponse(text);
         return {
           response,
@@ -690,7 +882,7 @@ class LLMService {
         requestId: this.requestCount
       });
 
-      if (this.shouldUseRagFirst(activeSkill) && this.isBehavioralRagDebugRequest(text)) {
+      if (this.shouldUseRagFirst(activeSkill, text) && this.isBehavioralRagDebugRequest(text)) {
         const debugResult = await this.debugBehavioralRag(text);
         debugResult.metadata.processingTime = Date.now() - startTime;
         debugResult.metadata.requestId = this.requestCount;
@@ -703,7 +895,7 @@ class LLMService {
       const ragMetadata = await this.enrichGeminiRequestWithBehavioralRag(geminiRequest, text, activeSkill);
       geminiRequest = ragMetadata.geminiRequest;
 
-      if (this.shouldUseRagFirst(activeSkill) && !ragMetadata.ragUsed) {
+      if (this.shouldUseRagFirst(activeSkill, text) && !ragMetadata.ragUsed) {
         const response = this.buildNoRagEvidenceResponse(text);
         return {
           response,

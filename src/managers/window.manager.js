@@ -20,6 +20,7 @@ class WindowManager {
     this.isInitializing = false;
     this.isRecording = false;
     this.selectionOverlayWindows = [];
+    this.preCaptureVisibleWindows = null;
     
     // Add debouncing to prevent excessive operations
     this.lastEnforceTime = 0;
@@ -50,8 +51,8 @@ class WindowManager {
         title: 'Terminal'
       },
       llmResponse: {
-        width: 840,
-        height: 480,
+        width: 250,
+        height: 350,
         file: 'llm-response.html',
         title: 'AI Response',
         alwaysOnTop: true
@@ -1048,6 +1049,46 @@ class WindowManager {
     logger.info('All windows hidden');
   }
 
+  hideWindowsForScreenshotCapture() {
+    this.preCaptureVisibleWindows = new Set();
+
+    this.windows.forEach((window, type) => {
+      if (!window || window.isDestroyed() || type === 'selectionOverlay') return;
+
+      if (window.isVisible()) {
+        this.preCaptureVisibleWindows.add(type);
+      }
+
+      window.hide();
+    });
+
+    this.isVisible = false;
+    logger.info('Application windows hidden for screenshot capture', {
+      hiddenWindowTypes: Array.from(this.preCaptureVisibleWindows)
+    });
+  }
+
+  restoreWindowsAfterScreenshotCapture() {
+    const previouslyVisible = this.preCaptureVisibleWindows;
+    this.preCaptureVisibleWindows = null;
+
+    if (!previouslyVisible || previouslyVisible.size === 0 || this.isScreenBeingShared) {
+      return;
+    }
+
+    previouslyVisible.forEach(type => {
+      const window = this.windows.get(type);
+      if (!window || window.isDestroyed() || type === 'selectionOverlay') return;
+      if (type === 'llmResponse') return;
+      this.showOnCurrentDesktop(window);
+    });
+
+    this.isVisible = true;
+    logger.info('Application windows restored after screenshot capture', {
+      restoredWindowTypes: Array.from(previouslyVisible).filter(type => type !== 'llmResponse')
+    });
+  }
+
   toggleVisibility() {
     if (this.isScreenBeingShared) {
       return this.isVisible;
@@ -1240,6 +1281,8 @@ class WindowManager {
       return;
     }
 
+    this.resetLLMWindowToDefaultSize();
+
     logger.debug('Sending display-llm-response event to window');
     llmWindow.webContents.send('display-llm-response', {
       content,
@@ -1272,6 +1315,7 @@ class WindowManager {
     const llmWindow = this.windows.get('llmResponse');
     if (llmWindow) {
       logger.debug('Showing LLM loading state');
+      this.resetLLMWindowToDefaultSize();
       llmWindow.webContents.send('show-loading');
       this.showOnCurrentDesktop(llmWindow);
       
@@ -1324,10 +1368,11 @@ class WindowManager {
     const optimalSize = this.calculateOptimalWindowSize(contentMetrics);
     
     // Ensure we have valid numbers for setSize
-    const width = Math.round(Number(optimalSize.width)) || 840;
-    const height = Math.round(Number(optimalSize.height)) || 480;
+    const defaultSize = this.getDefaultLLMResponseSize();
+    const width = Math.round(Number(optimalSize.width)) || defaultSize.width;
+    const height = Math.round(Number(optimalSize.height)) || defaultSize.height;
     
-    llmWindow.setSize(this.toValidInteger(width, 840), this.toValidInteger(height, 480));
+    llmWindow.setSize(this.toValidInteger(width, defaultSize.width), this.toValidInteger(height, defaultSize.height));
     
     // If windows are bound, position them together; otherwise center the LLM window
     if (this.bindWindows) {
@@ -1346,9 +1391,10 @@ class WindowManager {
   calculateOptimalWindowSize(contentMetrics) {
     const display = this.currentDisplay || screen.getPrimaryDisplay();
     const { width: screenWidth, height: screenHeight } = display.workArea || display.workAreaSize;
+    const defaultSize = this.getDefaultLLMResponseSize();
     
-    let width = 840; // Default LLM window width
-    let height = 480; // Default LLM window height
+    let width = defaultSize.width;
+    let height = defaultSize.height;
     
     if (contentMetrics && typeof contentMetrics === 'object') {
       const lineCount = Number(contentMetrics.lineCount) || 20;
@@ -1359,9 +1405,38 @@ class WindowManager {
     }
     
     return { 
-      width: Math.round(Number(width)) || 840, 
-      height: Math.round(Number(height)) || 480 
+      width: Math.round(Number(width)) || defaultSize.width, 
+      height: Math.round(Number(height)) || defaultSize.height 
     };
+  }
+
+  getDefaultLLMResponseSize() {
+    const chatWindow = this.windows.get('chat');
+    const fallbackChatWidth = this.windowConfigs.chat.width || 500;
+    const fallbackChatHeight = this.windowConfigs.chat.height || 700;
+    const [chatWidth, chatHeight] = chatWindow && !chatWindow.isDestroyed()
+      ? chatWindow.getSize()
+      : [fallbackChatWidth, fallbackChatHeight];
+
+    return {
+      width: Math.max(1, Math.round(chatWidth / 2)),
+      height: Math.max(1, Math.round(chatHeight / 2))
+    };
+  }
+
+  resetLLMWindowToDefaultSize() {
+    const llmWindow = this.windows.get('llmResponse');
+    if (!llmWindow || llmWindow.isDestroyed()) return;
+
+    const defaultSize = this.getDefaultLLMResponseSize();
+    llmWindow.setSize(defaultSize.width, defaultSize.height);
+
+    logger.debug('LLM window reset to default half-chat size', {
+      defaultSize,
+      chatSize: this.windows.get('chat') && !this.windows.get('chat').isDestroyed()
+        ? this.windows.get('chat').getSize()
+        : [this.windowConfigs.chat.width, this.windowConfigs.chat.height]
+    });
   }
 
   centerWindow(window) {
@@ -1838,6 +1913,7 @@ class WindowManager {
 
   async showSelectionOverlay() {
     this.hideSelectionOverlay();
+    this.hideWindowsForScreenshotCapture();
 
     const displays = screen.getAllDisplays();
     const overlays = [];

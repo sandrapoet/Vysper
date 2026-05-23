@@ -198,7 +198,8 @@ class LLMResponseWindowUI {
       });
 
       // Rest of the method...
-      if (window.innerWidth < 500 || window.innerHeight < 300) {
+      const shouldKeepCompact = data.metadata?.isContextAck || data.metadata?.isOCRPreview;
+      if (!shouldKeepCompact && (window.innerWidth < 500 || window.innerHeight < 300)) {
         this.handleWindowExpansion(data);
       } else {
         this.displayResponseContent(data);
@@ -342,7 +343,9 @@ class LLMResponseWindowUI {
 
       // Setup additional features
       this.setupScrolling();
-      this.requestWindowResize(contentMetrics);
+      if (!data.metadata?.isContextAck && !data.metadata?.isOCRPreview) {
+        this.requestWindowResize(contentMetrics);
+      }
 
       // Final verification
       setTimeout(() => {
