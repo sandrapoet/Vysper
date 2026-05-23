@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const logger = require('../core/logger').createServiceLogger('LLM');
 const config = require('../core/config');
@@ -42,6 +44,344 @@ class LLMService {
     }
   }
 
+  getRagBaseUrl() {
+    return (process.env.VYSPER_RAG_URL || 'http://localhost:9621').replace(/\/$/, '');
+  }
+
+  getRagDataEndpoint() {
+    return `${this.getRagBaseUrl()}/query/data`;
+  }
+
+  getRagTimeoutMs() {
+    const timeoutMs = Number.parseInt(process.env.VYSPER_RAG_TIMEOUT_MS || '20000', 10);
+    return Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 20000;
+  }
+
+  getRagEnvFilePath() {
+    return process.env.VYSPER_RAG_ENV_FILE || '/media/san/Miscosas6/Desarrollo/MiRag/LightRAG/.env';
+  }
+
+  readEnvValue(filePath, key) {
+    try {
+      if (!filePath || !fs.existsSync(filePath)) return '';
+
+      const envContent = fs.readFileSync(filePath, 'utf8');
+      const linePattern = new RegExp(`^(?:export\\s+)?${key}\\s*=`);
+      const line = envContent
+        .split(/\r?\n/)
+        .map(rawLine => rawLine.trim())
+        .find(rawLine => linePattern.test(rawLine));
+
+      if (!line) return '';
+
+      const value = line.slice(line.indexOf('=') + 1).trim();
+      return value.replace(/^['"]|['"]$/g, '');
+    } catch (error) {
+      logger.warn('Unable to read LightRAG env file for API key', {
+        envFile: filePath,
+        error: error.message
+      });
+      return '';
+    }
+  }
+
+  getRagApiKey() {
+    const ragEnvApiKey = this.readEnvValue(this.getRagEnvFilePath(), 'LIGHTRAG_API_KEY');
+    return ragEnvApiKey || process.env.LIGHTRAG_API_KEY || '';
+  }
+
+  getRagCurlExample(query = 'Sandra Esmeralda Senior Software Engineer experience') {
+    const payload = JSON.stringify({
+      query,
+      mode: 'mix',
+      top_k: 8,
+      chunk_top_k: 6
+    });
+    const ragDir = path.dirname(this.getRagEnvFilePath());
+    return `cd '${ragDir}' && set -a && source .env && set +a && curl -sS -X POST '${this.getRagDataEndpoint()}' -H "X-API-Key: $LIGHTRAG_API_KEY" -H 'Content-Type: application/json' --data '${payload}'`;
+  }
+
+  buildRagHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    const apiKey = this.getRagApiKey();
+
+    if (apiKey) {
+      headers['X-API-Key'] = apiKey;
+    } else {
+      logger.warn('Behavioral RAG API key is not configured', {
+        expectedEnvFile: this.getRagEnvFilePath(),
+        expectedEnvVar: 'LIGHTRAG_API_KEY',
+        curlExample: this.getRagCurlExample()
+      });
+    }
+
+    return headers;
+  }
+
+  shouldUseRagFirst(activeSkill) {
+    return this.normalizeSkillName(activeSkill) === 'behavioral';
+  }
+
+  isBehavioralRagDebugRequest(text) {
+    return /^\s*\/rag(?:\s|$)/i.test(String(text || ''));
+  }
+
+  getBehavioralRagDebugQuestion(text) {
+    return String(text || '')
+      .replace(/^\s*\/rag\b\s*/i, '')
+      .trim();
+  }
+
+  buildBehavioralRagQuery(userQuestion) {
+    const question = String(userQuestion || '').trim();
+    const profileAnchor = [
+      'Sandra Esmeralda Reyes Galvan',
+      'Sandra Esmeralda Reyes Galván',
+      'Sandra Reyes',
+      'personal resume CV professional profile',
+      'Senior Software Engineer experience',
+      'software engineering leadership experience',
+      'VestaOS Scotiabank AI ML MLOps RAG systems cloud transformation projects'
+    ].join(' | ');
+
+    if (/sandra|esmeralda|reyes|galv[aá]n/i.test(question)) {
+      return `${profileAnchor}. Interview question: ${question}`;
+    }
+
+    return `${profileAnchor}. The interviewer is asking about Sandra's own background and past experience. Interview question: ${question}`;
+  }
+
+  async queryBehavioralRag(userQuestion) {
+    const endpoint = this.getRagDataEndpoint();
+    const ragQuery = this.buildBehavioralRagQuery(userQuestion);
+    let lastRaw = null;
+    const payloads = [
+      { query: ragQuery, mode: 'mix', top_k: 8, chunk_top_k: 6 },
+      { query: ragQuery, mode: 'naive', top_k: 8, chunk_top_k: 6 }
+    ];
+
+    for (const payload of payloads) {
+      try {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: this.buildRagHeaders(),
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(this.getRagTimeoutMs())
+        });
+
+        if (!response.ok) {
+          logger.warn('Behavioral RAG query returned non-OK status', {
+            endpoint,
+            status: response.status,
+            payloadKeys: Object.keys(payload),
+            hasApiKey: !!this.getRagApiKey(),
+            expectedEnvFile: this.getRagEnvFilePath(),
+            expectedEnvVar: 'LIGHTRAG_API_KEY',
+            curlExample: this.getRagCurlExample(userQuestion),
+            timeoutMs: this.getRagTimeoutMs()
+          });
+          continue;
+        }
+
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const data = await response.json();
+          lastRaw = data;
+          const context = this.extractRagContext(data);
+          if (context) {
+            return { context, raw: data, endpoint };
+          }
+        } else {
+          lastRaw = await response.text();
+        }
+      } catch (error) {
+        logger.warn('Behavioral RAG query failed', {
+          endpoint,
+          payloadKeys: Object.keys(payload),
+          error: error.message,
+          timeoutMs: this.getRagTimeoutMs()
+        });
+      }
+    }
+
+    return { context: '', raw: lastRaw, endpoint };
+  }
+
+  cleanRagContent(content) {
+    return String(content || '')
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  extractRagContext(data) {
+    if (!data || typeof data === 'string') return '';
+
+    const dataSection = data.data && typeof data.data === 'object' ? data.data : data;
+    const sourceArrays = [dataSection.chunks, dataSection.references].filter(Array.isArray);
+
+    for (const sourceArray of sourceArrays) {
+      const context = sourceArray
+        .map((item, index) => {
+          if (!item || typeof item !== 'object') return '';
+          const content = this.cleanRagContent(item.content || item.text || item.chunk || item.page_content);
+          const title = item.file_path || item.document_id || item.source || item.chunk_id || item.id || `Source ${index + 1}`;
+          return content ? `${title}: ${content}` : '';
+        })
+        .filter(Boolean)
+        .join('\n\n')
+        .trim();
+
+      if (context) return context;
+    }
+
+    return '';
+  }
+
+  isInsufficientRagContext(context) {
+    const normalized = String(context || '').trim().toLowerCase();
+    if (!normalized) return true;
+
+    return [
+      'i do not have enough information to answer',
+      'not enough information to answer',
+      'no tengo suficiente informacion',
+      'no tengo suficiente información',
+      'insufficient information',
+      'no matching profile evidence'
+    ].some(phrase => normalized.includes(phrase));
+  }
+
+  summarizeRagRawResponse(raw) {
+    if (!raw || typeof raw !== 'object') {
+      return { keys: [], responseLength: 0, references: [], chunks: [] };
+    }
+
+    const dataSection = raw.data && typeof raw.data === 'object' ? raw.data : raw;
+    const references = Array.isArray(dataSection.references) ? dataSection.references.map(reference => ({
+      filePath: reference.file_path || reference.source || reference.id || 'unknown',
+      hasContent: !!reference.content,
+      contentLength: String(reference.content || '').length
+    })) : [];
+    const chunks = Array.isArray(dataSection.chunks) ? dataSection.chunks.map(chunk => ({
+      filePath: chunk.file_path || chunk.source || chunk.id || 'unknown',
+      chunkId: chunk.chunk_id || chunk.id || 'unknown',
+      hasContent: !!chunk.content,
+      contentLength: String(chunk.content || '').length,
+      preview: this.cleanRagContent(chunk.content || '').slice(0, 240)
+    })) : [];
+
+    return {
+      keys: Object.keys(raw),
+      dataKeys: Object.keys(dataSection),
+      responseLength: String(raw.response || raw.answer || raw.result || '').length,
+      references,
+      chunks
+    };
+  }
+
+  buildRagDebugResponse(userQuestion, ragResult, ragQuery) {
+    const rawSummary = this.summarizeRagRawResponse(ragResult.raw);
+    const context = ragResult.context || '';
+    const hasVerifiableContext = !!context && !this.isInsufficientRagContext(context);
+    const rawGeneratedAnswer = ragResult.raw && typeof ragResult.raw === 'object'
+      ? String(ragResult.raw.response || ragResult.raw.answer || ragResult.raw.result || '').trim()
+      : '';
+    const generatedPreview = rawGeneratedAnswer
+      ? rawGeneratedAnswer.slice(0, 900)
+      : 'No generated response field returned.';
+
+    const references = rawSummary.references.length
+      ? rawSummary.references.map(reference => `- ${reference.filePath}: content=${reference.hasContent ? 'yes' : 'no'}, bytes=${reference.contentLength}`).join('\n')
+      : '- No references returned.';
+    const chunks = rawSummary.chunks.length
+      ? rawSummary.chunks.map(chunk => `- ${chunk.filePath} / ${chunk.chunkId}: content=${chunk.hasContent ? 'yes' : 'no'}, bytes=${chunk.contentLength}\n  preview: ${chunk.preview}`).join('\n')
+      : '- No chunks returned.';
+
+    return `# RAG Debug\n\n## Curl usado\n\`\`\`bash\n${this.getRagCurlExample(ragQuery)}\n\`\`\`\n\n## Query enviada al RAG\n${ragQuery}\n\n## Resultado\n- Endpoint: ${ragResult.endpoint}\n- Contexto verificable usado por Vysper: ${hasVerifiableContext ? 'SI' : 'NO'}\n- Longitud de contexto verificable: ${context.length}\n- Keys del JSON: ${rawSummary.keys.join(', ') || 'none'}\n- Keys de data: ${(rawSummary.dataKeys || []).join(', ') || 'none'}\n- Longitud del campo generado response/answer/result: ${rawSummary.responseLength}\n\n## Chunks usados como evidencia\n${chunks}\n\n## Referencias\n${references}\n\n## Preview de respuesta generada por LightRAG\n${generatedPreview}`;
+  }
+
+  async debugBehavioralRag(userQuestion) {
+    const question = this.getBehavioralRagDebugQuestion(userQuestion) || userQuestion;
+    const ragQuery = this.buildBehavioralRagQuery(question);
+    const ragResult = await this.queryBehavioralRag(question);
+    return {
+      response: this.buildRagDebugResponse(question, ragResult, ragQuery),
+      metadata: {
+        skill: 'behavioral',
+        usedFallback: false,
+        ragDebug: true,
+        ragUsed: !!ragResult.context && !this.isInsufficientRagContext(ragResult.context),
+        ragEndpoint: ragResult.endpoint,
+        ragContextLength: ragResult.context ? ragResult.context.length : 0
+      }
+    };
+  }
+
+  buildNoRagEvidenceResponse(userQuestion) {
+    const question = String(userQuestion || '').trim();
+    const isEnglish = /^[\x00-\x7F]*$/.test(question);
+
+    if (isEnglish) {
+      return 'I do not have matching profile evidence in the RAG for that question, so I should not claim specific roles, companies, dates, projects, or metrics. A safe generic answer structure would be: "I have worked with AI-assisted development workflows, but I would need the exact project details to give a grounded STAR example."';
+    }
+
+    return 'No encontré evidencia de perfil en el RAG para esa pregunta, así que no debo afirmar roles, empresas, fechas, proyectos o métricas específicas. Una respuesta genérica segura sería: "He trabajado con flujos de desarrollo asistidos por IA, pero necesito los detalles exactos del proyecto para dar un ejemplo STAR fundamentado."';
+  }
+
+  async enrichGeminiRequestWithBehavioralRag(geminiRequest, userQuestion, activeSkill) {
+    if (!this.shouldUseRagFirst(activeSkill)) {
+      return { geminiRequest, ragUsed: false, ragEndpoint: null, ragContextLength: 0 };
+    }
+
+    const ragResult = await this.queryBehavioralRag(userQuestion);
+    let ragContext = ragResult.context ? ragResult.context.slice(0, 12000) : '';
+    if (this.isInsufficientRagContext(ragContext)) {
+      ragContext = '';
+    }
+
+    const profileGroundingRules = `\n\n# Mandatory Profile Grounding Rules\nFor behavioral interview answers about the user's specific profile, resume, past roles, companies, projects, metrics, agentic coding experience, achievements, or career history:\n- Use ONLY facts present in the Retrieved Behavioral RAG Context and the user's current transcript.\n- Treat Retrieved Behavioral RAG Context as raw source evidence, not as a draft to embellish. Preserve company names, job titles, dates, project names, and metrics exactly as stated.\n- Do NOT invent job titles, employers, dates, seniority, teams, products, metrics, credentials, or projects.\n- If the retrieved context does not contain enough evidence, say so briefly and ask for the missing detail or offer a generic answer template without personal claims.\n- You may provide general behavioral interview structure, but label it as a generic template when it is not grounded in retrieved profile context.\n- Never include shell commands, curl commands, environment variable snippets, or RAG diagnostics in behavioral answers unless the user explicitly asks for debugging help.`;
+
+    const ragInstruction = ragContext
+      ? `\n\n# Retrieved Behavioral RAG Context\nUse this retrieved context first when crafting the behavioral interview answer. Prefer these facts over generic examples. Do not invent facts beyond the transcript and retrieved context.\n\n${ragContext}`
+      : `\n\n# Retrieved Behavioral RAG Context\nNo usable profile context was retrieved from RAG for this question. For any profile-specific answer, explicitly say that no matching profile evidence was found in RAG and avoid personal claims.`;
+
+    const fullRagInstruction = `${profileGroundingRules}${ragInstruction}`;
+
+    if (geminiRequest.systemInstruction?.parts?.[0]?.text) {
+      geminiRequest.systemInstruction.parts[0].text = `${geminiRequest.systemInstruction.parts[0].text}${fullRagInstruction}`;
+    } else {
+      geminiRequest.systemInstruction = {
+        parts: [{ text: `# Behavioral Interview Helper Agent${fullRagInstruction}` }]
+      };
+    }
+
+    if (!ragContext) {
+      logger.warn('Behavioral RAG returned no usable context; profile-specific claims are disabled', {
+        endpoint: ragResult.endpoint
+      });
+      return { geminiRequest, ragUsed: false, ragEndpoint: ragResult.endpoint, ragContextLength: 0 };
+    }
+
+    logger.info('Behavioral RAG context attached to Gemini request', {
+      endpoint: ragResult.endpoint,
+      contextLength: ragContext.length
+    });
+
+    return {
+      geminiRequest,
+      ragUsed: true,
+      ragEndpoint: ragResult.endpoint,
+      ragContextLength: ragContext.length
+    };
+  }
+
   async processTextWithSkill(text, activeSkill, sessionMemory = [], programmingLanguage = null) {
     if (!this.isInitialized) {
       const initError = new Error('LLM service not initialized. Check Gemini API key configuration.');
@@ -69,7 +409,34 @@ class LLMService {
         requestId: this.requestCount
       });
 
-      const geminiRequest = this.buildGeminiRequest(text, activeSkill, sessionMemory, programmingLanguage);
+      if (this.shouldUseRagFirst(activeSkill) && this.isBehavioralRagDebugRequest(text)) {
+        const debugResult = await this.debugBehavioralRag(text);
+        debugResult.metadata.processingTime = Date.now() - startTime;
+        debugResult.metadata.requestId = this.requestCount;
+        debugResult.metadata.programmingLanguage = programmingLanguage;
+        return debugResult;
+      }
+
+      let geminiRequest = this.buildGeminiRequest(text, activeSkill, sessionMemory, programmingLanguage);
+      const ragMetadata = await this.enrichGeminiRequestWithBehavioralRag(geminiRequest, text, activeSkill);
+      geminiRequest = ragMetadata.geminiRequest;
+
+      if (this.shouldUseRagFirst(activeSkill) && !ragMetadata.ragUsed) {
+        const response = this.buildNoRagEvidenceResponse(text);
+        return {
+          response,
+          metadata: {
+            skill: activeSkill,
+            programmingLanguage,
+            processingTime: Date.now() - startTime,
+            requestId: this.requestCount,
+            usedFallback: false,
+            ragUsed: false,
+            ragEndpoint: ragMetadata?.ragEndpoint || null,
+            ragContextLength: 0
+          }
+        };
+      }
       
       // Try standard method first
       let response;
@@ -103,7 +470,10 @@ class LLMService {
           programmingLanguage,
           processingTime: Date.now() - startTime,
           requestId: this.requestCount,
-          usedFallback: false
+          usedFallback: false,
+          ragUsed: ragMetadata?.ragUsed || false,
+          ragEndpoint: ragMetadata?.ragEndpoint || null,
+          ragContextLength: ragMetadata?.ragContextLength || 0
         }
       };
     } catch (error) {
@@ -320,7 +690,36 @@ class LLMService {
         requestId: this.requestCount
       });
 
-      const geminiRequest = this.buildIntelligentTranscriptionRequest(text, activeSkill, sessionMemory, programmingLanguage);
+      if (this.shouldUseRagFirst(activeSkill) && this.isBehavioralRagDebugRequest(text)) {
+        const debugResult = await this.debugBehavioralRag(text);
+        debugResult.metadata.processingTime = Date.now() - startTime;
+        debugResult.metadata.requestId = this.requestCount;
+        debugResult.metadata.programmingLanguage = programmingLanguage;
+        debugResult.metadata.isTranscriptionResponse = true;
+        return debugResult;
+      }
+
+      let geminiRequest = this.buildIntelligentTranscriptionRequest(text, activeSkill, sessionMemory, programmingLanguage);
+      const ragMetadata = await this.enrichGeminiRequestWithBehavioralRag(geminiRequest, text, activeSkill);
+      geminiRequest = ragMetadata.geminiRequest;
+
+      if (this.shouldUseRagFirst(activeSkill) && !ragMetadata.ragUsed) {
+        const response = this.buildNoRagEvidenceResponse(text);
+        return {
+          response,
+          metadata: {
+            skill: activeSkill,
+            programmingLanguage,
+            processingTime: Date.now() - startTime,
+            requestId: this.requestCount,
+            usedFallback: false,
+            isTranscriptionResponse: true,
+            ragUsed: false,
+            ragEndpoint: ragMetadata?.ragEndpoint || null,
+            ragContextLength: 0
+          }
+        };
+      }
       
       // Try standard method first
       let response;
@@ -355,7 +754,10 @@ class LLMService {
           processingTime: Date.now() - startTime,
           requestId: this.requestCount,
           usedFallback: false,
-          isTranscriptionResponse: true
+          isTranscriptionResponse: true,
+          ragUsed: ragMetadata?.ragUsed || false,
+          ragEndpoint: ragMetadata?.ragEndpoint || null,
+          ragContextLength: ragMetadata?.ragContextLength || 0
         }
       };
     } catch (error) {
