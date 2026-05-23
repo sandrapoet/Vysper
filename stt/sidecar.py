@@ -181,6 +181,14 @@ def _vad_loop() -> None:
     while not _quit_event.is_set():
         if _flush_event.is_set():
             _flush_event.clear()
+            # Drenar chunks pendientes para no perder el final del audio
+            while True:
+                try:
+                    remaining = _audio_q.get_nowait()
+                    if speaking:
+                        speech_buf.append(remaining)
+                except queue.Empty:
+                    break
             flush_current_speech("stop")
             continue
 
