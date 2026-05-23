@@ -113,6 +113,11 @@ class ApplicationController {
     );
   }
 
+// # behavioral: experiencia, fortalezas, debilidades, conflictos, liderazgo, “háblame de ti”.
+// # negotiation: expectativas salariales, condiciones, cierre de oferta.
+// # presentation: cuando te pidan pitch personal o responder con estructura más ejecutiva.
+// programming / system-design / devops / data-science: solo cuando la entrevista pase a preguntas técnicas específicas.
+
   setupGlobalShortcuts() {
     const shortcuts = {
       "CommandOrControl+Shift+S": () => this.triggerScreenshotOCR(),

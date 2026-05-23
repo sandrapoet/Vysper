@@ -2,6 +2,11 @@
 
 Necesito tu apoyo para desarrollar el codigo que te estare solicitando.
 
+## Language Policy
+
+- Respond in English by default.
+- Switch to Spanish only if the user explicitly requests Spanish in the chat.
+
 ## REGLAS para codificar
 
 - Prioriza optimizar el uso de memoria y tiempo de ejecucion.

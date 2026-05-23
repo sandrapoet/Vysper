@@ -85,7 +85,7 @@ install_system_dependencies() {
     trap 'kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true' EXIT
 
     echo
-    echo "[0/6] Installing Ubuntu system dependencies..."
+    echo "[0/7] Installing Ubuntu system dependencies..."
     sudo apt-get update
     if [ $? -ne 0 ]; then
         echo "[ERROR] apt-get update failed."
@@ -140,7 +140,7 @@ echo "[OK] Python $PY_VER found."
 
 if [ ! -d "venv" ]; then
     echo
-    echo "[1/6] Creating virtual environment..."
+    echo "[1/7] Creating virtual environment..."
 
     $PYTHON_BIN -m venv venv
 
@@ -171,7 +171,7 @@ echo "[OK] Virtual environment activated."
 # ── 4. Upgrade pip silently ─────────────────────────────────
 
 echo
-echo "[2/6] Upgrading pip..."
+echo "[2/7] Upgrading pip..."
 
 python -m pip install --upgrade pip --quiet
 
@@ -183,7 +183,7 @@ fi
 # ── 5. Install CPU-only PyTorch audio stack ─────────────────
 
 echo
-echo "[3/6] Installing PyTorch CPU-only audio stack..."
+echo "[3/7] Installing PyTorch CPU-only audio stack..."
 echo "      This may take several minutes on first run."
 
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu --quiet
@@ -198,7 +198,7 @@ echo "[OK] PyTorch audio stack installed."
 # ── 6. Install remaining dependencies ───────────────────────
 
 echo
-echo "[4/6] Installing faster-whisper, sounddevice, numpy..."
+echo "[4/7] Installing faster-whisper, sounddevice, numpy..."
 
 pip install faster-whisper sounddevice numpy --quiet
 
@@ -214,7 +214,7 @@ echo "[OK] Dependencies installed."
 # ── 7. Pre-download models ──────────────────────────────────
 
 echo
-echo "[5/6] Pre-downloading models, cached for future use..."
+echo "[5/7] Pre-downloading models, cached for future use..."
 echo "      Silero VAD model, approximately 2 MB..."
 
 python -c "import torch; torch.hub.load('snakers4/silero-vad', 'silero_vad', force_reload=True, verbose=True)"
@@ -238,7 +238,7 @@ fi
 # ── 8. Install Node dependencies and optionally launch app ──
 
 echo
-echo "[6/6] Installing Node dependencies..."
+echo "[6/7] Installing Node dependencies..."
 
 cd "$PROJECT_ROOT" || exit 1
 
@@ -256,6 +256,48 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "[OK] Node dependencies installed."
+
+# ── 9. Start LightRAG via Docker Compose ────────────────────
+
+echo
+echo "[7/7] Starting LightRAG service..."
+
+MIRAG_LIGHTRAG_DIR="/media/san/Miscosas6/Desarrollo/MiRag/LightRAG"
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo "[WARN] docker not found; skipping LightRAG startup."
+    echo "       Start it manually with:"
+    echo "       docker compose -f \"$MIRAG_LIGHTRAG_DIR/docker-compose.yml\" up -d"
+else
+    if curl -s --max-time 2 http://localhost:9621 >/dev/null 2>&1; then
+        echo "[OK] LightRAG already running on port 9621."
+    else
+        docker compose -f "$MIRAG_LIGHTRAG_DIR/docker-compose.yml" up -d
+
+        if [ $? -ne 0 ]; then
+            echo "[WARN] docker compose failed to start LightRAG."
+            echo "       Start it manually with:"
+            echo "       docker compose -f \"$MIRAG_LIGHTRAG_DIR/docker-compose.yml\" up -d"
+        else
+            echo "[INFO] Waiting for LightRAG to become ready (up to 30s)..."
+            LIGHTRAG_READY=0
+            for i in $(seq 1 15); do
+                if curl -s --max-time 2 http://localhost:9621 >/dev/null 2>&1; then
+                    LIGHTRAG_READY=1
+                    break
+                fi
+                sleep 2
+            done
+
+            if [ "$LIGHTRAG_READY" -eq 1 ]; then
+                echo "[OK] LightRAG is up on port 9621."
+            else
+                echo "[WARN] LightRAG did not respond within 30 seconds."
+                echo "       Check container logs with: docker logs lightrag"
+            fi
+        fi
+    fi
+fi
 
 echo
 echo "============================================================"
