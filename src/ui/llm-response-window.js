@@ -1,5 +1,12 @@
 const logger = require("../core/logger");
 
+function shouldUseCompactOcrLayout(metadata = {}) {
+  if (metadata.isOCRPreview) return true;
+  const skill = String(metadata.skill || '').trim().toLowerCase();
+  if (metadata.isContextAck && ['programming', 'dsa'].includes(skill)) return true;
+  return false;
+}
+
 class LLMResponseWindowUI {
   constructor() {
     this.currentLayout = "split";
@@ -198,7 +205,19 @@ class LLMResponseWindowUI {
       });
 
       // Rest of the method...
-      const shouldKeepCompact = data.metadata?.isContextAck || data.metadata?.isOCRPreview;
+      const shouldKeepCompact = shouldUseCompactOcrLayout(data.metadata);
+      if (shouldKeepCompact) {
+        document.body.classList.add('compact-ocr-layout');
+      } else {
+        document.body.classList.remove('compact-ocr-layout');
+      }
+      logger.debug('Compact layout decision in renderer', {
+        component: 'LLMResponseWindowUI',
+        shouldKeepCompact,
+        isOCRPreview: data.metadata?.isOCRPreview,
+        isContextAck: data.metadata?.isContextAck,
+        skill: data.metadata?.skill
+      });
       if (!shouldKeepCompact && (window.innerWidth < 500 || window.innerHeight < 300)) {
         this.handleWindowExpansion(data);
       } else {
@@ -343,7 +362,7 @@ class LLMResponseWindowUI {
 
       // Setup additional features
       this.setupScrolling();
-      if (!data.metadata?.isContextAck && !data.metadata?.isOCRPreview) {
+      if (!shouldUseCompactOcrLayout(data.metadata)) {
         this.requestWindowResize(contentMetrics);
       }
 

@@ -1021,7 +1021,9 @@ class WindowManager {
     }
 
     this.windows.forEach((window, type) => {
-      if (type !== 'llmResponse') { // Don't show LLM response unless it has content
+      // llmResponse: solo se muestra cuando tiene contenido.
+      // settings: solo se abre explícitamente (Ctrl+Shift+X), nunca en toggle.
+      if (type !== 'llmResponse' && type !== 'settings') {
         this.showOnCurrentDesktop(window);
       }
     });
@@ -1096,10 +1098,16 @@ class WindowManager {
 
     if (this.isVisible) {
       this.hideAllWindows();
+      // hideAllWindows excluye llmResponse intencionalmente para otros flujos;
+      // al hacer toggle manual sí debemos ocultarla también.
+      const llmWindow = this.windows.get('llmResponse');
+      if (llmWindow && !llmWindow.isDestroyed() && llmWindow.isVisible()) {
+        llmWindow.hide();
+      }
     } else {
       this.showAllWindows();
     }
-    
+
     return this.isVisible;
   }
 
@@ -1283,26 +1291,44 @@ class WindowManager {
 
     this.resetLLMWindowToDefaultSize();
 
+    const useCompactLayout = this.shouldUseCompactOcrLayout(metadata);
+    logger.debug('Layout decision for LLM response', {
+      useCompactLayout,
+      isOCRPreview: metadata.isOCRPreview,
+      isContextAck: metadata.isContextAck,
+      skill: metadata.skill
+    });
+
     logger.debug('Sending display-llm-response event to window');
     llmWindow.webContents.send('display-llm-response', {
       content,
       metadata,
       timestamp: new Date().toISOString()
     });
-    
+
     logger.debug('Showing and focusing LLM window');
     this.showOnCurrentDesktop(llmWindow);
-    
+
     // Position bound windows when LLM response is shown
     if (this.bindWindows) {
       this.positionBoundWindows();
     }
-        
+
+    // Override position to top-left for compact OCR/ACK layout.
+    // Se llama dos veces: inmediato + 150ms diferido para cubrir WMs que reposicionan al hacer show().
+    if (useCompactLayout) {
+      this.positionLLMTopLeft(llmWindow);
+      setTimeout(() => {
+        if (!llmWindow.isDestroyed()) this.positionLLMTopLeft(llmWindow);
+      }, 150);
+    }
+
     logger.info('LLM response displayed', {
       contentLength: content.length,
       skill: metadata.skill,
       windowVisible: llmWindow.isVisible(),
-      boundWindows: this.bindWindows
+      boundWindows: this.bindWindows,
+      useCompactLayout
     });
   }
 
@@ -1455,6 +1481,32 @@ class WindowManager {
       position: `${x},${y}`,
       topMargin,
       display: display.id || 'primary'
+    });
+  }
+
+  normalizeSkill(skill) {
+    return String(skill || '').trim().toLowerCase();
+  }
+
+  isCodingAccumulationSkill(skill) {
+    return ['programming', 'dsa'].includes(this.normalizeSkill(skill));
+  }
+
+  shouldUseCompactOcrLayout(metadata = {}) {
+    if (metadata.isOCRPreview) return true;
+    if (metadata.isContextAck && this.isCodingAccumulationSkill(metadata.skill)) return true;
+    return false;
+  }
+
+  positionLLMTopLeft(llmWindow) {
+    if (!llmWindow || llmWindow.isDestroyed()) return;
+    const display = this.currentDisplay || screen.getPrimaryDisplay();
+    const { x: displayX, y: displayY } = display.workArea || display.workAreaSize;
+    const topMargin = 20;
+    this.setWindowPosition(llmWindow, displayX, displayY + topMargin, 'llmResponse-top-left');
+    logger.debug('LLM window positioned top-left for compact layout', {
+      x: displayX,
+      y: displayY + topMargin
     });
   }
 

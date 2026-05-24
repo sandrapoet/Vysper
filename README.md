@@ -1,3 +1,15 @@
+###
+Mapa de atajos actualizado:
+
+Shortcut	Acción
+Ctrl+Shift+Z	Ocultar / mostrar todas las ventanas (incluye ventana gris)
+Ctrl+Shift+X	Abrir configuración — solo en modo interactivo
+Ctrl+Shift+V	Pegar portapapeles en cursor — solo en modo interactivo
+Ctrl+Shift+A	Guardar imágenes OCR + consolidar !!!
+Ctrl+Shift+S	Captura OCR
+Ctrl+Shift+I / Alt+A	Toggle modo interactivo
+###
+
 <p align="center">
   <img src="https://github.com/user-attachments/assets/186d5458-7e8b-406a-9adc-ce755256298c" 
        alt="Group 14" 

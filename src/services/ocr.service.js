@@ -121,6 +121,7 @@ class OCRService {
 
       return {
         text: extractedText.trim(),
+        image: croppedImage,
         metadata: {
           timestamp: new Date().toISOString(),
           region: cropRect,

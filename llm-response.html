@@ -231,6 +231,32 @@
             }
         }
 
+        /* Compact OCR/ACK layout: fuerza scroll dual sin expansión de ventana */
+        .compact-ocr-layout .text-panel,
+        .compact-ocr-layout .code-panel {
+            overflow: auto;
+        }
+        .compact-ocr-layout .panel-content {
+            overflow: auto;
+            max-width: 100%;
+            max-height: 100%;
+            white-space: pre-wrap;
+        }
+        .compact-ocr-layout .full-content {
+            overflow: auto;
+            max-width: 100%;
+            max-height: 100%;
+        }
+        .compact-ocr-layout .full-content-inner {
+            overflow: auto;
+            max-width: 100%;
+            max-height: 100%;
+            white-space: pre-wrap;
+        }
+        .compact-ocr-layout .split-layout {
+            overflow: auto;
+        }
+
         /* Interactive scrolling enhancements */
         .interactive-scrolling .panel-content,
         .interactive-scrolling .full-content-inner {
