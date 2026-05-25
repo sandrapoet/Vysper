@@ -139,6 +139,53 @@ class OCRService {
     }
   }
 
+  async captureRegionImage(bounds) {
+    if (this.isProcessing) {
+      throw new Error('OCR operation already in progress');
+    }
+
+    this.isProcessing = true;
+    const startTime = Date.now();
+
+    try {
+      const { screen } = require('electron');
+      const requestedDisplay = this.normalizeDisplay(bounds.display) || screen.getPrimaryDisplay();
+      const requestedCropRect = this.normalizeCropRect(bounds);
+      const { display, cropRect } = this.resolveCaptureTarget(requestedDisplay, requestedCropRect);
+
+      logger.info('Starting regional screenshot capture without OCR', {
+        displayId: display.id,
+        cropRect,
+        requestedDisplayId: requestedDisplay.id
+      });
+
+      const croppedImage = await this.robustScreenCapture(display, cropRect);
+
+      logger.logPerformance('Regional image capture', startTime, {
+        hasImage: !!croppedImage,
+        displayId: display.id
+      });
+
+      return {
+        image: croppedImage,
+        metadata: {
+          timestamp: new Date().toISOString(),
+          region: cropRect,
+          display: {
+            id: display.id,
+            bounds: display.bounds,
+            scaleFactor: display.scaleFactor
+          },
+          processingTime: Date.now() - startTime,
+          source: 'screenshot-region-image'
+        }
+      };
+    } finally {
+      this.isProcessing = false;
+      this.cleanup();
+    }
+  }
+
   normalizeDisplay(display) {
     if (!display || !display.bounds) {
       return null;

@@ -154,6 +154,21 @@ class SessionManager {
   }
 
   /**
+   * Add raw image capture event (no OCR text)
+   */
+  addImageCaptureEvent(metadata = {}) {
+    return this.addConversationEvent({
+      role: 'user',
+      content: '[IMAGE CAPTURED WITHOUT OCR]',
+      action: 'image_capture',
+      metadata: {
+        source: 'screenshot',
+        ...metadata
+      }
+    });
+  }
+
+  /**
    * Create a conversation event with consistent structure
    */
   createConversationEvent({ role, content, skill, action, metadata = {} }) {
@@ -336,6 +351,8 @@ class SessionManager {
         return `AI responded in ${skill} mode (${details.responseLength || details.contentLength} chars)`;
       case 'ocr_extraction':
         return `Screenshot text extracted: ${details.textLength || details.contentLength} characters (${skill} mode)`;
+      case 'image_capture':
+        return `Screenshot image captured without OCR (${skill} mode)`;
       case 'skill_change':
         return `Switched from ${details.previousSkill} to ${details.newSkill} mode`;
       case 'skill_prompt_initialization':

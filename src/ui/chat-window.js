@@ -73,6 +73,10 @@ class ChatWindowUI {
                     this.handleInteractionDisabled();
                 }
             });
+
+            window.electronAPI.receive('focus-chat-input', () => {
+                this.focusMessageInput();
+            });
             
             // Speech recognition handlers
             window.electronAPI.onTranscriptionReceived((event, data) => {
@@ -237,6 +241,7 @@ class ChatWindowUI {
     handleInteractionEnabled() {
         this.isInteractive = true;
         this.elements.chatContainer.classList.remove('non-interactive');
+        this.focusMessageInput();
         this.showInteractionIndicator('Interactive', true);
         logger.debug('Interaction mode enabled in chat');
     }
@@ -246,6 +251,15 @@ class ChatWindowUI {
         this.elements.chatContainer.classList.add('non-interactive');
         this.showInteractionIndicator('Non-Interactive', false);
         logger.debug('Interaction mode disabled in chat');
+    }
+
+    focusMessageInput() {
+        if (!this.elements.messageInput) return;
+        setTimeout(() => {
+            this.elements.messageInput.disabled = false;
+            this.elements.messageInput.focus();
+            this.elements.messageInput.select();
+        }, 80);
     }
 
     handleRecordingStarted() {

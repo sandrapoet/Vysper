@@ -615,10 +615,14 @@ class WindowManager {
 
     const [windowWidth] = window.getSize();
     
+    if (type === 'llmResponse') {
+      this.positionLLMBottomLeft(window);
+      return;
+    }
+
     const positions = {
       main: { x: displayX + 50, y: displayY + topMargin },
       chat: { x: displayX + screenWidth - windowWidth - 50, y: displayY + topMargin },
-      llmResponse: { x: displayX + (screenWidth - windowWidth) / 2, y: displayY + topMargin },
       settings: { x: displayX + (screenWidth - windowWidth) / 2, y: displayY + topMargin }
     };
 
@@ -677,38 +681,20 @@ class WindowManager {
     const [mainWidth, mainHeight] = mainWindow.getSize();
     const [llmWidth, llmHeight] = llmWindow.getSize();
     
-    // Always position at the top of the screen with small margin
+    // Position main window at top-left
     const topMargin = 20;
-    const startY = displayY + topMargin;
-    
-    // Use the wider window for horizontal centering
-    const maxWidth = Math.max(mainWidth, llmWidth);
-    
-    // Center horizontally on the display
-    const xPosition = displayX + Math.round((screenWidth - maxWidth) / 2);
-    
-    // Ensure windows don't go outside screen bounds horizontally
-    const adjustedMainX = Math.max(displayX, Math.min(displayX + screenWidth - mainWidth, xPosition));
-    const adjustedLlmX = Math.max(displayX, Math.min(displayX + screenWidth - llmWidth, xPosition));
-    
-    // Position main window (top)
-    const mainX = adjustedMainX;
-    const mainY = startY;
+    const mainX = displayX + 50;
+    const mainY = displayY + topMargin;
     this.setWindowPosition(mainWindow, mainX, mainY, 'main');
-    
-    // Position LLM response window below with gap
-    const llmX = adjustedLlmX;
-    const llmY = startY + mainHeight + this.windowGap;
-    this.setWindowPosition(llmWindow, llmX, llmY, 'llmResponse');
-    
+
+    // Position LLM response window at the bottom-left edge of the gray overlay.
+    this.positionLLMBottomLeft(llmWindow);
+
     // Update stored position (use main window position as reference)
-    this.boundWindowsPosition = { x: adjustedMainX, y: startY };
-    
-    logger.debug('Positioned bound windows at top (column layout)', {
+    this.boundWindowsPosition = { x: mainX, y: mainY };
+
+    logger.debug('Positioned bound windows: main top-left, llm bottom-left', {
       mainPosition: `${mainX},${mainY}`,
-      llmPosition: `${llmX},${llmY}`,
-      gap: this.windowGap,
-      topMargin: topMargin,
       display: display.id
     });
   }
@@ -1005,6 +991,11 @@ class WindowManager {
     const targetWindow = this.windows.get(windowType);
     if (targetWindow) {
       this.showOnCurrentDesktop(targetWindow);
+      if (windowType === 'chat') {
+        targetWindow.focus();
+        targetWindow.webContents.focus();
+        targetWindow.webContents.send('focus-chat-input');
+      }
 
       this.activeWindow = windowType;
       
@@ -1126,6 +1117,15 @@ class WindowManager {
         window.webContents.send('interaction-mode-changed', interactive);
       }
     });
+
+    if (interactive) {
+      const chatWindow = this.windows.get('chat');
+      if (chatWindow && !chatWindow.isDestroyed() && chatWindow.isVisible()) {
+        chatWindow.focus();
+        chatWindow.webContents.focus();
+        chatWindow.webContents.send('focus-chat-input');
+      }
+    }
     
     logger.info('Window interaction mode changed', { 
       interactive,
@@ -1314,14 +1314,12 @@ class WindowManager {
       this.positionBoundWindows();
     }
 
-    // Override position to top-left for compact OCR/ACK layout.
+    // Always position at bottom-left.
     // Se llama dos veces: inmediato + 150ms diferido para cubrir WMs que reposicionan al hacer show().
-    if (useCompactLayout) {
-      this.positionLLMTopLeft(llmWindow);
-      setTimeout(() => {
-        if (!llmWindow.isDestroyed()) this.positionLLMTopLeft(llmWindow);
-      }, 150);
-    }
+    this.positionLLMBottomLeft(llmWindow);
+    setTimeout(() => {
+      if (!llmWindow.isDestroyed()) this.positionLLMBottomLeft(llmWindow);
+    }, 150);
 
     logger.info('LLM response displayed', {
       contentLength: content.length,
@@ -1349,7 +1347,11 @@ class WindowManager {
       if (this.bindWindows) {
         this.positionBoundWindows();
       }
-      
+      this.positionLLMBottomLeft(llmWindow);
+      setTimeout(() => {
+        if (!llmWindow.isDestroyed()) this.positionLLMBottomLeft(llmWindow);
+      }, 150);
+
       logger.debug('LLM loading window shown');
     } else {
       logger.error('LLM window not available for loading state');
@@ -1498,16 +1500,16 @@ class WindowManager {
     return false;
   }
 
-  positionLLMTopLeft(llmWindow) {
+  positionLLMBottomLeft(llmWindow) {
     if (!llmWindow || llmWindow.isDestroyed()) return;
     const display = this.currentDisplay || screen.getPrimaryDisplay();
-    const { x: displayX, y: displayY } = display.workArea || display.workAreaSize;
-    const topMargin = 20;
-    this.setWindowPosition(llmWindow, displayX, displayY + topMargin, 'llmResponse-top-left');
-    logger.debug('LLM window positioned top-left for compact layout', {
-      x: displayX,
-      y: displayY + topMargin
-    });
+    const { x: displayX, y: displayY, height: screenHeight } = display.workArea || display.workAreaSize;
+    const [, winHeight] = llmWindow.getSize();
+    const bottomMargin = 10;
+    const x = displayX;
+    const y = displayY + screenHeight - winHeight - bottomMargin;
+    this.setWindowPosition(llmWindow, x, y, 'llmResponse-bottom-left');
+    logger.debug('LLM window positioned bottom-left', { x, y });
   }
 
   broadcastToAllWindows(channel, data) {

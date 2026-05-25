@@ -661,6 +661,15 @@
       let listeningTimer = null;
       let thinkingIndicatorTimer = null;
 
+      function focusMessageInput() {
+        if (!messageInput) return;
+        setTimeout(() => {
+          messageInput.disabled = false;
+          messageInput.focus();
+          messageInput.select();
+        }, 80);
+      }
+
       function normalizeCommandText(text) {
         return String(text || '')
           .trim()
@@ -883,6 +892,20 @@
       
       // Listen for transcription events
       if (whysperAPI) {
+        whysperAPI.onInteractionModeChanged((event, interactive) => {
+          isInteractive = interactive;
+          if (interactive) {
+            chatContainer.classList.remove('non-interactive');
+            focusMessageInput();
+          } else {
+            chatContainer.classList.add('non-interactive');
+          }
+        });
+
+        whysperAPI.receive('focus-chat-input', () => {
+          focusMessageInput();
+        });
+
         whysperAPI.onTranscriptionReceived((event, data) => {
           if (data && data.text) {
             handleTranscription(data.text);

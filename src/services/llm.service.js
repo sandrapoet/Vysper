@@ -777,7 +777,7 @@ class LLMService {
     return fallbackResult;
   }
 
-  async processProgrammingFinalization(text, programmingLanguage = null) {
+  async processProgrammingFinalization(text, programmingLanguage = null, imageBuffers = []) {
     if (!this.isInitialized) {
       const initError = new Error('LLM service not initialized. Check Gemini API key configuration.');
       if (config.getApiKey('ANTHROPIC')) {
@@ -799,8 +799,15 @@ class LLMService {
       logger.info('Processing programming finalization with direct code prompt', {
         textLength: text.length,
         programmingLanguage: programmingLanguage || 'not specified',
+        imageCount: Array.isArray(imageBuffers) ? imageBuffers.length : 0,
         requestId: this.requestCount
       });
+
+      const imageParts = this.buildGeminiImageParts(imageBuffers);
+      const userParts = [{ text }];
+      if (imageParts.length > 0) {
+        userParts.push(...imageParts);
+      }
 
       const request = {
         systemInstruction: {
@@ -810,7 +817,7 @@ class LLMService {
         },
         contents: [{
           role: 'user',
-          parts: [{ text }]
+          parts: userParts
         }],
         generationConfig: {
           temperature: 0.1,
@@ -836,6 +843,7 @@ class LLMService {
         metadata: {
           skill: 'programming',
           programmingLanguage,
+          imageCount: imageParts.length,
           processingTime: Date.now() - startTime,
           requestId: this.requestCount,
           usedFallback: false,
@@ -863,6 +871,96 @@ class LLMService {
 
       throw error;
     }
+  }
+
+  async processImageWithSkill(imageBuffer, activeSkill, sessionMemory = [], programmingLanguage = null, promptText = 'Analiza la imagen adjunta y responde segun el modo activo.') {
+    if (!this.isInitialized) {
+      throw new Error('LLM service not initialized. Check Gemini API key configuration.');
+    }
+
+    if (!Buffer.isBuffer(imageBuffer) || imageBuffer.length === 0) {
+      throw new Error('Invalid image buffer provided for multimodal processing');
+    }
+
+    const startTime = Date.now();
+    this.requestCount++;
+
+    try {
+      logger.info('Processing image with skill context', {
+        activeSkill,
+        imageBytes: imageBuffer.length,
+        programmingLanguage: programmingLanguage || 'not specified',
+        requestId: this.requestCount
+      });
+
+      const request = this.buildGeminiRequest(promptText, activeSkill, sessionMemory, programmingLanguage);
+      const lastUserContent = request.contents[request.contents.length - 1];
+
+      if (!lastUserContent || !Array.isArray(lastUserContent.parts)) {
+        throw new Error('Failed to build multimodal request: missing user parts');
+      }
+
+      lastUserContent.parts.push(this.buildGeminiImagePart(imageBuffer));
+
+      let response;
+      try {
+        response = await this.executeRequest(request);
+      } catch (error) {
+        if (error.message.includes('fetch failed') && config.get('llm.gemini.enableFallbackMethod')) {
+          response = await this.executeAlternativeRequest(request);
+        } else {
+          throw error;
+        }
+      }
+
+      return {
+        response,
+        metadata: {
+          skill: activeSkill,
+          programmingLanguage,
+          imageCount: 1,
+          processingTime: Date.now() - startTime,
+          requestId: this.requestCount,
+          usedFallback: false,
+          isImageResponse: true
+        }
+      };
+    } catch (error) {
+      this.errorCount++;
+      logger.error('Multimodal image processing failed', {
+        error: error.message,
+        activeSkill,
+        programmingLanguage: programmingLanguage || 'not specified',
+        requestId: this.requestCount
+      });
+
+      if (config.get('llm.gemini.fallbackEnabled')) {
+        return this.generateIntelligentFallbackResponse(promptText, activeSkill, error.message);
+      }
+
+      throw error;
+    }
+  }
+
+  buildGeminiImageParts(imageBuffers = [], maxImages = 12) {
+    if (!Array.isArray(imageBuffers) || imageBuffers.length === 0) {
+      return [];
+    }
+
+    const validBuffers = imageBuffers
+      .filter((buffer) => Buffer.isBuffer(buffer) && buffer.length > 0)
+      .slice(-maxImages);
+
+    return validBuffers.map((buffer) => this.buildGeminiImagePart(buffer));
+  }
+
+  buildGeminiImagePart(imageBuffer) {
+    return {
+      inlineData: {
+        mimeType: 'image/png',
+        data: imageBuffer.toString('base64')
+      }
+    };
   }
 
   async processTranscriptionWithIntelligentResponse(text, activeSkill, sessionMemory = [], programmingLanguage = null) {

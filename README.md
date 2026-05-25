@@ -5,8 +5,10 @@ Shortcut	Acción
 Ctrl+Shift+Z	Ocultar / mostrar todas las ventanas (incluye ventana gris)
 Ctrl+Shift+X	Abrir configuración — solo en modo interactivo
 Ctrl+Shift+V	Pegar portapapeles en cursor — solo en modo interactivo
-Ctrl+Shift+A	Guardar imágenes OCR + consolidar !!!
+Ctrl+Shift+B / Alt+B	Copiar selección al portapapeles — solo en modo interactivo
+Ctrl+A / Ctrl+Shift+A	Guardar imágenes acumuladas (OCR + sin OCR) + consolidar !!!
 Ctrl+Shift+S	Captura OCR
+Ctrl+Ñ	Captura imagen sin OCR
 Ctrl+Shift+I / Alt+A	Toggle modo interactivo
 ###
 

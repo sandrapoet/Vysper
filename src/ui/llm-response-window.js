@@ -211,6 +211,7 @@ class LLMResponseWindowUI {
       } else {
         document.body.classList.remove('compact-ocr-layout');
       }
+      document.body.classList.remove('code-only-layout');
       logger.debug('Compact layout decision in renderer', {
         component: 'LLMResponseWindowUI',
         shouldKeepCompact,
@@ -632,6 +633,11 @@ class LLMResponseWindowUI {
 
     // Clean up text content
     textContent = textContent.replace(/\n\s*\n\s*\n/g, "\n\n").trim();
+    if (this.isMostlyCodeResponse(textContent, codeBlocks)) {
+      document.body.classList.add("code-only-layout");
+    } else {
+      document.body.classList.remove("code-only-layout");
+    }
 
     // Render text content
     if (this.elements.textContent && typeof marked !== "undefined") {
@@ -648,7 +654,17 @@ class LLMResponseWindowUI {
     logger.debug("Split layout displayed", {
       component: "LLMResponseWindowUI",
       codeBlockCount: codeBlocks.length,
+      codeOnlyLayout: document.body.classList.contains("code-only-layout"),
     });
+  }
+
+  isMostlyCodeResponse(textContent, codeBlocks) {
+    if (!codeBlocks.length) return false;
+    const plainText = String(textContent || '')
+      .replace(/```[\w-]*\s*/g, '')
+      .replace(/```/g, '')
+      .trim();
+    return plainText.length < 120;
   }
 
   displayFullLayout(response) {
@@ -661,6 +677,7 @@ class LLMResponseWindowUI {
     });
 
     // Show full layout, hide split layout
+    document.body.classList.remove("code-only-layout");
     this.elements.splitLayout?.classList.add("hidden");
     this.elements.fullContent?.classList.remove("hidden");
 
@@ -867,7 +884,12 @@ class LLMResponseWindowUI {
   }
 
   handleWheelScroll(e) {
-    logger.debug("Wheel scroll detected", { component: "LLMResponseWindowUI" });
+    if (!this.isInteractive) return;
+    const target = e.currentTarget;
+    if (!target) return;
+    e.preventDefault();
+    target.scrollTop += e.deltaY;
+    target.scrollLeft += e.deltaX;
   }
 
   // Public methods for external access

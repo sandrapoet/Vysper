@@ -53,6 +53,9 @@ install_system_dependencies() {
         portaudio19-dev
         tesseract-ocr
         sox
+        xdotool
+        xclip
+        wl-clipboard
     )
 
     local missing=()

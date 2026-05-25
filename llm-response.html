@@ -257,6 +257,13 @@
             overflow: auto;
         }
 
+        .code-only-layout .split-layout {
+            grid-template-columns: 1fr;
+        }
+        .code-only-layout .text-panel {
+            display: none;
+        }
+
         /* Interactive scrolling enhancements */
         .interactive-scrolling .panel-content,
         .interactive-scrolling .full-content-inner {
@@ -513,6 +520,8 @@
         }
 
         function displayResponse(data) {
+            document.body.classList.remove('code-only-layout');
+
             // Show content
             const responseElement = document.getElementById('response-content');
             
@@ -657,6 +666,11 @@
 
             // Clean up text content
             textContent = textContent.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
+            if (isMostlyCodeResponse(textContent, codeBlocks)) {
+                document.body.classList.add('code-only-layout');
+            } else {
+                document.body.classList.remove('code-only-layout');
+            }
 
             // Render text content
             const textHtml = marked.parse(textContent);
@@ -686,8 +700,18 @@
             Prism.highlightAll();
         }
 
+        function isMostlyCodeResponse(textContent, codeBlocks) {
+            if (!codeBlocks.length) return false;
+            const plainText = String(textContent || '')
+                .replace(/```[\w-]*\s*/g, '')
+                .replace(/```/g, '')
+                .trim();
+            return plainText.length < 120;
+        }
+
         function displayFullLayout(response) {
             // Show full layout, hide split layout
+            document.body.classList.remove('code-only-layout');
             document.getElementById('split-layout').classList.add('hidden');
             document.getElementById('full-content').classList.remove('hidden');
 

@@ -13,42 +13,45 @@ const llmService = require("./src/services/llm.service");
 const windowManager = require("./src/managers/window.manager");
 const sessionManager = require("./src/managers/session.manager");
 
-const { execSync, spawnSync, spawn } = require('child_process');
+const { execFile, execSync, spawnSync, spawn } = require('child_process');
 
 let typingTool = null; // null = pendiente, false = no disponible, string = herramienta lista
 
-async function ensureTypingTool() {
-  // macOS: osascript es built-in, no requiere instalación
-  if (process.platform === 'darwin') {
-    typingTool = 'osascript';
-    logger.info('Herramienta de escritura lista: osascript (macOS)');
-    return;
-  }
+function signalShortcut(message, meta = {}) {
+  console.log(`[Vysper shortcut] ${message}`);
+  logger.info(message, meta);
+}
 
-  // Windows: PowerShell es built-in, no requiere instalación
-  if (process.platform === 'win32') {
-    typingTool = 'powershell';
-    logger.info('Herramienta de escritura lista: powershell (Windows)');
-    return;
-  }
+function isAvailable(bin) {
+  try { execSync(`which ${bin}`, { stdio: 'ignore' }); return true; }
+  catch { return false; }
+}
 
-  // Linux: detectar X11 vs Wayland e instalar si es necesario
+async function ensureLinuxTools() {
   const isWayland = !!process.env.WAYLAND_DISPLAY || process.env.XDG_SESSION_TYPE === 'wayland';
-  const toolName = isWayland ? 'wtype' : 'xdotool';
 
-  try {
-    execSync(`which ${toolName}`, { stdio: 'ignore' });
-    typingTool = toolName;
-    logger.info(`Herramienta de escritura lista: ${toolName}`);
+  // { bin: binario para `which`, pkg: nombre del paquete apt }
+  const required = isWayland
+    ? [{ bin: 'wtype',   pkg: 'wtype'       },   // escritura
+       { bin: 'wl-paste', pkg: 'wl-clipboard' }]  // copia PRIMARY
+    : [{ bin: 'xdotool', pkg: 'xdotool'     },   // escritura
+       { bin: 'xclip',   pkg: 'xclip'       }];  // copia PRIMARY
+
+  const missing = required.filter(t => !isAvailable(t.bin));
+
+  if (missing.length === 0) {
+    typingTool = required[0].bin;
+    logger.info(`Herramientas Linux listas: ${required.map(t => t.bin).join(', ')}`);
     return;
-  } catch {}
+  }
 
-  logger.info(`${toolName} no instalado, solicitando contraseña`);
+  const missingPkgs = missing.map(t => t.pkg);
+  logger.info(`Faltan paquetes Linux: ${missingPkgs.join(', ')}`);
 
   let password = null;
   for (const cmd of [
-    `zenity --password --title="Vysper: instalar ${toolName}"`,
-    `kdialog --password "Vysper necesita instalar ${toolName} para la función de pegado"`,
+    `zenity --password --title="Vysper: instalar ${missingPkgs.join(', ')}"`,
+    `kdialog --password "Vysper necesita instalar: ${missingPkgs.join(', ')}"`,
   ]) {
     try {
       password = execSync(cmd, { encoding: 'utf8' }).trim();
@@ -57,33 +60,101 @@ async function ensureTypingTool() {
   }
 
   if (!password) {
-    logger.warn(`Instalación cancelada. Para habilitar el pegado: sudo apt install ${toolName}`);
-    typingTool = false;
+    logger.warn(`Instalación cancelada. Ejecuta manualmente: sudo apt install ${missingPkgs.join(' ')}`);
+    typingTool = isAvailable(required[0].bin) ? required[0].bin : false;
     return;
   }
 
-  const result = spawnSync('sudo', ['-S', 'apt-get', 'install', '-y', toolName], {
+  const result = spawnSync('sudo', ['-S', 'apt-get', 'install', '-y', ...missingPkgs], {
     input: password + '\n',
     encoding: 'utf8',
   });
 
   if (result.status === 0) {
-    typingTool = toolName;
-    logger.info(`${toolName} instalado correctamente`);
+    typingTool = required[0].bin;
+    logger.info(`Instalados correctamente: ${missingPkgs.join(', ')}`);
   } else {
-    logger.warn(`No se pudo instalar ${toolName}`, { stderr: result.stderr });
-    typingTool = false;
+    logger.warn(`No se pudo instalar: ${missingPkgs.join(', ')}`, { stderr: result.stderr });
+    typingTool = isAvailable(required[0].bin) ? required[0].bin : false;
   }
 }
 
-function typeTextAtCursor(text) {
-  if (!typingTool) return;
+async function ensureTypingTool() {
+  if (process.platform === 'darwin') {
+    typingTool = 'osascript';
+    logger.info('Herramienta lista: osascript (macOS built-in)');
+    return;
+  }
+  if (process.platform === 'win32') {
+    typingTool = 'powershell';
+    logger.info('Herramienta lista: powershell (Windows built-in)');
+    return;
+  }
+  await ensureLinuxTools();
+}
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function runInputCommand(bin, args, timeout = 5000) {
+  return new Promise((resolve, reject) => {
+    execFile(bin, args, { timeout }, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function typeTextWithXdotool(text) {
+  const normalized = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalized.split('\n');
+
+  await wait(140);
+  await runInputCommand('xdotool', [
+    'keyup',
+    'Alt_L', 'Alt_R',
+    'Control_L', 'Control_R',
+    'Shift_L', 'Shift_R',
+    'Super_L', 'Super_R'
+  ], 1000).catch(() => {});
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.length > 0) {
+      const timeout = Math.max(5000, line.length * 80);
+      await runInputCommand('xdotool', ['type', '--clearmodifiers', '--delay', '8', '--', line], timeout);
+    }
+
+    if (index < lines.length - 1) {
+      await runInputCommand('xdotool', ['key', '--clearmodifiers', 'Return'], 1000);
+      await wait(45);
+    }
+  }
+
+  await runInputCommand('xdotool', [
+    'keyup',
+    'Alt_L', 'Alt_R',
+    'Control_L', 'Control_R',
+    'Shift_L', 'Shift_R',
+    'Super_L', 'Super_R'
+  ], 1000).catch(() => {});
+}
+
+async function typeTextAtCursor(text) {
+  if (!typingTool) {
+    signalShortcut('Ctrl+Shift+V recibido, pero no hay herramienta de escritura disponible');
+    return false;
+  }
 
   if (typingTool === 'osascript') {
     // macOS: System Events keystroke (escapa comillas y backslashes)
     const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     spawn('osascript', ['-e', `tell application "System Events" to keystroke "${escaped}"`]);
-    return;
+    return true;
   }
 
   if (typingTool === 'powershell') {
@@ -101,16 +172,70 @@ function typeTextAtCursor(text) {
       `}`,
     ].join(';');
     spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', psScript]);
-    return;
+    return true;
   }
 
   if (typingTool === 'wtype') {
     spawn('wtype', [text]);
-    return;
+    return true;
   }
 
   // Linux X11: xdotool
-  spawn('xdotool', ['type', '--clearmodifiers', '--delay', '0', '--', text]);
+  await typeTextWithXdotool(text);
+  return true;
+}
+
+function readCommandOutput(bin, args, timeout = 1000) {
+  return new Promise((resolve, reject) => {
+    execFile(bin, args, { encoding: 'utf8', timeout, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve((stdout || '').trim());
+    });
+  });
+}
+
+async function readPrimarySelection() {
+  const isWayland = !!process.env.WAYLAND_DISPLAY || process.env.XDG_SESSION_TYPE === 'wayland';
+  if (isWayland) {
+    return readCommandOutput('wl-paste', ['--primary']);
+  }
+
+  try {
+    return await readCommandOutput('xclip', ['-o', '-selection', 'primary']);
+  } catch {
+    return readCommandOutput('xsel', ['--primary', '--output']);
+  }
+}
+
+async function copyFromCursor() {
+  if (process.platform === 'darwin') {
+    spawn('osascript', ['-e', 'tell application "System Events" to keystroke "c" using command down']);
+    return;
+  }
+
+  if (process.platform === 'win32') {
+    spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command',
+      'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^c")'
+    ]);
+    return;
+  }
+
+  // Linux: lee la PRIMARY selection (texto resaltado con el mouse) y la escribe al CLIPBOARD
+  try {
+    const text = await readPrimarySelection();
+    if (text) {
+      clipboard.writeText(text);
+      signalShortcut('Ctrl+Shift+B copio la seleccion al portapapeles', { length: text.length });
+    } else {
+      signalShortcut('Ctrl+Shift+B recibido, pero no encontro texto seleccionado');
+    }
+  } catch (e) {
+    logger.warn('No se pudo leer la PRIMARY selection', { error: e.message });
+    console.log(`[Vysper shortcut] Ctrl+Shift+B fallo: ${e.message}`);
+  }
 }
 
 class ApplicationController {
@@ -119,6 +244,7 @@ class ApplicationController {
     this.codingLanguage = "python";
     this.activeSkill = "Programming";
     this.accumulatedOCRImages = [];
+    this.pendingSelectionCaptureMode = 'ocr';
 
     // Window configurations for reference
     this.windowConfigs = {
@@ -221,21 +347,56 @@ class ApplicationController {
 // programming / system-design / devops / data-science: solo cuando la entrevista pase a preguntas técnicas específicas.
 
   setupGlobalShortcuts() {
+    const pasteClipboardShortcut = async (label) => {
+      const stats = windowManager.getWindowStats();
+      signalShortcut(`${label} recibido`, { interactive: stats.isInteractive });
+      if (!stats.isInteractive) {
+        signalShortcut(`${label} ignorado porque el modo interactivo esta apagado`);
+        return;
+      }
+
+      const text = clipboard.readText();
+      if (text) {
+        signalShortcut(`${label} va a escribir el portapapeles linea por linea`, {
+          length: text.length,
+          lines: text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').length
+        });
+        try {
+          const started = await typeTextAtCursor(text);
+          if (started) signalShortcut(`${label} termino de escribir el portapapeles`, { length: text.length });
+        } catch (error) {
+          signalShortcut(`${label} fallo al escribir: ${error.message}`);
+        }
+      } else {
+        signalShortcut(`${label} recibido, pero el portapapeles esta vacio`);
+      }
+    };
+
+    const copySelectionShortcut = (label) => {
+      const stats = windowManager.getWindowStats();
+      signalShortcut(`${label} recibido`, { interactive: stats.isInteractive });
+      if (!stats.isInteractive) {
+        signalShortcut(`${label} ignorado porque el modo interactivo esta apagado`);
+        return;
+      }
+      copyFromCursor();
+    };
+
     const shortcuts = {
       "CommandOrControl+Shift+S": () => this.triggerScreenshotOCR(),
+      "CommandOrControl+Ñ": () => this.triggerScreenshotImageCapture(),
+      "CommandOrControl+ñ": () => this.triggerScreenshotImageCapture(),
+      "CommandOrControl+;": () => this.triggerScreenshotImageCapture(),
+      "CommandOrControl+A": () => this.handleSaveAndFinalize(),
       "CommandOrControl+Shift+A": () => this.handleSaveAndFinalize(),
       "CommandOrControl+Shift+Z": () => windowManager.toggleVisibility(),
       "CommandOrControl+Shift+X": () => {
         const stats = windowManager.getWindowStats();
         if (stats.isInteractive) windowManager.showSettings();
       },
-      "CommandOrControl+Shift+V": () => {
-        const stats = windowManager.getWindowStats();
-        if (stats.isInteractive) {
-          const text = clipboard.readText();
-          if (text) typeTextAtCursor(text);
-        }
-      },
+      "CommandOrControl+Shift+V": () => pasteClipboardShortcut("Ctrl+Shift+V"),
+      "CommandOrControl+Shift+B": () => copySelectionShortcut("Ctrl+Shift+B"),
+      "Alt+B": () => copySelectionShortcut("Alt+B"),
       "CommandOrControl+Shift+I": () => windowManager.toggleInteraction(),
       "CommandOrControl+Shift+C": () => windowManager.switchToWindow("chat"),
       "CommandOrControl+Shift+H": () => windowManager.toggleGuideWindow(),
@@ -258,10 +419,10 @@ class ApplicationController {
 
     Object.entries(shortcuts).forEach(([accelerator, handler]) => {
       const success = globalShortcut.register(accelerator, handler);
-      logger.debug("Global shortcut registered", { accelerator, success });
-      if (!success) {
-        logger.warn("Global shortcut failed to register", { accelerator });
-      }
+      const status = success ? "registrado" : "FALLO al registrar";
+      console.log(`[Vysper shortcut] ${accelerator}: ${status}`);
+      logger.info("Global shortcut registration", { accelerator, success });
+      if (!success) logger.warn("Global shortcut failed to register", { accelerator });
     });
   }
 
@@ -354,13 +515,24 @@ class ApplicationController {
       windowManager.hideSelectionOverlay();
       await new Promise(resolve => setTimeout(resolve, 250));
 
-      await this.triggerRegionOCR({
+      const selectionBounds = {
         ...bounds,
         display
-      });
+      };
+
+      const selectedMode = this.pendingSelectionCaptureMode;
+      this.pendingSelectionCaptureMode = 'ocr';
+
+      if (selectedMode === 'image') {
+        await this.triggerRegionImageCapture(selectionBounds);
+        return;
+      }
+
+      await this.triggerRegionOCR(selectionBounds);
     });
 
     ipcMain.on("selection-cancelled", () => {
+      this.pendingSelectionCaptureMode = 'ocr';
       windowManager.hideSelectionOverlay();
       windowManager.restoreWindowsAfterScreenshotCapture();
     });
@@ -880,11 +1052,20 @@ class ApplicationController {
   }
 
   async triggerScreenshotOCR() {
+    await this.requestRegionCapture('ocr');
+  }
+
+  async triggerScreenshotImageCapture() {
+    await this.requestRegionCapture('image');
+  }
+
+  async requestRegionCapture(mode = 'ocr') {
     if (!this.isReady) {
       logger.warn("Screenshot requested before application ready");
       return;
     }
 
+    this.pendingSelectionCaptureMode = mode === 'image' ? 'image' : 'ocr';
     await windowManager.showSelectionOverlay();
   }
 
@@ -980,6 +1161,98 @@ class ApplicationController {
     }
   }
 
+  async triggerRegionImageCapture(bounds) {
+    if (!this.isReady) {
+      logger.warn("Regional image capture requested before application ready");
+      return;
+    }
+
+    const startTime = Date.now();
+
+    try {
+      const imageResult = await ocrService.captureRegionImage(bounds);
+      windowManager.restoreWindowsAfterScreenshotCapture();
+
+      if (!imageResult.image) {
+        throw new Error('No image captured from selected region');
+      }
+
+      const imageBuffer = imageResult.image.toPNG();
+
+      sessionManager.addImageCaptureEvent({
+        source: 'screenshot-region-image',
+        region: imageResult.metadata?.region,
+        display: imageResult.metadata?.display,
+        processingTime: imageResult.metadata?.processingTime,
+        sizeBytes: imageBuffer.length
+      });
+
+      if (this.isCodingAccumulationSkill()) {
+        this.accumulatedOCRImages.push({
+          buffer: imageBuffer,
+          capturedAt: Date.now(),
+          source: 'screenshot-region-image'
+        });
+
+        this.acknowledgeCodingImageChunk('screenshot-region-image', Date.now() - startTime);
+        logger.info("Coding image context stored without immediate LLM generation", {
+          skill: this.activeSkill,
+          duration: Date.now() - startTime,
+          accumulatedImages: this.accumulatedOCRImages.length
+        });
+        return;
+      }
+
+      const sessionHistory = sessionManager.getOptimizedHistory();
+      const skillsRequiringProgrammingLanguage = ['programming', 'dsa', 'devops', 'system-design', 'data-science'];
+      const normalizedActiveSkill = this.getNormalizedSkill(this.activeSkill);
+      const needsProgrammingLanguage = skillsRequiringProgrammingLanguage.includes(normalizedActiveSkill);
+
+      windowManager.showLLMLoading();
+
+      const llmResult = await llmService.processImageWithSkill(
+        imageBuffer,
+        this.activeSkill,
+        sessionHistory.recent,
+        needsProgrammingLanguage ? this.codingLanguage : null,
+        'Analiza la imagen adjunta y responde en el modo activo con base en su contenido.'
+      );
+
+      sessionManager.addModelResponse(llmResult.response, {
+        skill: this.activeSkill,
+        processingTime: llmResult.metadata.processingTime,
+        usedFallback: llmResult.metadata.usedFallback,
+        isImageResponse: true
+      });
+
+      windowManager.showLLMResponse(llmResult.response, {
+        skill: this.activeSkill,
+        processingTime: llmResult.metadata.processingTime,
+        usedFallback: llmResult.metadata.usedFallback,
+      });
+
+      this.broadcastLLMSuccess(llmResult);
+    } catch (error) {
+      windowManager.restoreWindowsAfterScreenshotCapture();
+      logger.error("Regional image capture process failed", {
+        error: error.message,
+        duration: Date.now() - startTime,
+      });
+
+      windowManager.hideLLMResponse();
+      this.broadcastLLMError(error.message);
+
+      sessionManager.addConversationEvent({
+        role: 'system',
+        content: `Regional image capture failed: ${error.message}`,
+        action: 'image_capture_error',
+        metadata: {
+          error: error.message
+        }
+      });
+    }
+  }
+
   isFinalizationCommand(text) {
     if (typeof text !== 'string') return false;
 
@@ -1057,6 +1330,38 @@ class ApplicationController {
         processingTime,
         source,
         isContextAck: true
+      }
+    };
+
+    this.broadcastTranscriptionLLMResponse(llmResult);
+    windowManager.showLLMResponse(previewText, {
+      skill: this.activeSkill,
+      processingTime,
+      usedFallback: false,
+      isContextAck: true
+    });
+  }
+
+  acknowledgeCodingImageChunk(source = 'chat', processingTime = 0) {
+    const ack = 'RECIBIDO - Esperando siguiente parte';
+    const previewText = `Imagen capturada sin OCR y agregada al contexto temporal.\n\n${ack}`;
+
+    sessionManager.addModelResponse(ack, {
+      skill: this.activeSkill,
+      usedFallback: false,
+      isContextAck: true,
+      source
+    });
+
+    const llmResult = {
+      response: previewText,
+      metadata: {
+        skill: this.activeSkill,
+        usedFallback: false,
+        processingTime,
+        source,
+        isContextAck: true,
+        isImageContextAck: true
       }
     };
 
@@ -1224,10 +1529,15 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
 
     sessionManager.addUserInput('[FINALIZATION COMMAND: !!!]', source);
 
+    const accumulatedImageBuffers = this.accumulatedOCRImages
+      .map((item) => item?.buffer)
+      .filter((buffer) => Buffer.isBuffer(buffer));
+
     const llmResult = this.isCodingAccumulationSkill()
       ? await llmService.processProgrammingFinalization(
           finalPrompt,
-          needsProgrammingLanguage ? this.codingLanguage : null
+          needsProgrammingLanguage ? this.codingLanguage : null,
+          accumulatedImageBuffers
         )
       : await llmService.processTextWithSkill(
           finalPrompt,
