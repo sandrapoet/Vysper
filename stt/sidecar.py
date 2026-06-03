@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-STT Sidecar — Silero VAD + faster-whisper (medium, CPU int8)
+STT Sidecar — Silero VAD + faster-whisper (CPU int8 by default)
 
 Communicates with Electron via newline-delimited JSON on stdin/stdout.
 All debug output goes to stderr so it never pollutes the JSON channel.
@@ -27,6 +27,7 @@ import threading
 import queue
 import time
 import os
+import wave
 import numpy as np
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -57,11 +58,22 @@ except Exception as exc:
 
 # ── load faster-whisper ────────────────────────────────────────────────────
 
-log("Loading faster-whisper medium (int8, CPU)...")
+WHISPER_MODEL = os.getenv("VYSPER_STT_MODEL", "medium")
+WHISPER_DEVICE = os.getenv("VYSPER_STT_DEVICE", "cpu")
+WHISPER_COMPUTE = os.getenv("VYSPER_STT_COMPUTE", "int8")
+WHISPER_CPU_THREADS = int(os.getenv("VYSPER_STT_CPU_THREADS", "0"))
+
+log(f"Loading faster-whisper {WHISPER_MODEL} ({WHISPER_COMPUTE}, {WHISPER_DEVICE})...")
 try:
     from faster_whisper import WhisperModel
-    _whisper = WhisperModel("medium", device="cpu", compute_type="int8")
-    log("faster-whisper medium ready.")
+    whisper_kwargs = {
+        "device": WHISPER_DEVICE,
+        "compute_type": WHISPER_COMPUTE,
+    }
+    if WHISPER_CPU_THREADS > 0:
+        whisper_kwargs["cpu_threads"] = WHISPER_CPU_THREADS
+    _whisper = WhisperModel(WHISPER_MODEL, **whisper_kwargs)
+    log(f"faster-whisper {WHISPER_MODEL} ready.")
 except Exception as exc:
     emit({"type": "error", "message": f"Whisper load failed: {exc}"})
     sys.exit(1)
@@ -73,15 +85,19 @@ CHUNK        = 512      # samples = 32 ms @ 16 kHz (Silero requirement)
 SPEECH_THR   = 0.4      # VAD probability threshold (lowered for loaded systems)
 MIN_SILENCE  = int(os.getenv("VYSPER_STT_MIN_SILENCE_MS", "2500"))
 PAD_MS       = 100      # ms of audio padding around speech edges
-INTERIM_SEC  = 2.0      # seconds between interim Whisper inferences
+INTERIM_SEC  = float(os.getenv("VYSPER_STT_INTERIM_SEC", "0"))
 LANGUAGE     = os.getenv("VYSPER_STT_LANGUAGE") or None
 
 # ── shared state ───────────────────────────────────────────────────────────
 
 _audio_q: queue.Queue = queue.Queue()
+_raw_audio_q: queue.Queue = queue.Queue()
 _is_recording  = threading.Event()
+_is_raw_recording = threading.Event()
 _quit_event    = threading.Event()
 _flush_event   = threading.Event()
+_raw_done_event = threading.Event()
+_raw_path = None
 
 # ── audio capture ──────────────────────────────────────────────────────────
 
@@ -108,6 +124,8 @@ def _audio_callback(indata, frames, t, status):
         log("sounddevice status:", status)
     if _is_recording.is_set():
         _audio_q.put(indata[:, 0].copy())  # float32 mono, range [-1, 1]
+    if _is_raw_recording.is_set():
+        _raw_audio_q.put(indata[:, 0].copy())
 
 def _start_capture() -> None:
     global _capture_stream
@@ -134,6 +152,33 @@ def _stop_capture() -> None:
         _capture_stream.close()
         _capture_stream = None
         log("Microphone capture stopped.")
+
+def _float32_to_pcm16(audio: np.ndarray) -> bytes:
+    clipped = np.clip(audio, -1.0, 1.0)
+    return (clipped * 32767.0).astype(np.int16).tobytes()
+
+def _start_raw_recording(path: str) -> None:
+    global _raw_path
+    if _is_raw_recording.is_set():
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    while True:
+        try:
+            _raw_audio_q.get_nowait()
+        except queue.Empty:
+            break
+    _raw_path = path
+    _raw_done_event.clear()
+    _start_capture()
+    _is_raw_recording.set()
+
+def _stop_raw_recording() -> str:
+    if not _is_raw_recording.is_set():
+        return _raw_path or ""
+    _is_raw_recording.clear()
+    _stop_capture()
+    _raw_done_event.wait(timeout=5)
+    return _raw_path or ""
 
 # ── transcription ──────────────────────────────────────────────────────────
 
@@ -231,7 +276,7 @@ def _vad_loop() -> None:
 
             now = time.time()
             accumulated_s = len(speech_buf) * CHUNK / RATE
-            if now - last_interim >= INTERIM_SEC and accumulated_s >= 1.0:
+            if INTERIM_SEC > 0 and now - last_interim >= INTERIM_SEC and accumulated_s >= 1.0:
                 last_interim = now
                 audio = np.concatenate(speech_buf)
                 try:
@@ -244,11 +289,51 @@ def _vad_loop() -> None:
 
     log("VAD loop exited.")
 
+def _raw_writer_loop() -> None:
+    writer = None
+    active_path = None
+
+    def close_writer() -> None:
+        nonlocal writer, active_path
+        if writer is not None:
+            writer.close()
+            writer = None
+            log(f"Raw recording saved: {active_path}")
+        active_path = None
+        _raw_done_event.set()
+
+    while not _quit_event.is_set():
+        if _is_raw_recording.is_set() and writer is None and _raw_path:
+            active_path = _raw_path
+            writer = wave.open(active_path, "wb")
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(RATE)
+            log(f"Raw recording writer started: {active_path}")
+
+        try:
+            chunk = _raw_audio_q.get(timeout=0.1)
+        except queue.Empty:
+            if writer is not None and not _is_raw_recording.is_set():
+                close_writer()
+            elif writer is None and not _is_raw_recording.is_set() and _raw_path:
+                _raw_done_event.set()
+            continue
+
+        if writer is not None:
+            writer.writeframes(_float32_to_pcm16(chunk))
+
+    if writer is not None:
+        close_writer()
+    log("Raw writer loop exited.")
+
 # ── command loop (stdin) ───────────────────────────────────────────────────
 
 def _main() -> None:
     vad_thread = threading.Thread(target=_vad_loop, daemon=True, name="vad-loop")
     vad_thread.start()
+    raw_thread = threading.Thread(target=_raw_writer_loop, daemon=True, name="raw-writer-loop")
+    raw_thread.start()
 
     for raw in sys.stdin:
         raw = raw.strip()
@@ -281,8 +366,29 @@ def _main() -> None:
                 emit({"type": "recording_stopped"})
                 log("Recording stopped.")
 
+        elif cmd == "start_raw":
+            raw_path = msg.get("path")
+            if not raw_path:
+                emit({"type": "error", "message": "Raw recording path is required."})
+                continue
+            try:
+                _start_raw_recording(raw_path)
+                emit({"type": "recording_started", "mode": "raw", "path": raw_path})
+                log("Raw recording started.")
+            except Exception as exc:
+                emit({"type": "error", "message": f"Raw microphone error: {exc}"})
+
+        elif cmd == "stop_raw":
+            try:
+                raw_path = _stop_raw_recording()
+                emit({"type": "recording_stopped", "mode": "raw", "path": raw_path})
+                log("Raw recording stopped.")
+            except Exception as exc:
+                emit({"type": "error", "message": f"Raw recording stop error: {exc}"})
+
         elif cmd == "quit":
             _is_recording.clear()
+            _is_raw_recording.clear()
             _stop_capture()
             _quit_event.set()
             log("Quit command received.")

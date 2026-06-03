@@ -11,6 +11,11 @@ const logger           = require('../core/logger').createServiceLogger('SPEECH')
 const SIDECAR_PATH      = path.join(__dirname, '../../stt/sidecar.py');
 const VENV_PYTHON_WIN   = path.join(__dirname, '../../stt/venv/Scripts/python.exe');
 const VENV_PYTHON_UNIX  = path.join(__dirname, '../../stt/venv/bin/python');
+const STT_MODEL         = process.env.VYSPER_STT_MODEL || 'medium';
+const STT_DEVICE        = process.env.VYSPER_STT_DEVICE || 'cpu';
+const STT_COMPUTE       = process.env.VYSPER_STT_COMPUTE || 'int8';
+const STT_CPU_THREADS   = process.env.VYSPER_STT_CPU_THREADS || 'auto';
+const STT_INTERIM_SEC   = process.env.VYSPER_STT_INTERIM_SEC || '0';
 
 function _resolvePython() {
   if (fs.existsSync(VENV_PYTHON_WIN))  return VENV_PYTHON_WIN;
@@ -31,6 +36,7 @@ class SpeechService extends EventEmitter {
     this.sessionStartTime = null;
     this._pendingFileTranscriptions = new Map();
     this._nextFileRequestId = 1;
+    this._pendingRawStop = null;
 
     this.initializeClient();
   }
@@ -43,7 +49,7 @@ class SpeechService extends EventEmitter {
       return;
     }
     this.isInitialized = true;
-    logger.info('SpeechService ready (Silero VAD + faster-whisper medium)');
+    logger.info(`SpeechService ready (Silero VAD + faster-whisper ${STT_MODEL})`);
 
     // Pre-spawn so models load in background while the app starts.
     this._spawnSidecar();
@@ -83,6 +89,11 @@ class SpeechService extends EventEmitter {
       this.isReady = false;
       for (const requestId of this._pendingFileTranscriptions.keys()) {
         this._resolveFileTranscription(requestId, new Error('STT sidecar exited during file transcription.'));
+      }
+      if (this._pendingRawStop) {
+        const pending = this._pendingRawStop;
+        this._pendingRawStop = null;
+        pending.reject(new Error('STT sidecar exited during raw recording.'));
       }
       if (this.isRecording) {
         this.isRecording = false;
@@ -125,6 +136,11 @@ class SpeechService extends EventEmitter {
 
       case 'recording_stopped':
         this.isRecording = false;
+        if (msg.mode === 'raw' && this._pendingRawStop) {
+          const pending = this._pendingRawStop;
+          this._pendingRawStop = null;
+          pending.resolve(msg.path || '');
+        }
         this.emit('recording-stopped');
         break;
 
@@ -195,6 +211,44 @@ class SpeechService extends EventEmitter {
     this._send({ cmd: 'stop' });
   }
 
+  startRawRecording(filePath) {
+    if (!this.isInitialized) {
+      this.emit('error', { message: 'Speech service not initialized. Run stt/setup.bat first.' });
+      return;
+    }
+    if (!filePath || typeof filePath !== 'string') {
+      this.emit('error', { message: 'Invalid raw recording file path.' });
+      return;
+    }
+    if (!this._proc) this._spawnSidecar();
+    this._send({ cmd: 'start_raw', path: filePath });
+  }
+
+  stopRawRecording() {
+    if (!this._proc) return Promise.resolve('');
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this._pendingRawStop = null;
+        reject(new Error('Raw recording stop timed out.'));
+      }, 10000);
+      timeout.unref?.();
+
+      this._pendingRawStop = {
+        resolve: (filePath) => {
+          clearTimeout(timeout);
+          resolve(filePath);
+        },
+        reject: (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        }
+      };
+
+      this._send({ cmd: 'stop_raw' });
+    });
+  }
+
   transcribeFile(filePath) {
     if (!this.isInitialized) {
       return Promise.reject(new Error('Speech service not initialized. Run stt/setup.bat first.'));
@@ -228,11 +282,13 @@ class SpeechService extends EventEmitter {
       sessionDuration: this.sessionStartTime ? Date.now() - this.sessionStartTime : 0,
       retryCount:      0,
       config: {
-        model:   'medium',
+        model:   STT_MODEL,
         vad:     'silero',
         backend: 'faster-whisper',
-        device:  'cpu',
-        compute: 'int8',
+        device:  STT_DEVICE,
+        compute: STT_COMPUTE,
+        cpuThreads: STT_CPU_THREADS,
+        interimSeconds: STT_INTERIM_SEC,
       },
     };
   }

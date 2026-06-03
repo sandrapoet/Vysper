@@ -475,7 +475,7 @@ class ApplicationController {
       "CommandOrControl+Shift+I": () => windowManager.toggleInteraction(),
       "CommandOrControl+Shift+C": () => windowManager.switchToWindow("chat"),
       "CommandOrControl+Shift+H": () => windowManager.toggleGuideWindow(),
-      "CommandOrControl+Shift+|": () => this.handleShiftPipeShortcut(),
+      "CommandOrControl+Shift+L": () => this.handleShiftPipeShortcut(),
       "CommandOrControl+Shift+\\": () => this.clearSessionMemory(),
       "CommandOrControl+,": () => windowManager.showSettings(),
       "Alt+A": () => windowManager.toggleInteraction(),
@@ -1091,7 +1091,7 @@ class ApplicationController {
       return;
     }
 
-    logger.warn('Ctrl+Shift+| solo libera buffer en modo secretaria');
+    logger.warn('Ctrl+Shift+L solo libera buffer en modo secretaria');
   }
 
   async handleSecretariaAudioUploadShortcut() {
