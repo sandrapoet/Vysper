@@ -459,7 +459,7 @@ class ChatWindowUI {
         if (this.isSynthesizingAudio) return;
 
         this.isWaitingForTtsText = true;
-        this.addMessage('Secretaria: esperando texto para generar audio. Escribe el texto y presiona Enviar.', 'system');
+        this.addMessage('Secretaria: esperando texto para generar MP3. Edge es la voz base; usa ¬|1 para Piper y |1.5 para ritmo.', 'system');
         this.focusMessageInput();
     }
 

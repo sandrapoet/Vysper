@@ -21,6 +21,7 @@ let typingTool = null; // null = pendiente, false = no disponible, string = herr
 const PIPER_MODEL_PATH = path.join(__dirname, 'piper', 'es_MX-ald-medium.onnx');
 const PIPER_CONFIG_PATH = path.join(__dirname, 'piper', 'es_MX-ald-medium.onnx.json');
 const PIPER_TTS_TIMEOUT_MS = Number(process.env.VYSPER_PIPER_TTS_TIMEOUT_MS || 120000);
+const EDGE_TTS_VOICE = process.env.VYSPER_EDGE_TTS_VOICE || 'es-MX-DaliaNeural';
 
 function signalShortcut(message, meta = {}) {
   console.log(`[Vysper shortcut] ${message}`);
@@ -1767,16 +1768,112 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
       .replace(/^-+|-+$/g, '')
       .slice(0, 48) || 'texto-chat';
 
-    return path.join(dir, this.createSecretariaArtifactFilename(`secretaria-${textBase}`, '.wav'));
+    return path.join(dir, this.createSecretariaArtifactFilename(`secretaria-${textBase}`, '.mp3'));
   }
 
-  runPiperTextToSpeech(text, outputPath) {
+  parseSecretariaTtsSegments(text) {
+    const source = String(text || '').trim();
+    const markerPattern = /(¬\s*)?\|(\d+(?:\.\d+)?)/g;
+    const segments = [];
+    let currentScale = 1;
+    let currentVoice = 'edge';
+    let cursor = 0;
+    let match;
+
+    while ((match = markerPattern.exec(source)) !== null) {
+      const segmentText = source.slice(cursor, match.index).trim();
+      if (segmentText) {
+        segments.push({ text: segmentText, lengthScale: currentScale, voice: currentVoice });
+      }
+
+      currentVoice = match[1] ? 'piper' : 'edge';
+      currentScale = Number(match[2]);
+      cursor = markerPattern.lastIndex;
+    }
+
+    const trailingText = source.slice(cursor).trim();
+    if (trailingText) {
+      segments.push({ text: trailingText, lengthScale: currentScale, voice: currentVoice });
+    }
+
+    if (segments.length === 0 && source) {
+      segments.push({ text: source, lengthScale: 1, voice: 'edge' });
+    }
+
+    return segments.map((segment) => ({
+      ...segment,
+      lengthScale: Number.isFinite(segment.lengthScale) && segment.lengthScale > 0
+        ? segment.lengthScale
+        : 1,
+      voice: segment.voice === 'piper' ? 'piper' : 'edge'
+    }));
+  }
+
+  createSecretariaSegmentAudioPath(outputPath, index, extension = '.mp3') {
+    const parsed = path.parse(outputPath);
+    const suffix = typeof index === 'number'
+      ? String(index + 1).padStart(2, '0')
+      : String(index).replace(/[^a-zA-Z0-9_-]+/g, '-');
+    return path.join(parsed.dir, `${parsed.name}-segment-${suffix}${extension}`);
+  }
+
+  runProcess(bin, args, options = {}) {
+    return new Promise((resolve, reject) => {
+      const child = spawn(bin, args, {
+        stdio: options.input ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe']
+      });
+
+      let stderr = '';
+      let stdout = '';
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        child.kill('SIGTERM');
+        reject(new Error(`${options.label || bin} excedio el tiempo maximo.`));
+      }, options.timeout || PIPER_TTS_TIMEOUT_MS);
+      timeout.unref?.();
+
+      child.stdout.on('data', (data) => {
+        stdout += data.toString('utf8');
+      });
+
+      child.stderr.on('data', (data) => {
+        stderr += data.toString('utf8');
+      });
+
+      child.on('error', (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        reject(error);
+      });
+
+      child.on('close', (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+
+        if (code !== 0) {
+          reject(new Error(`${options.label || bin} fallo con codigo ${code}: ${(stderr || stdout || '').trim()}`));
+          return;
+        }
+
+        resolve({ stdout: stdout.trim(), stderr: stderr.trim() });
+      });
+
+      if (options.input) child.stdin.end(options.input);
+    });
+  }
+
+  runPiperTextToSpeech(text, outputPath, options = {}) {
     return new Promise((resolve, reject) => {
       const piperBin = resolveExecutable(['piper'], 'PIPER_TTS_BIN');
       const args = [
         '--model', PIPER_MODEL_PATH,
         '--config', PIPER_CONFIG_PATH,
-        '--output_file', outputPath
+        '--output_file', outputPath,
+        '--length-scale', String(options.lengthScale || 1)
       ];
       const child = spawn(piperBin, args, {
         stdio: ['pipe', 'pipe', 'pipe']
@@ -1828,6 +1925,119 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     });
   }
 
+  async runEdgeTextToSpeech(text, outputPath, options = {}) {
+    const edgeBin = resolveExecutable(['edge-tts'], 'EDGE_TTS_BIN');
+    try {
+      await this.runProcess(edgeBin, [
+        '--voice', EDGE_TTS_VOICE,
+        '--text', text.trim(),
+        '--write-media', outputPath
+      ], {
+        label: 'Edge TTS',
+        timeout: options.timeout || PIPER_TTS_TIMEOUT_MS
+      });
+    } catch (error) {
+      throw new Error(`No se pudo ejecutar Edge TTS. Instala la libreria con "pip install edge-tts" o define EDGE_TTS_BIN. Detalle: ${error.message}`);
+    }
+  }
+
+  buildAtempoFilter(lengthScale) {
+    const safeScale = Number.isFinite(lengthScale) && lengthScale > 0 ? lengthScale : 1;
+    let tempo = 1 / safeScale;
+    const filters = [];
+
+    while (tempo < 0.5) {
+      filters.push('atempo=0.5');
+      tempo /= 0.5;
+    }
+
+    while (tempo > 2) {
+      filters.push('atempo=2.0');
+      tempo /= 2;
+    }
+
+    filters.push(`atempo=${tempo.toFixed(6).replace(/0+$/g, '').replace(/\.$/, '')}`);
+    return filters.join(',');
+  }
+
+  async normalizeAudioSegment(inputPath, outputPath, lengthScale = 1) {
+    const ffmpegBin = resolveExecutable(['ffmpeg'], 'FFMPEG_BIN');
+    const args = ['-y', '-i', inputPath];
+    if (Math.abs(lengthScale - 1) > 0.001) {
+      args.push('-filter:a', this.buildAtempoFilter(lengthScale));
+    }
+    args.push('-vn', '-acodec', 'libmp3lame', '-q:a', '2', outputPath);
+    await this.runProcess(ffmpegBin, args, {
+      label: 'ffmpeg normalizando audio',
+      timeout: PIPER_TTS_TIMEOUT_MS
+    });
+  }
+
+  async concatAudioSegments(inputPaths, outputPath) {
+    if (inputPaths.length === 1) {
+      fs.copyFileSync(inputPaths[0], outputPath);
+      return;
+    }
+
+    const ffmpegBin = resolveExecutable(['ffmpeg'], 'FFMPEG_BIN');
+    const inputArgs = inputPaths.flatMap((inputPath) => ['-i', inputPath]);
+    const filterInputs = inputPaths.map((_, index) => `[${index}:a]`).join('');
+    const filter = `${filterInputs}concat=n=${inputPaths.length}:v=0:a=1[a]`;
+
+    await this.runProcess(ffmpegBin, [
+      '-y',
+      ...inputArgs,
+      '-filter_complex', filter,
+      '-map', '[a]',
+      '-vn',
+      '-acodec', 'libmp3lame',
+      '-q:a', '2',
+      outputPath
+    ], {
+      label: 'ffmpeg uniendo audio',
+      timeout: PIPER_TTS_TIMEOUT_MS
+    });
+  }
+
+  async runMixedSegmentsToSpeech(segments, outputPath) {
+    const tempPaths = [];
+    const normalizedPaths = [];
+
+    const trackTemp = (filePath) => {
+      tempPaths.push(filePath);
+      return filePath;
+    };
+
+    try {
+      for (let index = 0; index < segments.length; index += 1) {
+        const segment = segments[index];
+        const rawExtension = segment.voice === 'piper' ? '.wav' : '.mp3';
+        const rawPath = trackTemp(this.createSecretariaSegmentAudioPath(outputPath, index, rawExtension));
+        const normalizedPath = trackTemp(this.createSecretariaSegmentAudioPath(outputPath, `${index + 1}-normalized`, '.mp3'));
+
+        if (segment.voice === 'piper') {
+          await this.runPiperTextToSpeech(segment.text, rawPath, {
+            lengthScale: segment.lengthScale
+          });
+          await this.normalizeAudioSegment(rawPath, normalizedPath, 1);
+        } else {
+          await this.runEdgeTextToSpeech(segment.text, rawPath);
+          await this.normalizeAudioSegment(rawPath, normalizedPath, segment.lengthScale);
+        }
+
+        normalizedPaths.push(normalizedPath);
+      }
+
+      await this.concatAudioSegments(normalizedPaths, outputPath);
+    } finally {
+      for (const segmentPath of tempPaths) {
+        if (fs.existsSync(segmentPath)) {
+          fs.unlinkSync(segmentPath);
+        }
+      }
+    }
+  }
+
   async synthesizeSecretariaChatText(text) {
     if (!this.isSecretariaMode()) {
       throw new Error('Ctrl+3 solo esta disponible en modo secretaria.');
@@ -1838,16 +2048,21 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
       throw new Error('No hay texto en el chat para convertir a audio.');
     }
 
-    if (!fs.existsSync(PIPER_MODEL_PATH)) {
-      throw new Error(`No se encontro el modelo de Piper: ${PIPER_MODEL_PATH}`);
+    const segments = this.parseSecretariaTtsSegments(cleanText);
+    if (segments.some((segment) => segment.voice === 'piper')) {
+      if (!fs.existsSync(PIPER_MODEL_PATH)) {
+        throw new Error(`No se encontro el modelo de Piper: ${PIPER_MODEL_PATH}`);
+      }
+
+      if (!fs.existsSync(PIPER_CONFIG_PATH)) {
+        throw new Error(`No se encontro la configuracion de Piper: ${PIPER_CONFIG_PATH}`);
+      }
     }
 
-    if (!fs.existsSync(PIPER_CONFIG_PATH)) {
-      throw new Error(`No se encontro la configuracion de Piper: ${PIPER_CONFIG_PATH}`);
-    }
-
-    const audioPath = this.createSecretariaTextToSpeechPath(cleanText);
-    await this.runPiperTextToSpeech(cleanText, audioPath);
+    const audioPath = this.createSecretariaTextToSpeechPath(
+      segments.map((segment) => segment.text).join(' ')
+    );
+    await this.runMixedSegmentsToSpeech(segments, audioPath);
 
     const stats = fs.statSync(audioPath);
     if (!stats.size) {
@@ -1861,26 +2076,40 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
       metadata: {
         audioPath,
         textLength: cleanText.length,
-        sizeBytes: stats.size
+        sizeBytes: stats.size,
+        ttsSegments: segments.map((segment) => ({
+          textLength: segment.text.length,
+          lengthScale: segment.lengthScale,
+          voice: segment.voice
+        }))
       }
     });
 
     windowManager.broadcastToAllWindows("secretaria-tts-created", {
       audioPath,
       textLength: cleanText.length,
-      sizeBytes: stats.size
+      sizeBytes: stats.size,
+      segments: segments.map((segment) => ({
+        textLength: segment.text.length,
+        lengthScale: segment.lengthScale,
+        voice: segment.voice
+      }))
     });
 
     logger.info('Secretaria text-to-speech audio generated', {
       audioPath,
       textLength: cleanText.length,
-      sizeBytes: stats.size
+      sizeBytes: stats.size,
+      segments: segments.length,
+      voices: [...new Set(segments.map((segment) => segment.voice))]
     });
 
     return {
       audioPath,
       textLength: cleanText.length,
-      sizeBytes: stats.size
+      sizeBytes: stats.size,
+      segments: segments.length,
+      voices: [...new Set(segments.map((segment) => segment.voice))]
     };
   }
 

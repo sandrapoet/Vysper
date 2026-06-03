@@ -17,3 +17,4 @@ torchaudio>=2.1.0
 
 # Local text-to-speech for secretaria mode (Ctrl+3)
 piper-tts>=1.2.0
+edge-tts>=7.0.0

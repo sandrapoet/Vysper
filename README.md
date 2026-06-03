@@ -8,7 +8,7 @@ Ctrl+Shift+V	Pegar portapapeles en cursor — solo en modo interactivo
 Ctrl+Shift+B	Copiar selección al portapapeles — solo en modo interactivo
 Ctrl+1	Guardar imágenes acumuladas (OCR + sin OCR) + consolidar !!!
 Ctrl+1	Pegar transcripción acumulada — solo en modo secretaria
-Ctrl+3	Armar el siguiente envío del chat para convertirlo a audio con Piper — solo en modo secretaria
+Ctrl+3	Armar el siguiente envío del chat para convertirlo a MP3 con Edge por defecto; usa ¬|1 para Piper y |1.5 para cambiar ritmo — solo en modo secretaria
 Ctrl+R	Iniciar / detener grabación cruda; queda pendiente de transcripción — solo en modo secretaria
 Ctrl+4	Subir archivo de audio para transcribir — solo en modo secretaria
 Ctrl+Shift+L	Liberar todo el buffer — solo en modo secretaria
@@ -215,7 +215,7 @@ ANTHROPIC_MAX_TOKENS=2048
 - **Audio Tool** (`brew install sox`)
 - **Local faster-whisper STT** with Silero VAD
 - **Google Gemini API** (Free quota included)
-- **Piper TTS** (`pip install piper-tts`) for `secretaria` text-to-speech audio generation
+- **Edge TTS + Piper TTS** (`pip install edge-tts piper-tts`) for `secretaria` text-to-speech audio generation
 
 ## 🚀 Advanced Usage
 
