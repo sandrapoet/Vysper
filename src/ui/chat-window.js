@@ -17,6 +17,7 @@ class ChatWindowUI {
         this.isRecording = false;
         this.isInteractive = true; // Start in interactive mode
         this.isSynthesizingAudio = false;
+        this.isWaitingForTtsText = false;
         this.elements = {};
         
         this.init();
@@ -105,7 +106,7 @@ class ChatWindowUI {
             });
 
             window.electronAPI.receive('secretaria-tts-request', () => {
-                this.synthesizeCurrentChatText();
+                this.armSecretariaTtsInput();
             });
 
             window.electronAPI.receive('secretaria-tts-created', (event, data) => {
@@ -263,7 +264,7 @@ class ChatWindowUI {
 
             if ((e.ctrlKey || e.metaKey) && e.key === '3') {
                 e.preventDefault();
-                this.synthesizeCurrentChatText();
+                this.armSecretariaTtsInput();
             }
         });
     }
@@ -427,6 +428,12 @@ class ChatWindowUI {
         if (text) {
             this.addMessage(text, 'user');
             this.elements.messageInput.value = '';
+
+            if (this.isWaitingForTtsText) {
+                this.isWaitingForTtsText = false;
+                await this.synthesizeChatText(text);
+                return;
+            }
             
             // Send to main process for session memory storage
             try {
@@ -448,12 +455,20 @@ class ChatWindowUI {
         }
     }
 
-    async synthesizeCurrentChatText() {
+    armSecretariaTtsInput() {
         if (this.isSynthesizingAudio) return;
 
-        const text = this.elements.messageInput.value.trim();
-        if (!text) {
-            this.addMessage('Secretaria: escribe texto en el chat antes de usar Ctrl+3.', 'error');
+        this.isWaitingForTtsText = true;
+        this.addMessage('Secretaria: esperando texto para generar audio. Escribe el texto y presiona Enviar.', 'system');
+        this.focusMessageInput();
+    }
+
+    async synthesizeChatText(text) {
+        if (this.isSynthesizingAudio) return;
+
+        const cleanText = String(text || '').trim();
+        if (!cleanText) {
+            this.addMessage('Secretaria: escribe texto y presiona Enviar para generar el audio.', 'error');
             return;
         }
 
@@ -466,7 +481,7 @@ class ChatWindowUI {
         this.isSynthesizingAudio = true;
 
         try {
-            const result = await window.electronAPI.synthesizeChatAudio(text);
+            const result = await window.electronAPI.synthesizeChatAudio(cleanText);
             if (!result || !result.success) {
                 throw new Error(result?.error || 'No se pudo generar el audio.');
             }

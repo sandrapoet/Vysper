@@ -8,7 +8,7 @@ Ctrl+Shift+V	Pegar portapapeles en cursor — solo en modo interactivo
 Ctrl+Shift+B	Copiar selección al portapapeles — solo en modo interactivo
 Ctrl+1	Guardar imágenes acumuladas (OCR + sin OCR) + consolidar !!!
 Ctrl+1	Pegar transcripción acumulada — solo en modo secretaria
-Ctrl+3	Convertir texto del chat a audio con Piper — solo en modo secretaria
+Ctrl+3	Armar el siguiente envío del chat para convertirlo a audio con Piper — solo en modo secretaria
 Ctrl+R	Iniciar / detener grabación cruda; queda pendiente de transcripción — solo en modo secretaria
 Ctrl+4	Subir archivo de audio para transcribir — solo en modo secretaria
 Ctrl+Shift+L	Liberar todo el buffer — solo en modo secretaria

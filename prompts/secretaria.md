@@ -4,6 +4,6 @@ Modo de dictado y transcripcion. En este modo Vysper acumula texto transcrito de
 
 Atajos principales:
 - Ctrl+R inicia o detiene la grabacion.
-- Ctrl+3 convierte el texto escrito en la ventana de chat en un archivo de audio con Piper.
+- Ctrl+3 prepara el siguiente envio del chat para convertirlo en un archivo de audio con Piper, sin enviarlo al LLM.
 - Ctrl+4 selecciona un archivo de audio para transcribir.
 - Ctrl+1 pega toda la transcripcion acumulada en el lugar donde este el cursor.

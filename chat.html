@@ -661,6 +661,7 @@
       let listeningTimer = null;
       let thinkingIndicatorTimer = null;
       let isSynthesizingAudio = false;
+      let isWaitingForTtsText = false;
 
       function focusMessageInput() {
         if (!messageInput) return;
@@ -701,12 +702,20 @@
         }
       }
 
-      async function synthesizeCurrentChatText() {
+      function armSecretariaTtsInput() {
         if (isSynthesizingAudio) return;
 
-        const text = messageInput.value.trim();
-        if (!text) {
-          addMessage('Secretaria: escribe texto en el chat antes de usar Ctrl+3.', 'error');
+        isWaitingForTtsText = true;
+        addMessage('Secretaria: esperando texto para generar audio. Escribe el texto y presiona Enviar.', 'system');
+        focusMessageInput();
+      }
+
+      async function synthesizeChatText(text) {
+        if (isSynthesizingAudio) return;
+
+        const cleanText = String(text || '').trim();
+        if (!cleanText) {
+          addMessage('Secretaria: escribe texto y presiona Enviar para generar el audio.', 'error');
           return;
         }
 
@@ -719,7 +728,7 @@
         isSynthesizingAudio = true;
 
         try {
-          const result = await whysperAPI.synthesizeChatAudio(text);
+          const result = await whysperAPI.synthesizeChatAudio(cleanText);
           if (!result || !result.success) {
             throw new Error(result?.error || 'No se pudo generar el audio.');
           }
@@ -729,6 +738,35 @@
           addMessage(`Secretaria TTS Error: ${error.message}`, 'error');
         } finally {
           isSynthesizingAudio = false;
+        }
+      }
+
+      async function handleOutgoingChatText() {
+        const text = messageInput.value.trim();
+        if (!text) return;
+
+        messageInput.value = '';
+
+        if (isWaitingForTtsText) {
+          isWaitingForTtsText = false;
+          addMessage(text, 'user');
+          await synthesizeChatText(text);
+          return;
+        }
+
+        addMessage(text, 'user');
+
+        // Show thinking indicator after user message
+        thinkingIndicatorTimer = setTimeout(() => {
+          thinkingIndicatorTimer = null;
+          showThinkingIndicator();
+        }, 300);
+
+        // Send to main process for session memory storage and LLM processing
+        try {
+          await sendChatText(text);
+        } catch (error) {
+          console.error('Failed to send chat message to main process:', error);
         }
       }
 
@@ -990,7 +1028,7 @@
         });
 
         whysperAPI.receive('secretaria-tts-request', () => {
-          synthesizeCurrentChatText();
+          armSecretariaTtsInput();
         });
 
         whysperAPI.receive('secretaria-tts-created', () => {});
@@ -1078,48 +1116,14 @@
 
       if (sendButton) {
         sendButton.addEventListener('click', async () => {
-          const text = messageInput.value.trim();
-          if (text) {
-            addMessage(text, 'user');
-            messageInput.value = '';
-            
-            // Show thinking indicator after user message
-            thinkingIndicatorTimer = setTimeout(() => {
-              thinkingIndicatorTimer = null;
-              showThinkingIndicator();
-            }, 300);
-            
-            // Send to main process for session memory storage and LLM processing
-            try {
-              await sendChatText(text);
-            } catch (error) {
-              console.error('Failed to send chat message to main process:', error);
-            }
-          }
+          await handleOutgoingChatText();
         });
       }
 
       if (messageInput) {
         messageInput.addEventListener('keypress', async (e) => {
           if (e.key === 'Enter') {
-            const text = messageInput.value.trim();
-            if (text) {
-              addMessage(text, 'user');
-              messageInput.value = '';
-              
-              // Show thinking indicator after user message
-              thinkingIndicatorTimer = setTimeout(() => {
-                thinkingIndicatorTimer = null;
-                showThinkingIndicator();
-              }, 300);
-              
-              // Send to main process for session memory storage and LLM processing
-              try {
-                await sendChatText(text);
-              } catch (error) {
-                console.error('Failed to send chat message to main process:', error);
-              }
-            }
+            await handleOutgoingChatText();
           }
         });
       }
@@ -1133,7 +1137,7 @@
 
         if ((e.ctrlKey || e.metaKey) && e.key === '3') {
           e.preventDefault();
-          synthesizeCurrentChatText();
+          armSecretariaTtsInput();
         }
       });
 
