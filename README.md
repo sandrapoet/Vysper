@@ -5,10 +5,14 @@ Shortcut	Acción
 Ctrl+Shift+Z	Ocultar / mostrar todas las ventanas (incluye ventana gris)
 Ctrl+Shift+X	Abrir configuración — solo en modo interactivo
 Ctrl+Shift+V	Pegar portapapeles en cursor — solo en modo interactivo
-Ctrl+Shift+B / Alt+B	Copiar selección al portapapeles — solo en modo interactivo
-Ctrl+A / Ctrl+Shift+A	Guardar imágenes acumuladas (OCR + sin OCR) + consolidar !!!
+Ctrl+Shift+B	Copiar selección al portapapeles — solo en modo interactivo
+Ctrl+1	Guardar imágenes acumuladas (OCR + sin OCR) + consolidar !!!
+Ctrl+1	Pegar transcripción acumulada — solo en modo secretaria
+Ctrl+R	Iniciar / detener grabación — solo en modo secretaria
+Ctrl+4	Subir archivo de audio para transcribir — solo en modo secretaria
+Ctrl+|	Fallback de consolidación ||| (modo programming/dsa)
 Ctrl+Shift+S	Captura OCR
-Ctrl+Ñ	Captura imagen sin OCR
+Alt+B	Captura imagen sin OCR; en programming/dsa la acumula y espera !!! / ||| / °°°, en otros modos la envia al LLM
 Ctrl+Shift+I / Alt+A	Toggle modo interactivo
 ###
 
@@ -43,6 +47,7 @@ https://github.com/user-attachments/assets/c5616482-3652-4686-b87b-e04d06572d2f
 - **Presentation** - Structure, delivery tips, and visual design
 - **DevOps** - Infrastructure, CI/CD, and deployment strategies
 - **Data Science** - Analytics, ML approaches, and statistical methods
+- **Secretaria** - Long dictation/audio-file transcription, then paste the accumulated text at the active cursor
 
 ## 🚀 Quick Start
 

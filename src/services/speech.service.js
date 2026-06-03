@@ -29,6 +29,8 @@ class SpeechService extends EventEmitter {
     this.isInitialized    = false;
     this.isReady          = false;
     this.sessionStartTime = null;
+    this._pendingFileTranscriptions = new Map();
+    this._nextFileRequestId = 1;
 
     this.initializeClient();
   }
@@ -79,6 +81,9 @@ class SpeechService extends EventEmitter {
       logger.info(`STT sidecar exited (code=${code} signal=${sig})`);
       this._proc = null;
       this.isReady = false;
+      for (const requestId of this._pendingFileTranscriptions.keys()) {
+        this._resolveFileTranscription(requestId, new Error('STT sidecar exited during file transcription.'));
+      }
       if (this.isRecording) {
         this.isRecording = false;
         this.emit('recording-stopped');
@@ -128,11 +133,19 @@ class SpeechService extends EventEmitter {
         break;
 
       case 'transcription':
-        this.emit('transcription', msg.text || '');
+        if (msg.source === 'file' && msg.request_id) {
+          this._resolveFileTranscription(msg.request_id, null, msg.text || '');
+        } else {
+          this.emit('transcription', msg.text || '');
+        }
         break;
 
       case 'error':
         logger.error(`Sidecar error: ${msg.message}`);
+        if (msg.request_id && this._pendingFileTranscriptions.has(msg.request_id)) {
+          this._resolveFileTranscription(msg.request_id, new Error(msg.message || 'File transcription failed'));
+          break;
+        }
         this.emit('error', { message: msg.message });
         break;
 
@@ -151,6 +164,21 @@ class SpeechService extends EventEmitter {
     this._proc.stdin.write(JSON.stringify(obj) + '\n');
   }
 
+  _resolveFileTranscription(requestId, error, text = '') {
+    const pending = this._pendingFileTranscriptions.get(requestId);
+    if (!pending) return;
+
+    clearTimeout(pending.timeout);
+    this._pendingFileTranscriptions.delete(requestId);
+
+    if (error) {
+      pending.reject(error);
+      return;
+    }
+
+    pending.resolve(text);
+  }
+
   // ── public API (same interface as before) ─────────────────────────────────
 
   startRecording() {
@@ -165,6 +193,30 @@ class SpeechService extends EventEmitter {
   stopRecording() {
     if (!this._proc) return;
     this._send({ cmd: 'stop' });
+  }
+
+  transcribeFile(filePath) {
+    if (!this.isInitialized) {
+      return Promise.reject(new Error('Speech service not initialized. Run stt/setup.bat first.'));
+    }
+    if (!filePath || typeof filePath !== 'string') {
+      return Promise.reject(new Error('Invalid audio file path.'));
+    }
+    if (!this._proc) this._spawnSidecar();
+
+    const requestId = `file-${this._nextFileRequestId++}`;
+    const timeoutMs = 30 * 60 * 1000;
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this._pendingFileTranscriptions.delete(requestId);
+        reject(new Error('Audio file transcription timed out.'));
+      }, timeoutMs);
+      timeout.unref?.();
+
+      this._pendingFileTranscriptions.set(requestId, { resolve, reject, timeout });
+      this._send({ cmd: 'transcribe_file', path: filePath, request_id: requestId });
+    });
   }
 
   getStatus() {

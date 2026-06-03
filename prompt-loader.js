@@ -389,7 +389,11 @@ When providing technical examples or code-related advice, use ${languageTitle} a
       'distributed-systems': 'system-design',
       'negotiation': 'negotiation',
       'negotiating': 'negotiation',
-      'conflict-resolution': 'negotiation'
+      'conflict-resolution': 'negotiation',
+      'secretaria': 'secretaria',
+      'secretary': 'secretaria',
+      'dictation': 'secretaria',
+      'transcription': 'secretaria'
     };
 
     return skillMap[normalized] || normalized;

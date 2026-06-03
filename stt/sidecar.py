@@ -8,6 +8,7 @@ All debug output goes to stderr so it never pollutes the JSON channel.
 Commands  (Node → Python, stdin):
   {"cmd": "start"}   — begin microphone capture + VAD + transcription
   {"cmd": "stop"}    — stop recording (sidecar stays alive, models remain loaded)
+  {"cmd": "transcribe_file", "path": "...", "request_id": "..."} — transcribe audio file
   {"cmd": "quit"}    — graceful shutdown
 
 Events  (Python → Node, stdout):
@@ -73,6 +74,7 @@ SPEECH_THR   = 0.4      # VAD probability threshold (lowered for loaded systems)
 MIN_SILENCE  = int(os.getenv("VYSPER_STT_MIN_SILENCE_MS", "2500"))
 PAD_MS       = 100      # ms of audio padding around speech edges
 INTERIM_SEC  = 2.0      # seconds between interim Whisper inferences
+LANGUAGE     = os.getenv("VYSPER_STT_LANGUAGE") or None
 
 # ── shared state ───────────────────────────────────────────────────────────
 
@@ -138,10 +140,21 @@ def _stop_capture() -> None:
 def _transcribe(audio_np: np.ndarray, fast: bool = False) -> str:
     segments, _ = _whisper.transcribe(
         audio_np,
-        language="en",
+        language=LANGUAGE,
         beam_size=1 if fast else 5,
         best_of=1 if fast else 5,
         vad_filter=False,    # we do our own VAD
+        condition_on_previous_text=True,
+    )
+    return " ".join(seg.text.strip() for seg in segments).strip()
+
+def _transcribe_file(path: str) -> str:
+    segments, _ = _whisper.transcribe(
+        path,
+        language=LANGUAGE,
+        beam_size=5,
+        best_of=5,
+        vad_filter=True,
         condition_on_previous_text=True,
     )
     return " ".join(seg.text.strip() for seg in segments).strip()
@@ -274,6 +287,35 @@ def _main() -> None:
             _quit_event.set()
             log("Quit command received.")
             break
+
+        elif cmd == "transcribe_file":
+            request_id = msg.get("request_id")
+            audio_path = msg.get("path")
+            if not audio_path or not os.path.exists(audio_path):
+                emit({
+                    "type": "error",
+                    "source": "file",
+                    "request_id": request_id,
+                    "message": f"Audio file not found: {audio_path}",
+                })
+                continue
+
+            try:
+                log(f"Transcribing audio file: {audio_path}")
+                text = _transcribe_file(audio_path)
+                emit({
+                    "type": "transcription",
+                    "source": "file",
+                    "request_id": request_id,
+                    "text": text,
+                })
+            except Exception as exc:
+                emit({
+                    "type": "error",
+                    "source": "file",
+                    "request_id": request_id,
+                    "message": f"File transcription error: {exc}",
+                })
 
     log("Sidecar exiting.")
 

@@ -778,7 +778,13 @@ class LLMService {
   }
 
   async processProgrammingFinalization(text, programmingLanguage = null, imageBuffers = []) {
+    const hasImages = Array.isArray(imageBuffers) && imageBuffers.some((buffer) => Buffer.isBuffer(buffer) && buffer.length > 0);
+
     if (!this.isInitialized) {
+      if (hasImages) {
+        throw new Error('No se puede finalizar con imagenes porque Gemini no esta disponible. Activa Gemini o usa captura con OCR.');
+      }
+
       const initError = new Error('LLM service not initialized. Check Gemini API key configuration.');
       if (config.getApiKey('ANTHROPIC')) {
         return this.processTextWithSecondaryCodingFallback(
@@ -859,6 +865,10 @@ class LLMService {
       });
 
       if (this.isPrimaryQuotaOrBillingError(error)) {
+        if (hasImages) {
+          throw new Error('Gemini no pudo procesar la finalizacion multimodal y el fallback no soporta imagenes. Reintenta con Gemini activo o usa OCR para enviar texto.');
+        }
+
         return this.processTextWithSecondaryCodingFallback(
           text,
           'programming',

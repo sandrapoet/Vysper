@@ -335,7 +335,8 @@ class ChatWindowUI {
                     'programming': '💻',
                     'devops': '🚀',
                     'system-design': '🏗️',
-                    'negotiation': '🤝'
+                    'negotiation': '🤝',
+                    'secretaria': '📝'
                 };
                 
                 const icon = icons[skillName] || '🎯';
