@@ -660,6 +660,7 @@
       let listeningStartTime = null;
       let listeningTimer = null;
       let thinkingIndicatorTimer = null;
+      let isSynthesizingAudio = false;
 
       function focusMessageInput() {
         if (!messageInput) return;
@@ -697,6 +698,37 @@
 
         if (whysperAPI.sendChatMessage) {
           await whysperAPI.sendChatMessage(text);
+        }
+      }
+
+      async function synthesizeCurrentChatText() {
+        if (isSynthesizingAudio) return;
+
+        const text = messageInput.value.trim();
+        if (!text) {
+          addMessage('Secretaria: escribe texto en el chat antes de usar Ctrl+3.', 'error');
+          return;
+        }
+
+        if (!whysperAPI || !whysperAPI.synthesizeChatAudio) {
+          addMessage('Secretaria: la sintesis de audio no esta disponible en esta ventana.', 'error');
+          return;
+        }
+
+        addMessage('Secretaria: generando audio con Piper...', 'system');
+        isSynthesizingAudio = true;
+
+        try {
+          const result = await whysperAPI.synthesizeChatAudio(text);
+          if (!result || !result.success) {
+            throw new Error(result?.error || 'No se pudo generar el audio.');
+          }
+
+          addMessage(`Secretaria: audio guardado en ${result.audioPath}`, 'system');
+        } catch (error) {
+          addMessage(`Secretaria TTS Error: ${error.message}`, 'error');
+        } finally {
+          isSynthesizingAudio = false;
         }
       }
 
@@ -868,8 +900,13 @@
         addMessage('Stopped Listening', 'system');
       }
 
-      function handleTranscription(text) {
+      function handleTranscription(text, data = {}) {
         if (text && typeof text === 'string' && text.trim().length > 0) {
+          if (data.mode === 'secretaria' || data.isSecretariaBuffer) {
+            handleSecretariaBufferedTranscription(data);
+            return;
+          }
+
           // Hide listening animation first
           hideListeningAnimation();
 
@@ -886,6 +923,28 @@
         } else {
           console.warn('Invalid or empty transcription text - ignoring:', text);
         }
+      }
+
+      function handleSecretariaBufferedTranscription(data) {
+        const text = data && typeof data.text === 'string' ? data.text.trim() : '';
+        if (!text) return;
+
+        hideListeningAnimation();
+        clearPendingThinkingIndicator();
+        addMessage(text, 'transcription');
+        addMessage(`Secretaria: fragmento guardado en buffer (${data.chunks || 1})`, 'system');
+      }
+
+      function handleSecretariaBufferedAudio(data) {
+        hideListeningAnimation();
+        clearPendingThinkingIndicator();
+        addMessage(`Secretaria: audio guardado pendiente de transcripcion (${data.pendingAudioCount || 1})`, 'system');
+      }
+
+      function handleSecretariaBufferCleared(data) {
+        hideListeningAnimation();
+        clearPendingThinkingIndicator();
+        addMessage(`Secretaria: buffer liberado (${data.clearedChunks || 0})`, 'system');
       }
 
       // Basic IPC Event Listeners - simplified
@@ -908,11 +967,33 @@
 
         whysperAPI.onTranscriptionReceived((event, data) => {
           if (data && data.text) {
-            handleTranscription(data.text);
+            handleTranscription(data.text, data);
           } else {
             console.warn('Invalid transcription data received:', data);
           }
         });
+
+        whysperAPI.receive('secretaria-transcription-buffered', (event, data) => {
+          if (data && data.text) {
+            handleSecretariaBufferedTranscription(data);
+          } else {
+            console.warn('Invalid secretaria buffer data received:', data);
+          }
+        });
+
+        whysperAPI.receive('secretaria-audio-buffered', (event, data) => {
+          handleSecretariaBufferedAudio(data || {});
+        });
+
+        whysperAPI.receive('secretaria-buffer-cleared', (event, data) => {
+          handleSecretariaBufferCleared(data || {});
+        });
+
+        whysperAPI.receive('secretaria-tts-request', () => {
+          synthesizeCurrentChatText();
+        });
+
+        whysperAPI.receive('secretaria-tts-created', () => {});
 
         whysperAPI.onInterimTranscription((event, data) => {
           if (data && data.text) {
@@ -1048,6 +1129,11 @@
         if (e.altKey && e.key === 'r') {
           e.preventDefault();
           micButton.click();
+        }
+
+        if ((e.ctrlKey || e.metaKey) && e.key === '3') {
+          e.preventDefault();
+          synthesizeCurrentChatText();
         }
       });
 

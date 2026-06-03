@@ -8,8 +8,10 @@ Ctrl+Shift+V	Pegar portapapeles en cursor — solo en modo interactivo
 Ctrl+Shift+B	Copiar selección al portapapeles — solo en modo interactivo
 Ctrl+1	Guardar imágenes acumuladas (OCR + sin OCR) + consolidar !!!
 Ctrl+1	Pegar transcripción acumulada — solo en modo secretaria
-Ctrl+R	Iniciar / detener grabación — solo en modo secretaria
+Ctrl+3	Convertir texto del chat a audio con Piper — solo en modo secretaria
+Ctrl+R	Iniciar / detener grabación cruda; queda pendiente de transcripción — solo en modo secretaria
 Ctrl+4	Subir archivo de audio para transcribir — solo en modo secretaria
+Ctrl+Shift+|	Liberar todo el buffer — solo en modo secretaria
 Ctrl+|	Fallback de consolidación ||| (modo programming/dsa)
 Ctrl+Shift+S	Captura OCR
 Alt+B	Captura imagen sin OCR; en programming/dsa la acumula y espera !!! / ||| / °°°, en otros modos la envia al LLM
@@ -122,6 +124,11 @@ npm run build
 1. **Local Speech Recognition** (for voice commands)
    - Uses the local `stt/sidecar.py` service with Silero VAD + faster-whisper.
    - Run the STT setup script for your platform before using voice recording.
+   - Performance knobs for slower CPUs:
+     - In `secretaria`, `Ctrl+R` records raw audio first; pending audio is transcribed when `Ctrl+1` is pressed.
+     - `VYSPER_STT_MODEL=small` or `VYSPER_STT_MODEL=base` lowers CPU use versus `medium`.
+     - `VYSPER_STT_INTERIM_SEC=0` disables repeated interim Whisper passes while recording. This is the default.
+     - `VYSPER_STT_CPU_THREADS=2` limits Whisper CPU threads if it competes with the rest of the desktop.
 
 2. **Google Gemini AI** (for intelligent responses)
    - Get API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
@@ -208,6 +215,7 @@ ANTHROPIC_MAX_TOKENS=2048
 - **Audio Tool** (`brew install sox`)
 - **Local faster-whisper STT** with Silero VAD
 - **Google Gemini API** (Free quota included)
+- **Piper TTS** (`pip install piper-tts`) for `secretaria` text-to-speech audio generation
 
 ## 🚀 Advanced Usage
 

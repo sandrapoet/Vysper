@@ -16,6 +16,7 @@ class ChatWindowUI {
     constructor() {
         this.isRecording = false;
         this.isInteractive = true; // Start in interactive mode
+        this.isSynthesizingAudio = false;
         this.elements = {};
         
         this.init();
@@ -81,10 +82,34 @@ class ChatWindowUI {
             // Speech recognition handlers
             window.electronAPI.onTranscriptionReceived((event, data) => {
                 if (data && data.text) {
-                    this.handleTranscription(data.text);
+                    this.handleTranscription(data.text, data);
                 } else {
                     console.warn('Transcription event received but no text data:', data);
                 }
+            });
+
+            window.electronAPI.receive('secretaria-transcription-buffered', (event, data) => {
+                if (data && data.text) {
+                    this.handleSecretariaBufferedTranscription(data);
+                } else {
+                    console.warn('Secretaria buffer event received but no text data:', data);
+                }
+            });
+
+            window.electronAPI.receive('secretaria-audio-buffered', (event, data) => {
+                this.handleSecretariaBufferedAudio(data || {});
+            });
+
+            window.electronAPI.receive('secretaria-buffer-cleared', (event, data) => {
+                this.handleSecretariaBufferCleared(data || {});
+            });
+
+            window.electronAPI.receive('secretaria-tts-request', () => {
+                this.synthesizeCurrentChatText();
+            });
+
+            window.electronAPI.receive('secretaria-tts-created', (event, data) => {
+                logger.debug('Secretaria TTS audio created', data || {});
             });
             
             // Listen for interim transcription (real-time)
@@ -235,6 +260,11 @@ class ChatWindowUI {
                 e.preventDefault();
                 this.elements.micButton.click();
             }
+
+            if ((e.ctrlKey || e.metaKey) && e.key === '3') {
+                e.preventDefault();
+                this.synthesizeCurrentChatText();
+            }
         });
     }
 
@@ -292,8 +322,13 @@ class ChatWindowUI {
         logger.debug('Recording stopped in chat window');
     }
 
-    handleTranscription(text) {
+    handleTranscription(text, data = {}) {
         if (text && text.trim()) {
+            if (data.mode === 'secretaria' || data.isSecretariaBuffer) {
+                this.handleSecretariaBufferedTranscription(data);
+                return;
+            }
+
             // Hide listening animation first
             this.hideListeningAnimation();
             
@@ -312,6 +347,39 @@ class ChatWindowUI {
         } else {
             console.warn('❌ Transcription text is empty or invalid:', text);
         }
+    }
+
+    handleSecretariaBufferedTranscription(data) {
+        const text = typeof data.text === 'string' ? data.text.trim() : '';
+        if (!text) return;
+
+        this.hideListeningAnimation();
+        this.clearPendingThinkingIndicator();
+        this.addMessage(text, 'transcription');
+        this.addMessage(`Secretaria: fragmento guardado en buffer (${data.chunks || 1})`, 'system');
+        logger.debug('Secretaria transcription buffered in chat', {
+            textLength: text.length,
+            chunks: data.chunks,
+            totalLength: data.totalLength
+        });
+    }
+
+    handleSecretariaBufferedAudio(data) {
+        this.hideListeningAnimation();
+        this.clearPendingThinkingIndicator();
+        this.addMessage(`Secretaria: audio guardado pendiente de transcripcion (${data.pendingAudioCount || 1})`, 'system');
+        logger.debug('Secretaria audio buffered in chat', {
+            audioPath: data.audioPath,
+            chunks: data.chunks,
+            pendingAudioCount: data.pendingAudioCount
+        });
+    }
+
+    handleSecretariaBufferCleared(data) {
+        this.hideListeningAnimation();
+        this.clearPendingThinkingIndicator();
+        this.addMessage(`Secretaria: buffer liberado (${data.clearedChunks || 0})`, 'system');
+        logger.debug('Secretaria buffer cleared in chat', data);
     }
 
     async handleSkillActivated(skillName) {
@@ -377,6 +445,43 @@ class ChatWindowUI {
             }
             
             logger.debug('User message sent', { textLength: text.length });
+        }
+    }
+
+    async synthesizeCurrentChatText() {
+        if (this.isSynthesizingAudio) return;
+
+        const text = this.elements.messageInput.value.trim();
+        if (!text) {
+            this.addMessage('Secretaria: escribe texto en el chat antes de usar Ctrl+3.', 'error');
+            return;
+        }
+
+        if (!window.electronAPI || !window.electronAPI.synthesizeChatAudio) {
+            this.addMessage('Secretaria: la sintesis de audio no esta disponible en esta ventana.', 'error');
+            return;
+        }
+
+        this.addMessage('Secretaria: generando audio con Piper...', 'system');
+        this.isSynthesizingAudio = true;
+
+        try {
+            const result = await window.electronAPI.synthesizeChatAudio(text);
+            if (!result || !result.success) {
+                throw new Error(result?.error || 'No se pudo generar el audio.');
+            }
+
+            this.addMessage(`Secretaria: audio guardado en ${result.audioPath}`, 'system');
+            logger.info('Secretaria chat text synthesized', {
+                audioPath: result.audioPath,
+                textLength: result.textLength,
+                sizeBytes: result.sizeBytes
+            });
+        } catch (error) {
+            this.addMessage(`Secretaria TTS Error: ${error.message}`, 'error');
+            logger.error('Failed to synthesize current chat text', { error: error.message });
+        } finally {
+            this.isSynthesizingAudio = false;
         }
     }
 

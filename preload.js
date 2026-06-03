@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clearSessionMemory: () => ipcRenderer.invoke('clear-session-memory'),
   formatSessionHistory: () => ipcRenderer.invoke('format-session-history'),
   sendChatMessage: (text) => ipcRenderer.invoke('send-chat-message', text),
+  synthesizeChatAudio: (text) => ipcRenderer.invoke('synthesize-chat-audio', text),
   finalizeProgrammingContext: () => ipcRenderer.invoke('finalize-programming-context'),
   runSecondaryCodingFallback: () => ipcRenderer.invoke('run-secondary-coding-fallback'),
   getSkillPrompt: (skillName) => ipcRenderer.invoke('get-skill-prompt', skillName),

@@ -201,9 +201,9 @@ echo "[OK] PyTorch audio stack installed."
 # ── 6. Install remaining dependencies ───────────────────────
 
 echo
-echo "[4/7] Installing faster-whisper, sounddevice, numpy..."
+echo "[4/7] Installing faster-whisper, sounddevice, numpy, piper-tts..."
 
-pip install faster-whisper sounddevice numpy --quiet
+pip install faster-whisper sounddevice numpy piper-tts --quiet
 
 if [ $? -ne 0 ]; then
     echo "[ERROR] Failed to install dependencies."

@@ -163,8 +163,8 @@ echo [OK] PyTorch audio stack installed.
 
 REM -- 6. Install remaining Python dependencies ------------------------------
 echo.
-echo [4/6] Installing faster-whisper, sounddevice, numpy...
-python -m pip install faster-whisper sounddevice numpy --quiet
+echo [4/6] Installing faster-whisper, sounddevice, numpy, piper-tts...
+python -m pip install faster-whisper sounddevice numpy piper-tts --quiet
 if %errorlevel% neq 0 (
     echo [ERROR] Failed to install Python dependencies.
     pause
