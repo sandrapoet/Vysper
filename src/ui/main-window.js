@@ -279,17 +279,7 @@ class MainWindowUI {
                 }
             });
 
-            // Global keyboard shortcuts
-            document.addEventListener('keydown', (e) => {
-                if (e.altKey && e.key === 'r' && this.isInteractive) {
-                    e.preventDefault();
-                    if (this.isRecording) {
-                        window.electronAPI.stopSpeechRecognition();
-                    } else {
-                        window.electronAPI.startSpeechRecognition();
-                    }
-                }
-            });
+            // Alt+R is handled globally by the main process.
         }
         
         // Also listen via the api interface for backup

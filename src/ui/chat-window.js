@@ -255,13 +255,8 @@ class ChatWindowUI {
             }
         });
         
-        // Global keyboard shortcuts
+        // Alt+R is handled globally by the main process.
         document.addEventListener('keydown', (e) => {
-            if (e.altKey && e.key === 'r') {
-                e.preventDefault();
-                this.elements.micButton.click();
-            }
-
             if ((e.ctrlKey || e.metaKey) && e.key === '3') {
                 e.preventDefault();
                 this.armSecretariaTtsInput();

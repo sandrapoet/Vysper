@@ -7,9 +7,9 @@ Ctrl+Shift+X	Abrir configuración — solo en modo interactivo
 Ctrl+Shift+V	Pegar portapapeles en cursor — solo en modo interactivo
 Ctrl+Shift+B	Copiar selección al portapapeles — solo en modo interactivo
 Ctrl+1	Guardar imágenes acumuladas (OCR + sin OCR) + consolidar !!!
-Ctrl+1	Pegar transcripción acumulada — solo en modo secretaria
+Ctrl+1	Pegar la transcripción acumulada sin liberarla — solo en modo secretaria
 Ctrl+3	Armar el siguiente envío del chat para convertirlo a MP3 con Edge por defecto; usa ¬|1 para Piper y |1.5 para cambiar ritmo — solo en modo secretaria
-Ctrl+R	Iniciar / detener grabación cruda; queda pendiente de transcripción — solo en modo secretaria
+Alt+R	Iniciar / detener grabación; en secretaria graba audio crudo pendiente de transcripción
 Ctrl+4	Subir archivo de audio para transcribir — solo en modo secretaria
 Ctrl+Shift+L	Liberar todo el buffer — solo en modo secretaria
 Ctrl+|	Fallback de consolidación ||| (modo programming/dsa)
@@ -125,7 +125,7 @@ npm run build
    - Uses the local `stt/sidecar.py` service with Silero VAD + faster-whisper.
    - Run the STT setup script for your platform before using voice recording.
    - Performance knobs for slower CPUs:
-     - In `secretaria`, `Ctrl+R` records raw audio first; pending audio is transcribed when `Ctrl+1` is pressed.
+     - In `secretaria`, `Alt+R` records raw audio first; pending audio is transcribed when `Ctrl+1` is pressed.
      - `VYSPER_STT_MODEL=small` or `VYSPER_STT_MODEL=base` lowers CPU use versus `medium`.
      - `VYSPER_STT_INTERIM_SEC=0` disables repeated interim Whisper passes while recording. This is the default.
      - `VYSPER_STT_CPU_THREADS=2` limits Whisper CPU threads if it competes with the rest of the desktop.

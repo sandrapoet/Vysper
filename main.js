@@ -319,6 +319,7 @@ class ApplicationController {
     this.activeSkill = "programming";
     this.accumulatedOCRImages = [];
     this.secretariaTranscriptChunks = [];
+    this.secretariaBufferGeneration = 0;
     this.secretariaRawRecordingPath = null;
     this.pendingSelectionCaptureMode = 'ocr';
     this.pendingSelectionCaptureOptions = {};
@@ -481,7 +482,6 @@ class ApplicationController {
       "CommandOrControl+,": () => windowManager.showSettings(),
       "Alt+A": () => windowManager.toggleInteraction(),
       "Alt+R": () => this.toggleSpeechRecognition(),
-      "CommandOrControl+R": () => this.handleSecretariaRecordingShortcut(),
       "CommandOrControl+Shift+T": () => windowManager.forceAlwaysOnTopForAllWindows(),
       "CommandOrControl+Shift+Alt+T": () => {
         const results = windowManager.testAlwaysOnTopForAllWindows();
@@ -1039,7 +1039,12 @@ class ApplicationController {
     });
   }
 
-  toggleSpeechRecognition() {
+  async toggleSpeechRecognition() {
+    if (this.isSecretariaMode() || this.secretariaRawRecordingPath) {
+      await this.handleSecretariaRecordingShortcut();
+      return;
+    }
+
     const currentStatus = speechService.getStatus();
     if (currentStatus.isRecording) {
       try {
@@ -1060,8 +1065,8 @@ class ApplicationController {
   }
 
   async handleSecretariaRecordingShortcut() {
-    if (!this.isSecretariaMode()) {
-      logger.warn('Ctrl+R solo inicia grabacion en modo secretaria');
+    if (!this.isSecretariaMode() && !this.secretariaRawRecordingPath) {
+      logger.warn('Alt+R solo inicia grabacion cruda en modo secretaria');
       return;
     }
 
@@ -1117,8 +1122,16 @@ class ApplicationController {
       }
 
       const filePath = result.filePaths[0];
+      const bufferGeneration = this.secretariaBufferGeneration;
       signalShortcut('Ctrl+4 transcribiendo archivo de audio', { filePath });
       const text = await speechService.transcribeFile(filePath);
+      if (bufferGeneration !== this.secretariaBufferGeneration) {
+        signalShortcut('Secretaria descarto transcripcion porque el buffer fue liberado', {
+          source: 'file',
+          filePath
+        });
+        return;
+      }
       const transcriptPath = this.saveSecretariaTranscriptToFile(text, filePath);
       this.addSecretariaTranscript(text, 'file', { filePath, transcriptPath, persistOnly: true });
     } catch (error) {
@@ -2185,10 +2198,21 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
   }
 
   async transcribePendingSecretariaAudio() {
+    const bufferGeneration = this.secretariaBufferGeneration;
     const pendingEntries = this.getPendingSecretariaAudioEntries();
     for (const entry of pendingEntries) {
       signalShortcut('Secretaria transcribiendo audio pendiente', { audioPath: entry.audioPath });
       const text = await speechService.transcribeFile(entry.audioPath);
+      if (
+        bufferGeneration !== this.secretariaBufferGeneration ||
+        !this.secretariaTranscriptChunks.includes(entry)
+      ) {
+        signalShortcut('Secretaria descarto transcripcion porque el buffer fue liberado', {
+          source: entry.source,
+          audioPath: entry.audioPath
+        });
+        return false;
+      }
       const transcriptPath = this.saveSecretariaTranscriptToFile(text, entry.audioPath);
       entry.text = null;
       entry.textLength = text.trim().length;
@@ -2218,6 +2242,7 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         }
       });
     }
+    return true;
   }
 
   addSecretariaTranscript(text, source = 'unknown', metadata = {}) {
@@ -2270,8 +2295,8 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     });
   }
 
-  getSecretariaTranscriptText() {
-    return this.secretariaTranscriptChunks
+  getSecretariaTranscriptText(chunks = this.secretariaTranscriptChunks) {
+    return chunks
       .map((chunk) => {
         if (chunk.text) return chunk.text;
         if (chunk.transcriptPath && fs.existsSync(chunk.transcriptPath)) {
@@ -2292,19 +2317,16 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     }, 0);
   }
 
-  releaseSecretariaWorkingMemory() {
-    for (const chunk of this.secretariaTranscriptChunks) {
-      if (chunk.transcriptPath) {
-        chunk.text = null;
-      }
-    }
-  }
-
   async clearSecretariaBuffer(source = 'manual') {
     const clearedChunks = this.secretariaTranscriptChunks.length;
     const pendingAudioCount = this.getPendingSecretariaAudioEntries().length;
+    const rawRecordingPath = this.secretariaRawRecordingPath;
 
-    if (speechService.getStatus().isRecording && this.secretariaRawRecordingPath) {
+    this.secretariaBufferGeneration += 1;
+    this.secretariaTranscriptChunks = [];
+    this.secretariaRawRecordingPath = null;
+
+    if (speechService.getStatus().isRecording && rawRecordingPath) {
       try {
         await speechService.stopRawRecording();
       } catch (error) {
@@ -2313,9 +2335,6 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         });
       }
     }
-
-    this.secretariaTranscriptChunks = [];
-    this.secretariaRawRecordingPath = null;
 
     windowManager.broadcastToAllWindows("secretaria-buffer-cleared", {
       source,
@@ -2331,8 +2350,15 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
   }
 
   async pasteSecretariaTranscriptAtCursor() {
-    await this.transcribePendingSecretariaAudio();
-    const text = this.getSecretariaTranscriptText();
+    const bufferGeneration = this.secretariaBufferGeneration;
+    const chunksToPaste = [...this.secretariaTranscriptChunks];
+    const transcriptionCompleted = await this.transcribePendingSecretariaAudio();
+    if (transcriptionCompleted === false || bufferGeneration !== this.secretariaBufferGeneration) {
+      signalShortcut('Ctrl+1 cancelado porque el buffer de secretaria fue liberado');
+      return;
+    }
+
+    const text = this.getSecretariaTranscriptText(chunksToPaste);
 
     if (!text) {
       signalShortcut('Ctrl+1 en secretaria recibido, pero no hay transcripcion acumulada');
@@ -2343,9 +2369,8 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
       clipboard.writeText(text);
       const started = await pasteClipboardAtCursor();
       if (started) {
-        this.releaseSecretariaWorkingMemory();
         signalShortcut('Ctrl+1 pego transcripcion de secretaria en el cursor', {
-          chunks: this.secretariaTranscriptChunks.length,
+          chunks: chunksToPaste.length,
           length: text.length
         });
       }
