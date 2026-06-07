@@ -1097,7 +1097,8 @@ class ApplicationController {
       return;
     }
 
-    logger.warn('Ctrl+Shift+L solo libera buffer en modo secretaria');
+    // Fuera de secretaria, Ctrl+Shift+L replica el comando °°° (reset de contexto de código).
+    this.handleCodingContextReset('shortcut');
   }
 
   async handleSecretariaAudioUploadShortcut() {
