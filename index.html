@@ -73,6 +73,19 @@
         animation: pulse 2s infinite;
       }
 
+      /* Semaforo de portapapeles sobre el icono del microfono */
+      .command-item.clip-ready i {
+        color: #2196f3; /* Azul: listo, selecciona con el mouse (tras Ctrl+Shift+B) */
+        text-shadow: 0 0 10px rgba(33, 150, 243, 0.6);
+        animation: pulse 2s infinite;
+      }
+
+      .command-item.clip-pasting i {
+        color: #ffeb3b; /* Amarillo: instruccion recibida / pegando (Ctrl+Shift+V) */
+        text-shadow: 0 0 10px rgba(255, 235, 59, 0.6);
+        animation: pulse 2s infinite;
+      }
+
       .command-item.active {
         color: #4caf50;
         text-shadow: 0 1px 2px rgba(76, 175, 80, 0.3);

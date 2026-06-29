@@ -2,20 +2,38 @@
 Mapa de atajos actualizado:
 
 Shortcut	Acción
+Ctrl+Shift+S	Captura OCR de una región (acumula en programming/dsa/labelling; en otros modos la envía al LLM)
+Alt+B	Captura imagen sin OCR (acumula en programming/dsa/labelling y espera !!! / ||| / °°°; en otros modos la envía al LLM)
+Ctrl+1	En programming/dsa/labelling: guarda imágenes acumuladas (OCR + sin OCR) y consolida (!!!). En secretaria: pega la transcripción acumulada sin liberarla
+Ctrl+|	Fallback de consolidación ||| (programming/dsa/labelling)
+Ctrl+3	Secretaria: arma el siguiente envío del chat para convertirlo a MP3 (Edge por defecto; usa ¬|1 para Piper y |1.5 para el ritmo)
+Ctrl+4	Secretaria: subir archivo de audio para transcribir
+Alt+R	Iniciar / detener grabación; en secretaria graba audio crudo pendiente de transcripción
+Ctrl+Shift+L	Liberar todo el buffer en cualquier modo (secretaria: buffer de dictado; resto: contexto + imágenes acumuladas, equivale a °°°). También cancela un pegado/copiado en curso
+Ctrl+Shift+B	Copiar selección con el mouse, sin teclazos (sigiloso): pulsa, selecciona, y al soltar el mouse copia al portapapeles. Funciona en todos los modos
+Ctrl+Shift+V	Pegar el portapapeles en el cursor, tecleado por "cubetazos" (simula escritura humana). Funciona en todos los modos; cancelable con Ctrl+Shift+L
+Alt+,	Escribe el símbolo < en el cursor (todos los modos)
+Alt+.	Escribe el símbolo > en el cursor (todos los modos)
 Ctrl+Shift+Z	Ocultar / mostrar todas las ventanas (incluye ventana gris)
 Ctrl+Shift+X	Abrir configuración — solo en modo interactivo
-Ctrl+Shift+V	Pegar portapapeles en cursor — solo en modo interactivo
-Ctrl+Shift+B	Copiar selección al portapapeles — solo en modo interactivo
-Ctrl+1	Guardar imágenes acumuladas (OCR + sin OCR) + consolidar !!!
-Ctrl+1	Pegar la transcripción acumulada sin liberarla — solo en modo secretaria
-Ctrl+3	Armar el siguiente envío del chat para convertirlo a MP3 con Edge por defecto; usa ¬|1 para Piper y |1.5 para cambiar ritmo — solo en modo secretaria
-Alt+R	Iniciar / detener grabación; en secretaria graba audio crudo pendiente de transcripción
-Ctrl+4	Subir archivo de audio para transcribir — solo en modo secretaria
-Ctrl+Shift+L	Liberar todo el buffer — solo en modo secretaria
-Ctrl+|	Fallback de consolidación ||| (modo programming/dsa)
-Ctrl+Shift+S	Captura OCR
-Alt+B	Captura imagen sin OCR; en programming/dsa la acumula y espera !!! / ||| / °°°, en otros modos la envia al LLM
+Ctrl+,	Abrir configuración
+Ctrl+Shift+C	Ir a la ventana de chat
+Ctrl+Shift+H	Mostrar / ocultar la guía de referencia
+Ctrl+Shift+T	Forzar "always-on-top" en todas las ventanas
 Ctrl+Shift+I / Alt+A	Toggle modo interactivo
+Ctrl+↑ / Ctrl+↓	Interactivo: cambiar de skill (anterior/siguiente). No interactivo: mover las ventanas
+Ctrl+← / Ctrl+→	No interactivo: mover las ventanas
+
+Indicador "foco" del encabezado (ícono del micrófono):
+- Rojo: grabando
+- Azul: listo para seleccionar con el mouse (tras Ctrl+Shift+B)
+- Amarillo: pegando (tras Ctrl+Shift+V)
+- Apagado: inactivo / terminó
+
+Comandos de texto (en el chat o por voz):
+- !!!  Consolida el contexto acumulado y genera la respuesta final
+- |||  Reintento / fallback de la consolidación
+- °°°  Reinicia el contexto acumulado
 ###
 
 <p align="center">
@@ -50,6 +68,7 @@ https://github.com/user-attachments/assets/c5616482-3652-4686-b87b-e04d06572d2f
 - **DevOps** - Infrastructure, CI/CD, and deployment strategies
 - **Data Science** - Analytics, ML approaches, and statistical methods
 - **Secretaria** - Long dictation/audio-file transcription, then paste the accumulated text at the active cursor
+- **Labelling** - Evaluate two model transcripts (Response A vs B) against a user prompt; accumulate the parts (mark them A:/B:) and consolidate with `Ctrl+1` / `!!!` to get strengths, weaknesses (taxonomy), a 0–7 preference, and a rationale
 
 ## 🚀 Quick Start
 
@@ -132,7 +151,7 @@ npm run build
 
 2. **Google Gemini AI** (for intelligent responses)
    - Get API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
-   - Configure in app: Press `Alt+G`
+   - Configure it in the `.env` file (see below) or in the app's Settings window (`Ctrl/Cmd + Shift + X` or `Ctrl/Cmd + ,`)
 
 ### Environment File
 Create `.env`:
@@ -149,22 +168,29 @@ ANTHROPIC_MAX_TOKENS=2048
 ### Core Functions
 | Shortcut | Action |
 |----------|--------|
-| `Cmd + Shift + S` | Select Screen Region + AI Analysis |
+| `Ctrl/Cmd + Shift + S` | Select Screen Region + OCR Analysis |
+| `Alt/Option + B` | Capture image region without OCR |
 | `Alt/Option + R` | Voice Recording Toggle |
-| `Cmd + Shift + \` | Show/Hide All Windows |
-| `Alt + A` | Toggle Interactive Mode |
+| `Ctrl/Cmd + Shift + Z` | Show/Hide All Windows |
+| `Ctrl/Cmd + Shift + I` / `Alt + A` | Toggle Interactive Mode |
 
 ### Navigation
 | Shortcut | Action |
 |----------|--------|
-| `Cmd + Shift + C` | Chat Window |
-| `Cmd + Arrow Up/Down` | Skills Selection (only if Interactive mode is on) |
-| `Cmd + ,` | Settings |
+| `Ctrl/Cmd + Shift + C` | Chat Window |
+| `Ctrl/Cmd + Arrow Up/Down` | Skills Selection (only if Interactive mode is on) |
+| `Ctrl/Cmd + ,` | Settings |
+
+### Clipboard (stealth, no Ctrl+C/Ctrl+V keystrokes)
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl/Cmd + Shift + B` | Arm copy: select with the mouse; on release it copies the selection |
+| `Ctrl/Cmd + Shift + V` | Paste clipboard at cursor, typed in chunks (human-like); cancel with `Ctrl+Shift+L` |
 
 ### Session Management
 | Shortcut | Action |
 |----------|--------|
-| `Cmd+Shift+\` | Clear Session Memory |
+| `Ctrl/Cmd + Shift + L` | Release all buffers / reset accumulated context (same as `°°°`); also cancels an in-progress paste/copy |
 
 ### Important Interaction Usage Tip 
 * Enable **Interaction Mode** to scroll, click, or select inside windows.

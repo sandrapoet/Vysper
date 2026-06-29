@@ -883,6 +883,70 @@ class LLMService {
     }
   }
 
+  async processSkillFinalization(text, activeSkill, sessionMemory = [], programmingLanguage = null, imageBuffers = []) {
+    if (!this.isInitialized) {
+      throw new Error('LLM service not initialized. Check Gemini API key configuration.');
+    }
+
+    const startTime = Date.now();
+    this.requestCount++;
+
+    try {
+      logger.info('Processing skill finalization with active skill prompt', {
+        activeSkill,
+        textLength: text.length,
+        programmingLanguage: programmingLanguage || 'not specified',
+        imageCount: Array.isArray(imageBuffers) ? imageBuffers.length : 0,
+        requestId: this.requestCount
+      });
+
+      const request = this.buildGeminiRequest(text, activeSkill, sessionMemory, programmingLanguage);
+      const lastUserContent = request.contents[request.contents.length - 1];
+
+      if (!lastUserContent || !Array.isArray(lastUserContent.parts)) {
+        throw new Error('Failed to build skill finalization request: missing user parts');
+      }
+
+      const imageParts = this.buildGeminiImageParts(imageBuffers);
+      if (imageParts.length > 0) {
+        lastUserContent.parts.push(...imageParts);
+      }
+
+      let response;
+      try {
+        response = await this.executeRequest(request);
+      } catch (error) {
+        if (error.message.includes('fetch failed') && config.get('llm.gemini.enableFallbackMethod')) {
+          response = await this.executeAlternativeRequest(request);
+        } else {
+          throw error;
+        }
+      }
+
+      return {
+        response,
+        metadata: {
+          skill: activeSkill,
+          programmingLanguage,
+          imageCount: imageParts.length,
+          processingTime: Date.now() - startTime,
+          requestId: this.requestCount,
+          usedFallback: false,
+          isFinalizationResponse: true
+        }
+      };
+    } catch (error) {
+      this.errorCount++;
+      logger.error('Skill finalization failed', {
+        error: error.message,
+        activeSkill,
+        programmingLanguage: programmingLanguage || 'not specified',
+        requestId: this.requestCount
+      });
+      throw error;
+    }
+  }
+
   async processImageWithSkill(imageBuffer, activeSkill, sessionMemory = [], programmingLanguage = null, promptText = 'Analiza la imagen adjunta y responde segun el modo activo.') {
     if (!this.isInitialized) {
       throw new Error('LLM service not initialized. Check Gemini API key configuration.');

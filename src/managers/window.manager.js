@@ -105,7 +105,13 @@ class WindowManager {
       await this.createLLMResponseWindow();
       logger.debug('Creating settings window');
       await this.createSettingsWindow();
-      
+
+      // Reposicionar con todas las ventanas ya registradas para fijar main arriba-derecha
+      // (durante la creacion individual llmResponse aun no estaba en el mapa).
+      if (this.bindWindows) {
+        this.positionBoundWindows();
+      }
+
       this.setupWindowEventHandlers();
       this.setupScreenTracking();
       this.setupScreenSharingDetection();
@@ -621,7 +627,7 @@ class WindowManager {
     }
 
     const positions = {
-      main: { x: displayX + 50, y: displayY + topMargin },
+      main: { x: displayX + screenWidth - windowWidth - 20, y: displayY + topMargin },
       chat: { x: displayX + screenWidth - windowWidth - 50, y: displayY + topMargin },
       settings: { x: displayX + (screenWidth - windowWidth) / 2, y: displayY + topMargin }
     };
@@ -672,29 +678,34 @@ class WindowManager {
   positionBoundWindows() {
     const mainWindow = this.windows.get('main');
     const llmWindow = this.windows.get('llmResponse');
-    
-    if (!mainWindow || !llmWindow) return;
-    
+
+    // Posicionar main aunque llmResponse aun no exista (durante la creacion inicial
+    // positionWindow corre antes de registrar llmResponse en el mapa).
+    if (!mainWindow) return;
+
     const display = this.currentDisplay || screen.getPrimaryDisplay();
     const { x: displayX, y: displayY, width: screenWidth, height: screenHeight } = display.workArea;
-    
+
     const [mainWidth, mainHeight] = mainWindow.getSize();
-    const [llmWidth, llmHeight] = llmWindow.getSize();
-    
-    // Position main window at top-left
+
+    // Position main window at top-right (casi el extremo superior derecho)
     const topMargin = 20;
-    const mainX = displayX + 50;
+    const rightMargin = 20;
+    const mainX = displayX + screenWidth - mainWidth - rightMargin;
     const mainY = displayY + topMargin;
     this.setWindowPosition(mainWindow, mainX, mainY, 'main');
 
-    // Position LLM response window at the bottom-left edge of the gray overlay.
-    this.positionLLMBottomLeft(llmWindow);
+    // Position LLM response window at the bottom-left edge of the gray overlay (si existe).
+    if (llmWindow) {
+      this.positionLLMBottomLeft(llmWindow);
+    }
 
     // Update stored position (use main window position as reference)
     this.boundWindowsPosition = { x: mainX, y: mainY };
 
-    logger.debug('Positioned bound windows: main top-left, llm bottom-left', {
+    logger.debug('Positioned bound windows: main top-right', {
       mainPosition: `${mainX},${mainY}`,
+      llmPositioned: Boolean(llmWindow),
       display: display.id
     });
   }
@@ -1329,6 +1340,7 @@ class WindowManager {
       useCompactLayout
     });
   }
+
 
   showLLMLoading() {
     if (this.isScreenBeingShared) {

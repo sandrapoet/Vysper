@@ -27,9 +27,10 @@ class MainWindowUI {
             'presentation',
             'negotiation',
             'devops',
-            'secretaria'
+            'secretaria',
+            'labelling'
         ];
-        
+
         this.init();
     }
 
@@ -273,6 +274,11 @@ class MainWindowUI {
                 this.handleRecordingStopped();
             });
 
+            // Semaforo de portapapeles: 'ready' (azul), 'pasting' (amarillo), 'off' (apagado).
+            window.electronAPI.receive('clipboard-status', (event, status) => {
+                this.handleClipboardStatus(status);
+            });
+
             window.electronAPI.onSkillChanged((event, data) => {
                 if (data && data.skill) {
                     this.handleSkillChanged(data);
@@ -330,7 +336,8 @@ class MainWindowUI {
             'devops': 'DevOps',
             'system-design': 'System Design',
             'negotiation': 'Negotiation',
-            'secretaria': 'Secretaria'
+            'secretaria': 'Secretaria',
+            'labelling': 'Labelling'
         };
         
         const displaySkill = skillNames[skill] || skill.toUpperCase();
@@ -455,6 +462,18 @@ class MainWindowUI {
         logger.debug('Recording stopped', { component: 'MainWindowUI' });
     }
 
+    handleClipboardStatus(status) {
+        if (!this.micButton) return;
+        this.micButton.classList.remove('clip-ready', 'clip-pasting');
+        if (status === 'ready') {
+            this.micButton.classList.add('clip-ready');
+        } else if (status === 'pasting') {
+            this.micButton.classList.add('clip-pasting');
+        }
+        // 'off' (u otro): solo se limpian las clases.
+        logger.debug('Clipboard status updated', { component: 'MainWindowUI', status });
+    }
+
     updateSkillIndicator() {
         const skillNames = {
             'dsa': 'DSA',
@@ -466,7 +485,8 @@ class MainWindowUI {
             'devops': 'DevOps',
             'system-design': 'System Design',
             'negotiation': 'Negotiation',
-            'secretaria': 'Secretaria'
+            'secretaria': 'Secretaria',
+            'labelling': 'Labelling'
         };
         
         logger.info('Updating skill indicator', {
@@ -580,7 +600,8 @@ class MainWindowUI {
             'devops': 'DevOps',
             'system-design': 'System Design',
             'negotiation': 'Negotiation',
-            'secretaria': 'Secretaria'
+            'secretaria': 'Secretaria',
+            'labelling': 'Labelling'
         };
         
         const displayName = skillNames[skill] || skill.toUpperCase();

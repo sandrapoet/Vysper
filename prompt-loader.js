@@ -393,7 +393,11 @@ When providing technical examples or code-related advice, use ${languageTitle} a
       'secretaria': 'secretaria',
       'secretary': 'secretaria',
       'dictation': 'secretaria',
-      'transcription': 'secretaria'
+      'transcription': 'secretaria',
+      'labelling': 'labelling',
+      'labeling': 'labelling',
+      'eval': 'labelling',
+      'evaluation': 'labelling'
     };
 
     return skillMap[normalized] || normalized;

@@ -112,6 +112,11 @@ class ChatWindowUI {
             window.electronAPI.receive('secretaria-tts-created', (event, data) => {
                 logger.debug('Secretaria TTS audio created', data || {});
             });
+
+            // Aviso de portapapeles (p. ej. cuantos caracteres se copiaron).
+            window.electronAPI.receive('clipboard-notice', (event, data) => {
+                if (data && data.text) this.addMessage(data.text, 'system');
+            });
             
             // Listen for interim transcription (real-time)
             if (window.electronAPI.onInterimTranscription) {
@@ -400,7 +405,8 @@ class ChatWindowUI {
                     'devops': '🚀',
                     'system-design': '🏗️',
                     'negotiation': '🤝',
-                    'secretaria': '📝'
+                    'secretaria': '📝',
+                    'labelling': '🏷️'
                 };
                 
                 const icon = icons[skillName] || '🎯';
