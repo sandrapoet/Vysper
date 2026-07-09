@@ -28,7 +28,8 @@ class MainWindowUI {
             'negotiation',
             'devops',
             'secretaria',
-            'labelling'
+            'labelling',
+            'traductor'
         ];
 
         this.init();
@@ -337,7 +338,8 @@ class MainWindowUI {
             'system-design': 'System Design',
             'negotiation': 'Negotiation',
             'secretaria': 'Secretaria',
-            'labelling': 'Labelling'
+            'labelling': 'Labelling',
+            'traductor': 'Traductor'
         };
         
         const displaySkill = skillNames[skill] || skill.toUpperCase();
@@ -486,7 +488,8 @@ class MainWindowUI {
             'system-design': 'System Design',
             'negotiation': 'Negotiation',
             'secretaria': 'Secretaria',
-            'labelling': 'Labelling'
+            'labelling': 'Labelling',
+            'traductor': 'Traductor'
         };
         
         logger.info('Updating skill indicator', {
@@ -601,7 +604,8 @@ class MainWindowUI {
             'system-design': 'System Design',
             'negotiation': 'Negotiation',
             'secretaria': 'Secretaria',
-            'labelling': 'Labelling'
+            'labelling': 'Labelling',
+            'traductor': 'Traductor'
         };
         
         const displayName = skillNames[skill] || skill.toUpperCase();

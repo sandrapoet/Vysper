@@ -406,7 +406,8 @@ class ChatWindowUI {
                     'system-design': '🏗️',
                     'negotiation': '🤝',
                     'secretaria': '📝',
-                    'labelling': '🏷️'
+                    'labelling': '🏷️',
+                    'traductor': '🌐'
                 };
                 
                 const icon = icons[skillName] || '🎯';

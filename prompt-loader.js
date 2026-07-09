@@ -397,7 +397,11 @@ When providing technical examples or code-related advice, use ${languageTitle} a
       'labelling': 'labelling',
       'labeling': 'labelling',
       'eval': 'labelling',
-      'evaluation': 'labelling'
+      'evaluation': 'labelling',
+      'traductor': 'traductor',
+      'translator': 'traductor',
+      'translation': 'traductor',
+      'traduccion': 'traductor'
     };
 
     return skillMap[normalized] || normalized;

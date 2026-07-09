@@ -429,6 +429,7 @@ class ApplicationController {
     this.secretariaTranscriptChunks = [];
     this.secretariaBufferGeneration = 0;
     this.secretariaRawRecordingPath = null;
+    this.translatorRawRecordingPath = null;
     this.pendingSelectionCaptureMode = 'ocr';
     this.pendingSelectionCaptureOptions = {};
 
@@ -1220,6 +1221,11 @@ class ApplicationController {
       return;
     }
 
+    if (this.isTranslatorMode() || this.translatorRawRecordingPath) {
+      await this.handleTranslatorRecordingShortcut();
+      return;
+    }
+
     const currentStatus = speechService.getStatus();
     if (currentStatus.isRecording) {
       try {
@@ -1263,6 +1269,87 @@ class ApplicationController {
     } catch (error) {
       logger.error('Error handling secretaria raw recording shortcut', { error: error.message });
       this.broadcastLLMError(`No se pudo manejar la grabacion de secretaria: ${error.message}`);
+    }
+  }
+
+  async handleTranslatorRecordingShortcut() {
+    // Traductor: usa grabacion CRUDA (start_raw -> archivo) para que el audio largo NUNCA se corte
+    // por el VAD, a diferencia del streaming de startRecording(). Al detener, transcribe el archivo
+    // completo y lo envia al LLM con el prompt de traduccion.
+    const currentStatus = speechService.getStatus();
+    try {
+      if (currentStatus.isRecording) {
+        const audioPath = await speechService.stopRawRecording();
+        this.translatorRawRecordingPath = null;
+        logger.info('Translator raw recording stopped', { audioPath });
+        if (audioPath) {
+          await this.transcribeAndTranslate(audioPath);
+        } else {
+          this.broadcastLLMError('No se obtuvo audio de la grabacion para traducir.');
+        }
+        return;
+      }
+
+      const audioPath = this.createSecretariaAudioPath();
+      this.translatorRawRecordingPath = audioPath;
+      speechService.startRawRecording(audioPath);
+      windowManager.showChatWindow();
+      logger.info('Translator raw recording started', { audioPath });
+    } catch (error) {
+      logger.error('Error handling translator raw recording shortcut', { error: error.message });
+      this.broadcastLLMError(`No se pudo manejar la grabacion del traductor: ${error.message}`);
+    }
+  }
+
+  async transcribeAndTranslate(audioPath) {
+    windowManager.showLLMLoading();
+    try {
+      const spanishText = await speechService.transcribeFile(audioPath);
+      const cleanText = typeof spanishText === 'string' ? spanishText.trim() : '';
+
+      if (!cleanText) {
+        const msg = 'No se detecto voz en la grabacion. Revisa el microfono y vuelve a intentar.';
+        windowManager.showLLMResponse(msg, { skill: this.activeSkill, processingTime: 0, usedFallback: true });
+        this.broadcastLLMError(msg);
+        return;
+      }
+
+      // Guardar la transcripcion en disco (reutiliza el helper de secretaria).
+      try {
+        this.saveSecretariaTranscriptToFile(cleanText, audioPath);
+      } catch (persistError) {
+        logger.warn('No se pudo guardar la transcripcion del traductor', { error: persistError.message });
+      }
+
+      sessionManager.addUserInput(cleanText, 'translator-audio');
+      const sessionHistory = sessionManager.getOptimizedHistory();
+
+      const llmResult = await llmService.processTextWithSkill(
+        cleanText,
+        this.activeSkill,
+        sessionHistory.recent,
+        null
+      );
+
+      sessionManager.addModelResponse(llmResult.response, {
+        skill: this.activeSkill,
+        processingTime: llmResult.metadata.processingTime,
+        usedFallback: llmResult.metadata.usedFallback,
+        isTranslationResponse: true,
+        source: 'translator-audio'
+      });
+
+      this.broadcastTranscriptionLLMResponse(llmResult);
+      windowManager.showLLMResponse(llmResult.response, {
+        skill: this.activeSkill,
+        processingTime: llmResult.metadata.processingTime,
+        usedFallback: llmResult.metadata.usedFallback,
+      });
+    } catch (error) {
+      logger.error('Error transcribing/translating audio', { error: error.message, audioPath });
+      const msg = `No se pudo traducir el audio: ${error.message}`;
+      windowManager.showLLMResponse(msg, { skill: this.activeSkill, processingTime: 0, usedFallback: true });
+      this.broadcastLLMError(error.message);
     }
   }
 
@@ -1426,6 +1513,7 @@ class ApplicationController {
       "devops",
       "secretaria",
       "labelling",
+      "traductor",
     ];
 
     const normalizedActiveSkill = this.getNormalizedSkill(this.activeSkill);
@@ -1697,8 +1785,12 @@ class ApplicationController {
     return this.getNormalizedSkill(skill) === 'secretaria';
   }
 
+  isTranslatorMode(skill = this.activeSkill) {
+    return this.getNormalizedSkill(skill) === 'traductor';
+  }
+
   isCodingAccumulationSkill(skill = this.activeSkill) {
-    return ['programming', 'dsa', 'labelling'].includes(this.getNormalizedSkill(skill));
+    return ['programming', 'dsa', 'labelling', 'system-design'].includes(this.getNormalizedSkill(skill));
   }
 
   isUsefulOCRText(text) {
@@ -1959,7 +2051,7 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     }
 
     if (!this.isCodingAccumulationSkill()) {
-      logger.warn('Ctrl+1 solo disponible en modos de acumulacion (programming, dsa, labelling)');
+      logger.warn('Ctrl+1 solo disponible en modos de acumulacion (programming, dsa, labelling, system-design)');
       return;
     }
     this.saveAccumulatedImages();
@@ -1968,7 +2060,7 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
 
   async handleSecondaryCodingFallbackShortcut() {
     if (!this.isCodingAccumulationSkill()) {
-      logger.warn('Ctrl+| solo disponible en modos de acumulacion (programming, dsa, labelling)');
+      logger.warn('Ctrl+| solo disponible en modos de acumulacion (programming, dsa, labelling, system-design)');
       return;
     }
     await this.processSecondaryCodingFallbackCommandWithLLM('shortcut');

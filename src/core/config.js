@@ -40,7 +40,7 @@ class ConfigManager {
 
       llm: {
         gemini: {
-          model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+          model: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
           maxRetries: Number(process.env.GEMINI_MAX_RETRIES || 3),
           timeout: Number(process.env.GEMINI_TIMEOUT || 120000),
           maxOutputTokens: Number(process.env.GEMINI_MAX_OUTPUT_TOKENS || 8192),
