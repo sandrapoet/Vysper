@@ -1,4 +1,4 @@
-const { BrowserWindow, screen, desktopCapturer } = require('electron');
+const { app, BrowserWindow, screen, desktopCapturer } = require('electron');
 const path = require('path');
 const logger = require('../core/logger').createServiceLogger('WINDOW');
 const config = require('../core/config');
@@ -20,7 +20,11 @@ class WindowManager {
     this.isInitializing = false;
     this.isRecording = false;
     this.selectionOverlayWindows = [];
+    this.displayPickerWindows = [];
     this.preCaptureVisibleWindows = null;
+    this.pinnedDisplayMode = false;
+    this.pinnedDisplayId = null;
+    this.pinnedDisplay = null;
     
     // Add debouncing to prevent excessive operations
     this.lastEnforceTime = 0;
@@ -760,6 +764,10 @@ class WindowManager {
   }
 
   getDisplayUnderCursor() {
+    if (this.pinnedDisplayMode && this.pinnedDisplay) {
+      return this.pinnedDisplay;
+    }
+
     const cursorPoint = screen.getCursorScreenPoint();
     const display = screen.getDisplayNearestPoint(cursorPoint);
 
@@ -773,6 +781,198 @@ class WindowManager {
 
     this.currentDisplay = display;
     return display;
+  }
+
+  findDisplayById(displayId) {
+    return screen.getAllDisplays().find(display => display.id === displayId) || null;
+  }
+
+  setTaskbarIconHidden(hidden) {
+    this.windows.forEach((window, type) => {
+      if (!window || window.isDestroyed()) return;
+
+      try {
+        window.setSkipTaskbar(Boolean(hidden));
+      } catch (error) {
+        logger.debug('Unable to update taskbar visibility', { type, hidden, error: error.message });
+      }
+    });
+
+    if (process.platform === 'darwin' && app.dock) {
+      try {
+        if (hidden) {
+          app.dock.hide();
+        } else {
+          app.dock.show();
+        }
+      } catch (error) {
+        logger.debug('Unable to update dock visibility', { hidden, error: error.message });
+      }
+    }
+  }
+
+  async togglePinnedDisplayMode() {
+    if (this.pinnedDisplayMode) {
+      return this.disablePinnedDisplayMode();
+    }
+
+    return this.promptForPinnedDisplay();
+  }
+
+  disablePinnedDisplayMode() {
+    this.hideDisplayPicker();
+    this.pinnedDisplayMode = false;
+    this.pinnedDisplayId = null;
+    this.pinnedDisplay = null;
+    this.setTaskbarIconHidden(false);
+    this.getDisplayUnderCursor();
+    this.moveWindowsToActiveScreen();
+
+    logger.info('Pinned display mode disabled');
+    return { enabled: false };
+  }
+
+  async promptForPinnedDisplay() {
+    this.setTaskbarIconHidden(true);
+    const display = await this.showDisplayPicker();
+    if (!display) {
+      this.setTaskbarIconHidden(false);
+      logger.info('Pinned display selection cancelled');
+      return { enabled: false, cancelled: true };
+    }
+
+    this.enablePinnedDisplayMode(display);
+    return { enabled: true, display };
+  }
+
+  enablePinnedDisplayMode(display) {
+    const selectedDisplay = this.findDisplayById(display.id) || display;
+    this.pinnedDisplayMode = true;
+    this.pinnedDisplayId = selectedDisplay.id;
+    this.pinnedDisplay = selectedDisplay;
+    this.currentDisplay = selectedDisplay;
+    this.setTaskbarIconHidden(true);
+    this.moveWindowsToActiveScreen();
+
+    logger.info('Pinned display mode enabled', {
+      displayId: selectedDisplay.id,
+      bounds: selectedDisplay.bounds
+    });
+  }
+
+  async showDisplayPicker() {
+    this.hideDisplayPicker();
+
+    const displays = screen.getAllDisplays();
+    if (displays.length <= 1) {
+      return displays[0] || null;
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (display) => {
+        if (settled) return;
+        settled = true;
+        this.hideDisplayPicker();
+        resolve(display);
+      };
+
+      for (const display of displays) {
+        const displayBounds = this.normalizeBounds(display.bounds);
+        let pickerOptions = {
+          x: displayBounds.x,
+          y: displayBounds.y,
+          width: displayBounds.width,
+          height: displayBounds.height,
+          title: this.getStealthWindowTitle(),
+          frame: false,
+          transparent: true,
+          backgroundColor: '#00000000',
+          alwaysOnTop: true,
+          show: false,
+          skipTaskbar: true,
+          focusable: true,
+          resizable: false,
+          minimizable: false,
+          maximizable: false,
+          closable: true,
+          hasShadow: false,
+          fullscreenable: false,
+          webPreferences: {
+            ...config.get('window.webPreferences'),
+            nodeIntegration: false,
+            contextIsolation: true,
+            backgroundThrottling: false,
+            devTools: false
+          },
+          ...(process.platform === 'darwin' && {
+            type: 'panel',
+            acceptFirstMouse: true,
+            disableAutoHideCursor: true,
+            level: 'screen-saver'
+          })
+        };
+        pickerOptions = this.sanitizeBrowserWindowOptions(pickerOptions);
+
+        const pickerWindow = new BrowserWindow(pickerOptions);
+        pickerWindow.__displayPickerDisplay = display;
+
+        pickerWindow.on('closed', () => {
+          this.displayPickerWindows = this.displayPickerWindows.filter(item => item !== pickerWindow);
+        });
+
+        pickerWindow.webContents.on('before-input-event', (event, input) => {
+          if (input.key === 'Escape' && input.type === 'keyDown') {
+            finish(null);
+            event.preventDefault();
+          }
+        });
+
+        pickerWindow.webContents.on('did-finish-load', () => {
+          pickerWindow.webContents.executeJavaScript(`
+            document.documentElement.style.cssText = 'width:100%;height:100%;margin:0;cursor:crosshair;background:rgba(0,0,0,0);';
+            document.body.style.cssText = 'width:100%;height:100%;margin:0;';
+            document.addEventListener('mousedown', () => {
+              window.location.hash = 'selected';
+            }, { once: true });
+          `).catch(() => {});
+        });
+
+        pickerWindow.webContents.on('did-navigate-in-page', () => {
+          finish(display);
+        });
+
+        pickerWindow.loadURL('data:text/html;charset=utf-8,<html><body></body></html>').catch(error => {
+          logger.warn('Unable to load display picker window', { error: error.message });
+          finish(null);
+        });
+
+        if (process.platform === 'darwin') {
+          pickerWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+          pickerWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+        } else {
+          pickerWindow.setAlwaysOnTop(true);
+        }
+
+        pickerWindow.setIgnoreMouseEvents(false);
+        this.setWindowBounds(pickerWindow, displayBounds, 'displayPicker');
+        pickerWindow.show();
+        this.displayPickerWindows.push(pickerWindow);
+      }
+
+      if (this.displayPickerWindows[0] && !this.displayPickerWindows[0].isDestroyed()) {
+        this.displayPickerWindows[0].focus();
+      }
+    });
+  }
+
+  hideDisplayPicker() {
+    for (const window of this.displayPickerWindows) {
+      if (window && !window.isDestroyed()) {
+        window.close();
+      }
+    }
+    this.displayPickerWindows = [];
   }
 
   getWindowType(targetWindow) {
@@ -1645,12 +1845,23 @@ class WindowManager {
 
   handleDisplayChange() {
     setTimeout(() => {
+      if (this.pinnedDisplayMode) {
+        const pinnedDisplay = this.findDisplayById(this.pinnedDisplayId);
+        if (!pinnedDisplay) {
+          this.disablePinnedDisplayMode();
+          return;
+        }
+
+        this.pinnedDisplay = pinnedDisplay;
+        this.currentDisplay = pinnedDisplay;
+      }
+
       this.moveWindowsToActiveScreen();
     }, 500);
   }
 
   trackActiveScreen() {
-    if (this.isScreenBeingShared) return;
+    if (this.isScreenBeingShared || this.pinnedDisplayMode) return;
 
     const previousDisplayId = this.currentDisplay?.id;
     const activeDisplay = this.getDisplayUnderCursor();

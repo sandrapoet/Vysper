@@ -647,6 +647,24 @@ class ApplicationController {
       "CommandOrControl+Shift+V": () => pasteClipboardShortcut("Ctrl+Shift+V"),
       "CommandOrControl+Shift+B": () => copySelectionShortcut("Ctrl+Shift+B"),
       "CommandOrControl+Shift+I": () => windowManager.toggleInteraction(),
+      "CommandOrControl+Shift+0": () => {
+        windowManager.togglePinnedDisplayMode()
+          .then((result) => {
+            if (result?.enabled) {
+              signalShortcut('Ctrl+Shift+0 fijo las ventanas al monitor seleccionado', {
+                displayId: result.display?.id,
+                bounds: result.display?.bounds
+              });
+            } else if (result?.cancelled) {
+              signalShortcut('Ctrl+Shift+0 cancelado: no se selecciono monitor');
+            } else {
+              signalShortcut('Ctrl+Shift+0 restauro seguimiento normal por cursor');
+            }
+          })
+          .catch((error) => {
+            logger.error('Ctrl+Shift+0 failed', { error: error.message, stack: error.stack });
+          });
+      },
       "CommandOrControl+Shift+C": () => windowManager.switchToWindow("chat"),
       "CommandOrControl+Shift+H": () => windowManager.toggleGuideWindow(),
       "CommandOrControl+Shift+L": () => this.handleShiftPipeShortcut(),
