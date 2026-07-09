@@ -928,21 +928,68 @@ class WindowManager {
           }
         });
 
-        pickerWindow.webContents.on('did-finish-load', () => {
-          pickerWindow.webContents.executeJavaScript(`
-            document.documentElement.style.cssText = 'width:100%;height:100%;margin:0;cursor:crosshair;background:rgba(0,0,0,0);';
-            document.body.style.cssText = 'width:100%;height:100%;margin:0;';
-            document.addEventListener('mousedown', () => {
-              window.location.hash = 'selected';
-            }, { once: true });
-          `).catch(() => {});
+        pickerWindow.on('focus', () => {
+          pickerWindow.webContents.focus();
+        });
+
+        pickerWindow.on('page-title-updated', (event, title) => {
+          if (String(title || '').startsWith('vysper-display-selected')) {
+            event.preventDefault();
+            finish(display);
+          }
         });
 
         pickerWindow.webContents.on('did-navigate-in-page', () => {
           finish(display);
         });
 
-        pickerWindow.loadURL('data:text/html;charset=utf-8,<html><body></body></html>').catch(error => {
+        const pickerHtml = encodeURIComponent(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>${this.getStealthWindowTitle()}</title>
+    <style>
+      html, body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        cursor: crosshair;
+        background: rgba(0, 0, 0, 0.001);
+      }
+      #target {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        border: 0;
+        padding: 0;
+        margin: 0;
+        cursor: crosshair;
+        background: rgba(0, 0, 0, 0.001);
+      }
+    </style>
+  </head>
+  <body>
+    <button id="target" type="button" aria-label="select display"></button>
+    <script>
+      let selected = false;
+      function selectDisplay(event) {
+        if (selected) return;
+        selected = true;
+        event.preventDefault();
+        event.stopPropagation();
+        document.title = 'vysper-display-selected-' + Date.now();
+        window.location.hash = 'selected';
+      }
+      document.addEventListener('pointerdown', selectDisplay, true);
+      document.addEventListener('mousedown', selectDisplay, true);
+      document.getElementById('target').addEventListener('click', selectDisplay, true);
+    </script>
+  </body>
+</html>`);
+
+        pickerWindow.loadURL(`data:text/html;charset=utf-8,${pickerHtml}`).catch(error => {
           logger.warn('Unable to load display picker window', { error: error.message });
           finish(null);
         });
