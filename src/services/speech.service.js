@@ -11,11 +11,13 @@ const logger           = require('../core/logger').createServiceLogger('SPEECH')
 const SIDECAR_PATH      = path.join(__dirname, '../../stt/sidecar.py');
 const VENV_PYTHON_WIN   = path.join(__dirname, '../../stt/venv/Scripts/python.exe');
 const VENV_PYTHON_UNIX  = path.join(__dirname, '../../stt/venv/bin/python');
-const STT_MODEL         = process.env.VYSPER_STT_MODEL || 'medium';
+const STT_MODEL         = process.env.VYSPER_STT_MODEL || 'small';
 const STT_DEVICE        = process.env.VYSPER_STT_DEVICE || 'cpu';
 const STT_COMPUTE       = process.env.VYSPER_STT_COMPUTE || 'int8';
-const STT_CPU_THREADS   = process.env.VYSPER_STT_CPU_THREADS || 'auto';
+const STT_CPU_THREADS   = process.env.VYSPER_STT_CPU_THREADS || '2';
 const STT_INTERIM_SEC   = process.env.VYSPER_STT_INTERIM_SEC || '0';
+const STT_PRELOAD       = process.env.VYSPER_STT_PRELOAD === '1';
+const STT_IDLE_EXIT_MS  = Number(process.env.VYSPER_STT_IDLE_EXIT_MS || 120000);
 
 function _resolvePython() {
   if (fs.existsSync(VENV_PYTHON_WIN))  return VENV_PYTHON_WIN;
@@ -37,6 +39,9 @@ class SpeechService extends EventEmitter {
     this._pendingFileTranscriptions = new Map();
     this._nextFileRequestId = 1;
     this._pendingRawStop = null;
+    this._idleExitTimer = null;
+    this._keepAlive = false;
+    this._keepAliveReason = '';
 
     this.initializeClient();
   }
@@ -51,20 +56,33 @@ class SpeechService extends EventEmitter {
     this.isInitialized = true;
     logger.info(`SpeechService ready (Silero VAD + faster-whisper ${STT_MODEL})`);
 
-    // Pre-spawn so models load in background while the app starts.
-    this._spawnSidecar();
+    if (STT_PRELOAD) {
+      logger.info('STT preload enabled; loading sidecar during app startup.');
+      this._spawnSidecar();
+    } else {
+      logger.info('STT preload disabled; sidecar will start on first voice action.');
+    }
   }
 
   // ── sidecar lifecycle ─────────────────────────────────────────────────────
 
   _spawnSidecar() {
     if (this._proc) return;
+    this._clearIdleExitTimer();
 
     const python = _resolvePython();
     logger.info(`Spawning STT sidecar: ${python} ${SIDECAR_PATH}`);
 
     this._proc = spawn(python, [SIDECAR_PATH], {
       stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        VYSPER_STT_MODEL: STT_MODEL,
+        VYSPER_STT_DEVICE: STT_DEVICE,
+        VYSPER_STT_COMPUTE: STT_COMPUTE,
+        VYSPER_STT_CPU_THREADS: STT_CPU_THREADS,
+        VYSPER_STT_INTERIM_SEC: STT_INTERIM_SEC,
+      },
     });
 
     // stdout — newline-delimited JSON
@@ -110,6 +128,50 @@ class SpeechService extends EventEmitter {
     });
   }
 
+  _clearIdleExitTimer() {
+    if (!this._idleExitTimer) return;
+    clearTimeout(this._idleExitTimer);
+    this._idleExitTimer = null;
+  }
+
+  _scheduleIdleExit() {
+    if (!this._proc || STT_IDLE_EXIT_MS <= 0) return;
+    if (this._keepAlive) return;
+    if (this.isRecording || this._pendingFileTranscriptions.size > 0 || this._pendingRawStop) return;
+
+    this._clearIdleExitTimer();
+    this._idleExitTimer = setTimeout(() => {
+      if (!this._proc || this.isRecording || this._pendingFileTranscriptions.size > 0 || this._pendingRawStop) {
+        return;
+      }
+      logger.info(`STT sidecar idle for ${STT_IDLE_EXIT_MS}ms; shutting it down to free CPU/RAM.`);
+      this._send({ cmd: 'quit' });
+    }, STT_IDLE_EXIT_MS);
+    this._idleExitTimer.unref?.();
+  }
+
+  warmUp(reason = 'manual') {
+    if (!this.isInitialized) return false;
+    logger.info('STT warm-up requested', { reason });
+    this._spawnSidecar();
+    return true;
+  }
+
+  setKeepAlive(enabled, reason = '') {
+    this._keepAlive = Boolean(enabled);
+    this._keepAliveReason = this._keepAlive ? reason : '';
+
+    if (this._keepAlive) {
+      this._clearIdleExitTimer();
+      logger.info('STT keep-alive enabled', { reason: this._keepAliveReason });
+      this.warmUp(this._keepAliveReason || 'keep-alive');
+      return;
+    }
+
+    logger.info('STT keep-alive disabled', { reason });
+    this._scheduleIdleExit();
+  }
+
   // ── message handler ───────────────────────────────────────────────────────
 
   _handleMessage(raw) {
@@ -129,6 +191,7 @@ class SpeechService extends EventEmitter {
         break;
 
       case 'recording_started':
+        this._clearIdleExitTimer();
         this.isRecording      = true;
         this.sessionStartTime = Date.now();
         this.emit('recording-started');
@@ -142,6 +205,7 @@ class SpeechService extends EventEmitter {
           pending.resolve(msg.path || '');
         }
         this.emit('recording-stopped');
+        this._scheduleIdleExit();
         break;
 
       case 'interim':
@@ -151,6 +215,7 @@ class SpeechService extends EventEmitter {
       case 'transcription':
         if (msg.source === 'file' && msg.request_id) {
           this._resolveFileTranscription(msg.request_id, null, msg.text || '');
+          this._scheduleIdleExit();
         } else {
           this.emit('transcription', msg.text || '');
         }
@@ -160,6 +225,7 @@ class SpeechService extends EventEmitter {
         logger.error(`Sidecar error: ${msg.message}`);
         if (msg.request_id && this._pendingFileTranscriptions.has(msg.request_id)) {
           this._resolveFileTranscription(msg.request_id, new Error(msg.message || 'File transcription failed'));
+          this._scheduleIdleExit();
           break;
         }
         this.emit('error', { message: msg.message });
@@ -289,6 +355,8 @@ class SpeechService extends EventEmitter {
         compute: STT_COMPUTE,
         cpuThreads: STT_CPU_THREADS,
         interimSeconds: STT_INTERIM_SEC,
+        keepAlive: this._keepAlive,
+        keepAliveReason: this._keepAliveReason,
       },
     };
   }
@@ -312,6 +380,7 @@ class SpeechService extends EventEmitter {
   cleanup() {
     if (!this._proc) return;
     logger.info('Shutting down STT sidecar...');
+    this._clearIdleExitTimer();
     this._send({ cmd: 'quit' });
     // Force-kill if sidecar doesn't respond within 3 s
     setTimeout(() => {

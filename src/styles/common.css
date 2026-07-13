@@ -21,7 +21,7 @@ body {
     flex-direction: column;
     -webkit-app-region: drag;
     background: linear-gradient(135deg, rgba(0, 0, 0, 0.3) 0%, rgba(20, 20, 20, 0.4) 100%);
-    backdrop-filter: blur(25px);
+    backdrop-filter: none;
     border-radius: 12px;
     border: 1px solid rgba(255, 255, 255, 0.1);
     box-shadow: 0 4px 25px rgba(0, 0, 0, 0.15);
@@ -36,7 +36,7 @@ body {
     justify-content: space-between;
     -webkit-app-region: no-drag;
     background: rgba(0, 0, 0, 0.2);
-    backdrop-filter: blur(10px);
+    backdrop-filter: none;
 }
 
 .header-title {
@@ -194,7 +194,7 @@ body {
     border-radius: 8px;
     padding: 12px 16px;
     border: 1px solid rgba(255, 255, 255, 0.15);
-    backdrop-filter: blur(5px);
+    backdrop-filter: none;
     transition: all 0.3s ease;
     cursor: pointer;
     position: relative;
@@ -221,7 +221,7 @@ body {
     background: rgba(255, 255, 255, 0.08);
     border-radius: 8px;
     border-left: 3px solid rgba(255, 255, 255, 0.2);
-    backdrop-filter: blur(5px);
+    backdrop-filter: none;
     min-height: auto;
     height: auto;
     overflow: visible;
@@ -393,7 +393,7 @@ body {
     font-weight: 500;
     z-index: 9999;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-    backdrop-filter: blur(10px);
+    backdrop-filter: none;
     border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
@@ -422,12 +422,12 @@ body {
     align-items: center;
     justify-content: center;
     z-index: 1000;
-    backdrop-filter: blur(4px);
+    backdrop-filter: none;
 }
 
 .modal-content {
     background: rgba(30, 30, 30, 0.95);
-    backdrop-filter: blur(20px);
+    backdrop-filter: none;
     border-radius: 12px;
     border: 1px solid rgba(255, 255, 255, 0.1);
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);

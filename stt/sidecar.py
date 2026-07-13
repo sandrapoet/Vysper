@@ -58,10 +58,10 @@ except Exception as exc:
 
 # ── load faster-whisper ────────────────────────────────────────────────────
 
-WHISPER_MODEL = os.getenv("VYSPER_STT_MODEL", "medium")
+WHISPER_MODEL = os.getenv("VYSPER_STT_MODEL", "small")
 WHISPER_DEVICE = os.getenv("VYSPER_STT_DEVICE", "cpu")
 WHISPER_COMPUTE = os.getenv("VYSPER_STT_COMPUTE", "int8")
-WHISPER_CPU_THREADS = int(os.getenv("VYSPER_STT_CPU_THREADS", "0"))
+WHISPER_CPU_THREADS = int(os.getenv("VYSPER_STT_CPU_THREADS", "2"))
 
 log(f"Loading faster-whisper {WHISPER_MODEL} ({WHISPER_COMPUTE}, {WHISPER_DEVICE})...")
 try:
@@ -87,6 +87,8 @@ MIN_SILENCE  = int(os.getenv("VYSPER_STT_MIN_SILENCE_MS", "2500"))
 PAD_MS       = 100      # ms of audio padding around speech edges
 INTERIM_SEC  = float(os.getenv("VYSPER_STT_INTERIM_SEC", "0"))
 LANGUAGE     = os.getenv("VYSPER_STT_LANGUAGE") or None
+BEAM_SIZE    = int(os.getenv("VYSPER_STT_BEAM_SIZE", "1"))
+BEST_OF      = int(os.getenv("VYSPER_STT_BEST_OF", "1"))
 
 # ── shared state ───────────────────────────────────────────────────────────
 
@@ -186,8 +188,8 @@ def _transcribe(audio_np: np.ndarray, fast: bool = False) -> str:
     segments, _ = _whisper.transcribe(
         audio_np,
         language=LANGUAGE,
-        beam_size=1 if fast else 5,
-        best_of=1 if fast else 5,
+        beam_size=1 if fast else BEAM_SIZE,
+        best_of=1 if fast else BEST_OF,
         vad_filter=False,    # we do our own VAD
         condition_on_previous_text=True,
     )
@@ -197,8 +199,8 @@ def _transcribe_file(path: str) -> str:
     segments, _ = _whisper.transcribe(
         path,
         language=LANGUAGE,
-        beam_size=5,
-        best_of=5,
+        beam_size=BEAM_SIZE,
+        best_of=BEST_OF,
         vad_filter=True,
         condition_on_previous_text=True,
     )

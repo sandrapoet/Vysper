@@ -887,7 +887,7 @@ class MainWindowUI {
             right: 10px;
             top: 35px;
             background: rgba(0, 0, 0, 0.8);
-            backdrop-filter: blur(20px);
+            backdrop-filter: none;
             border-radius: 8px;
             border: 1px solid rgba(255, 255, 255, 0.15);
             padding: 8px 0;

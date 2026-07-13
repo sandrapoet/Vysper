@@ -1788,9 +1788,14 @@ class ApplicationController {
     const normalizedSkill = this.getNormalizedSkill(skill);
     this.activeSkill = normalizedSkill;
     sessionManager.setActiveSkill(normalizedSkill);
+
+    const shouldKeepSpeechReady = this.isSecretariaMode(normalizedSkill) || this.isTranslatorMode(normalizedSkill);
+    speechService.setKeepAlive(shouldKeepSpeechReady, shouldKeepSpeechReady ? `mode:${normalizedSkill}` : `mode:${normalizedSkill}`);
+
     logger.info('Active skill updated in application controller', {
       skill: normalizedSkill,
-      source
+      source,
+      speechKeepAlive: shouldKeepSpeechReady
     });
     return normalizedSkill;
   }

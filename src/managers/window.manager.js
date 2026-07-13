@@ -3,6 +3,12 @@ const path = require('path');
 const logger = require('../core/logger').createServiceLogger('WINDOW');
 const config = require('../core/config');
 
+const ALWAYS_ON_TOP_ENFORCE_MS = Number(process.env.VYSPER_ALWAYS_ON_TOP_ENFORCE_MS || 0);
+const SCREEN_SHARING_WATCH_ENABLED = process.env.VYSPER_SCREEN_SHARING_WATCH === '1';
+const SCREEN_SHARING_WATCH_MS = Number(process.env.VYSPER_SCREEN_SHARING_WATCH_MS || 30000);
+const SCREEN_WATCH_MS = Number(process.env.VYSPER_SCREEN_WATCH_MS || 5000);
+const DESKTOP_WATCH_MS = Number(process.env.VYSPER_DESKTOP_WATCH_MS || 30000);
+
 class WindowManager {
   constructor() {
     this.windows = new Map();
@@ -21,6 +27,7 @@ class WindowManager {
     this.isRecording = false;
     this.selectionOverlayWindows = [];
     this.displayPickerWindows = [];
+    this.displayPickerPromise = null;
     this.preCaptureVisibleWindows = null;
     this.pinnedDisplayMode = false;
     this.pinnedDisplayId = null;
@@ -222,7 +229,7 @@ class WindowManager {
         ...config.get('window.webPreferences'),
         nodeIntegration: false,
         contextIsolation: true,
-        backgroundThrottling: false,
+        backgroundThrottling: true,
         devTools: true, // Enable DevTools for debugging
       },
       show: false, // Never show during creation, use showOnCurrentDesktop instead
@@ -548,14 +555,16 @@ class WindowManager {
       setTimeout(enforceAlwaysOnTop, 50);
     });
     
-    // Periodic enforcement every 3 seconds (more frequent)
-    const periodicEnforcement = setInterval(() => {
-      if (window.isDestroyed()) {
-        clearInterval(periodicEnforcement);
-        return;
-      }
-      enforceAlwaysOnTop();
-    }, 3000);
+    if (ALWAYS_ON_TOP_ENFORCE_MS > 0) {
+      const periodicEnforcement = setInterval(() => {
+        if (window.isDestroyed()) {
+          clearInterval(periodicEnforcement);
+          return;
+        }
+        enforceAlwaysOnTop();
+      }, ALWAYS_ON_TOP_ENFORCE_MS);
+      periodicEnforcement.unref?.();
+    }
     
     logger.debug('Applied enhanced stealth measures with aggressive always-on-top', {
       type,
@@ -603,7 +612,7 @@ class WindowManager {
   }
 
   positionWindow(window, type) {
-    const display = this.currentDisplay || screen.getPrimaryDisplay();
+    const display = this.getTargetDisplay();
     const { x: displayX, y: displayY, width: screenWidth, height: screenHeight } = display.workArea || display.workAreaSize;
     
     if (this.bindWindows && (type === 'main' || type === 'llmResponse')) {
@@ -678,6 +687,24 @@ class WindowManager {
     window.setBounds(normalizedBounds);
   }
 
+  getTargetDisplay() {
+    if (this.pinnedDisplayMode) {
+      const pinnedDisplay = this.findDisplayById(this.pinnedDisplayId) || this.pinnedDisplay;
+      if (pinnedDisplay) {
+        this.pinnedDisplay = pinnedDisplay;
+        this.currentDisplay = pinnedDisplay;
+        return pinnedDisplay;
+      }
+
+      logger.warn('Pinned display is no longer available; disabling pinned display mode', {
+        pinnedDisplayId: this.pinnedDisplayId
+      });
+      this.disablePinnedDisplayMode();
+    }
+
+    return this.currentDisplay || screen.getPrimaryDisplay();
+  }
+
   // New method to position bound windows (vertical column layout) - Always at top
   positionBoundWindows() {
     const mainWindow = this.windows.get('main');
@@ -687,7 +714,7 @@ class WindowManager {
     // positionWindow corre antes de registrar llmResponse en el mapa).
     if (!mainWindow) return;
 
-    const display = this.currentDisplay || screen.getPrimaryDisplay();
+    const display = this.getTargetDisplay();
     const { x: displayX, y: displayY, width: screenWidth, height: screenHeight } = display.workArea;
 
     const [mainWidth, mainHeight] = mainWindow.getSize();
@@ -723,7 +750,7 @@ class WindowManager {
     
     if (!mainWindow || !llmWindow) return;
     
-    const display = this.currentDisplay || screen.getPrimaryDisplay();
+    const display = this.getTargetDisplay();
     const { x: displayX, y: displayY, width: screenWidth, height: screenHeight } = display.workArea;
     
     // Get current positions and sizes
@@ -764,8 +791,8 @@ class WindowManager {
   }
 
   getDisplayUnderCursor() {
-    if (this.pinnedDisplayMode && this.pinnedDisplay) {
-      return this.pinnedDisplay;
+    if (this.pinnedDisplayMode) {
+      return this.getTargetDisplay();
     }
 
     const cursorPoint = screen.getCursorScreenPoint();
@@ -861,6 +888,11 @@ class WindowManager {
   }
 
   async showDisplayPicker() {
+    if (this.displayPickerPromise) {
+      logger.debug('Display picker already active; reusing pending selection');
+      return this.displayPickerPromise;
+    }
+
     this.hideDisplayPicker();
 
     const displays = screen.getAllDisplays();
@@ -868,12 +900,31 @@ class WindowManager {
       return displays[0] || null;
     }
 
-    return new Promise((resolve) => {
+    const findDisplayForCurrentPointer = (fallbackDisplay) => {
+      const point = screen.getCursorScreenPoint();
+      const containingDisplay = screen.getAllDisplays().find((display) => {
+        const bounds = display.bounds;
+        return point.x >= bounds.x
+          && point.x < bounds.x + bounds.width
+          && point.y >= bounds.y
+          && point.y < bounds.y + bounds.height;
+      });
+
+      return containingDisplay || screen.getDisplayNearestPoint(point) || fallbackDisplay;
+    };
+
+    this.displayPickerPromise = new Promise((resolve) => {
       let settled = false;
-      const finish = (display) => {
+      const finish = (display, reason = display ? 'selected' : 'cancelled') => {
         if (settled) return;
         settled = true;
+        this.displayPickerPromise = null;
         this.hideDisplayPicker();
+        logger.debug('Display picker finished', {
+          reason,
+          displayId: display?.id,
+          cursorPosition: screen.getCursorScreenPoint()
+        });
         resolve(display);
       };
 
@@ -886,8 +937,8 @@ class WindowManager {
           height: displayBounds.height,
           title: this.getStealthWindowTitle(),
           frame: false,
-          transparent: true,
-          backgroundColor: '#00000000',
+          transparent: false,
+          backgroundColor: '#111827',
           alwaysOnTop: true,
           show: false,
           skipTaskbar: true,
@@ -902,7 +953,7 @@ class WindowManager {
             ...config.get('window.webPreferences'),
             nodeIntegration: false,
             contextIsolation: true,
-            backgroundThrottling: false,
+            backgroundThrottling: true,
             devTools: false
           },
           ...(process.platform === 'darwin' && {
@@ -923,7 +974,7 @@ class WindowManager {
 
         pickerWindow.webContents.on('before-input-event', (event, input) => {
           if (input.key === 'Escape' && input.type === 'keyDown') {
-            finish(null);
+            finish(null, 'escape');
             event.preventDefault();
           }
         });
@@ -935,12 +986,12 @@ class WindowManager {
         pickerWindow.on('page-title-updated', (event, title) => {
           if (String(title || '').startsWith('vysper-display-selected')) {
             event.preventDefault();
-            finish(display);
+            finish(findDisplayForCurrentPointer(display), 'click-title');
           }
         });
 
         pickerWindow.webContents.on('did-navigate-in-page', () => {
-          finish(display);
+          finish(findDisplayForCurrentPointer(display), 'click-hash');
         });
 
         const pickerHtml = encodeURIComponent(`<!doctype html>
@@ -955,7 +1006,7 @@ class WindowManager {
         margin: 0;
         overflow: hidden;
         cursor: crosshair;
-        background: rgba(0, 0, 0, 0.001);
+        background: rgba(17, 24, 39, 0.10);
       }
       #target {
         position: fixed;
@@ -966,7 +1017,7 @@ class WindowManager {
         padding: 0;
         margin: 0;
         cursor: crosshair;
-        background: rgba(0, 0, 0, 0.001);
+        background: rgba(17, 24, 39, 0.10);
       }
     </style>
   </head>
@@ -991,7 +1042,7 @@ class WindowManager {
 
         pickerWindow.loadURL(`data:text/html;charset=utf-8,${pickerHtml}`).catch(error => {
           logger.warn('Unable to load display picker window', { error: error.message });
-          finish(null);
+          finish(null, 'load-error');
         });
 
         if (process.platform === 'darwin') {
@@ -1003,6 +1054,11 @@ class WindowManager {
 
         pickerWindow.setIgnoreMouseEvents(false);
         this.setWindowBounds(pickerWindow, displayBounds, 'displayPicker');
+        try {
+          pickerWindow.setOpacity(0.12);
+        } catch (error) {
+          logger.debug('Unable to set display picker opacity', { error: error.message });
+        }
         pickerWindow.show();
         this.displayPickerWindows.push(pickerWindow);
       }
@@ -1011,6 +1067,8 @@ class WindowManager {
         this.displayPickerWindows[0].focus();
       }
     });
+
+    return this.displayPickerPromise;
   }
 
   hideDisplayPicker() {
@@ -1036,9 +1094,15 @@ class WindowManager {
     if (!win || win.isDestroyed()) return;
 
     const windowType = this.getWindowType(win);
-    if (windowType && windowType !== 'selectionOverlay' && windowType !== 'guide') {
-      this.getDisplayUnderCursor();
+    const shouldPositionWindow = windowType && windowType !== 'selectionOverlay' && windowType !== 'guide';
+    const enforceTargetPosition = () => {
+      if (!shouldPositionWindow || win.isDestroyed()) return;
+      this.getTargetDisplay();
       this.positionWindow(win, windowType);
+    };
+
+    if (shouldPositionWindow) {
+      enforceTargetPosition();
     }
     
     if (process.platform === 'darwin') {
@@ -1080,6 +1144,7 @@ class WindowManager {
         if (!win.isDestroyed()) {
           // Show the window (should appear on current space without switching)
           win.show();
+          enforceTargetPosition();
           
           // Focus without switching spaces
           win.focus();
@@ -1090,6 +1155,7 @@ class WindowManager {
           // Additional enforcement
           setTimeout(() => {
             if (!win.isDestroyed()) {
+              enforceTargetPosition();
               setMacOSAlwaysOnTop();
             }
           }, 100);
@@ -1097,6 +1163,7 @@ class WindowManager {
           // After window is shown, remove from all workspaces to prevent clutter
           setTimeout(() => {
             if (!win.isDestroyed()) {
+              enforceTargetPosition();
               win.setVisibleOnAllWorkspaces(false);
               // Final always-on-top enforcement
               setMacOSAlwaysOnTop();
@@ -1109,10 +1176,12 @@ class WindowManager {
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
       win.setAlwaysOnTop(true);
       win.show();
+      enforceTargetPosition();
       win.focus();
       
       setTimeout(() => {
         if (!win.isDestroyed()) {
+          enforceTargetPosition();
           win.setVisibleOnAllWorkspaces(false);
           // Ensure always-on-top is maintained
           win.setAlwaysOnTop(true);
@@ -1167,10 +1236,15 @@ class WindowManager {
   }
 
   setupScreenSharingDetection() {
-    // Reduced frequency to prevent performance issues
+    if (!SCREEN_SHARING_WATCH_ENABLED) {
+      logger.info('Screen sharing detection disabled for lower idle CPU use');
+      return;
+    }
+
     this.screenSharingWatcher = setInterval(async () => {
       await this.checkScreenSharingStatus();
-    }, 5000); // Check every 5 seconds instead of 1
+    }, SCREEN_SHARING_WATCH_MS);
+    this.screenSharingWatcher.unref?.();
 
     logger.info('Screen sharing detection initialized');
   }
@@ -1268,6 +1342,8 @@ class WindowManager {
     if (this.isScreenBeingShared) {
       return;
     }
+
+    this.getTargetDisplay();
 
     this.windows.forEach((window, type) => {
       // llmResponse: solo se muestra cuando tiene contenido.
@@ -1676,7 +1752,7 @@ class WindowManager {
   }
 
   calculateOptimalWindowSize(contentMetrics) {
-    const display = this.currentDisplay || screen.getPrimaryDisplay();
+    const display = this.getTargetDisplay();
     const { width: screenWidth, height: screenHeight } = display.workArea || display.workAreaSize;
     const defaultSize = this.getDefaultLLMResponseSize();
     
@@ -1727,7 +1803,7 @@ class WindowManager {
   }
 
   centerWindow(window) {
-    const display = this.currentDisplay || screen.getPrimaryDisplay();
+    const display = this.getTargetDisplay();
     const { x: displayX, y: displayY, width: screenWidth, height: screenHeight } = display.workArea || display.workAreaSize;
     const [windowWidth, windowHeight] = window.getSize();
     
@@ -1761,7 +1837,7 @@ class WindowManager {
 
   positionLLMBottomLeft(llmWindow) {
     if (!llmWindow || llmWindow.isDestroyed()) return;
-    const display = this.currentDisplay || screen.getPrimaryDisplay();
+    const display = this.getTargetDisplay();
     const { x: displayX, y: displayY, height: screenHeight } = display.workArea || display.workAreaSize;
     const [, winHeight] = llmWindow.getSize();
     const bottomMargin = 10;
@@ -1876,10 +1952,10 @@ class WindowManager {
       this.handleDisplayChange();
     });
 
-    // More frequent tracking during initialization
     this.screenWatcher = setInterval(() => {
       this.trackActiveScreen();
-    }, 2000);
+    }, SCREEN_WATCH_MS);
+    this.screenWatcher.unref?.();
 
     // SIMPLIFIED desktop tracking
     this.setupDesktopTracking();
@@ -1924,9 +2000,12 @@ class WindowManager {
   }
 
   moveWindowsToActiveScreen() {
-    if (!this.currentDisplay || this.isScreenBeingShared) return;
+    if (this.isScreenBeingShared) return;
 
-    const { x: displayX, y: displayY, width: displayWidth, height: displayHeight } = this.currentDisplay.workArea;
+    const display = this.getTargetDisplay();
+    if (!display) return;
+
+    const { x: displayX, y: displayY, width: displayWidth, height: displayHeight } = display.workArea;
     
     // Handle bound windows specially
     if (this.bindWindows) {
@@ -2003,17 +2082,17 @@ class WindowManager {
           type,
           position: `${newX},${newY}`,
           isVisible: window.isVisible(),
-          displayId: this.currentDisplay.id
+          displayId: display.id
         });
       }
     });
   }
 
   setupDesktopTracking() {
-    // MUCH less aggressive desktop tracking
     this.desktopWatcher = setInterval(() => {
       this.trackDesktopChanges();
-    }, 10000); // Changed from 1500ms to 10000ms (10 seconds)
+    }, DESKTOP_WATCH_MS);
+    this.desktopWatcher.unref?.();
 
     logger.info('Desktop tracking initialized');
   }
@@ -2128,7 +2207,7 @@ class WindowManager {
       return existingWindow;
     }
 
-    const display = this.getDisplayUnderCursor();
+    const display = this.getTargetDisplay();
     const { x, y, width, height } = this.normalizeBounds(display.bounds);
 
     const guideOptions = this.sanitizeBrowserWindowOptions({
@@ -2155,7 +2234,7 @@ class WindowManager {
         ...config.get('window.webPreferences'),
         nodeIntegration: false,
         contextIsolation: true,
-        backgroundThrottling: false,
+        backgroundThrottling: true,
         devTools: true
       },
       ...(process.platform === 'darwin' && {
@@ -2224,7 +2303,7 @@ class WindowManager {
   positionGuideWindow(guideWindow) {
     if (!guideWindow || guideWindow.isDestroyed()) return;
 
-    const display = this.getDisplayUnderCursor();
+    const display = this.getTargetDisplay();
     this.setWindowBounds(guideWindow, display.bounds, 'guide');
 
     if (process.platform === 'darwin') {
@@ -2240,16 +2319,22 @@ class WindowManager {
     this.hideWindowsForScreenshotCapture();
 
     const displays = screen.getAllDisplays();
-    const overlays = [];
+    const minX = Math.min(...displays.map(display => display.bounds.x));
+    const minY = Math.min(...displays.map(display => display.bounds.y));
+    const maxX = Math.max(...displays.map(display => display.bounds.x + display.bounds.width));
+    const maxY = Math.max(...displays.map(display => display.bounds.y + display.bounds.height));
+    const virtualBounds = this.normalizeBounds({
+      x: minX,
+      y: minY,
+      width: maxX - minX,
+      height: maxY - minY
+    });
 
-    for (const display of displays) {
-      const displayBounds = this.normalizeBounds(display.bounds);
-
-      let overlayOptions = {
-        x: displayBounds.x,
-        y: displayBounds.y,
-        width: displayBounds.width,
-        height: displayBounds.height,
+    let overlayOptions = {
+      x: virtualBounds.x,
+      y: virtualBounds.y,
+      width: virtualBounds.width,
+      height: virtualBounds.height,
       title: this.windowConfigs.selectionOverlay.title,
       frame: false,
       transparent: true,
@@ -2269,7 +2354,7 @@ class WindowManager {
         ...config.get('window.webPreferences'),
         nodeIntegration: false,
         contextIsolation: true,
-        backgroundThrottling: false,
+        backgroundThrottling: true,
         devTools: true
       },
       ...(process.platform === 'darwin' && {
@@ -2278,47 +2363,60 @@ class WindowManager {
         disableAutoHideCursor: true,
         level: 'screen-saver'
       })
-      };
-      overlayOptions = this.sanitizeBrowserWindowOptions(overlayOptions);
+    };
+    overlayOptions = this.sanitizeBrowserWindowOptions(overlayOptions);
 
-      const window = new BrowserWindow(overlayOptions);
-      window.__selectionDisplay = {
+    const window = new BrowserWindow(overlayOptions);
+    window.__selectionDisplay = {
+      id: 'virtual-desktop',
+      bounds: virtualBounds,
+      workArea: virtualBounds,
+      scaleFactor: 1,
+      isVirtual: true,
+      displays: displays.map(display => ({
         id: display.id,
-        bounds: displayBounds,
+        bounds: this.normalizeBounds(display.bounds),
         workArea: this.normalizeBounds(display.workArea || display.bounds),
         scaleFactor: display.scaleFactor
-      };
+      }))
+    };
 
-      window.on('closed', () => {
-        this.selectionOverlayWindows = this.selectionOverlayWindows.filter(item => item !== window);
-        if (this.windows.get('selectionOverlay') === window) {
-          this.windows.delete('selectionOverlay');
-        }
-      });
-
-      await window.loadFile(this.windowConfigs.selectionOverlay.file);
-
-      if (process.platform === 'darwin') {
-        window.setAlwaysOnTop(true, 'screen-saver', 1);
-        window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-      } else {
-        window.setAlwaysOnTop(true);
+    window.on('closed', () => {
+      this.selectionOverlayWindows = this.selectionOverlayWindows.filter(item => item !== window);
+      if (this.windows.get('selectionOverlay') === window) {
+        this.windows.delete('selectionOverlay');
       }
+    });
 
-      window.setIgnoreMouseEvents(false);
-      this.setWindowBounds(window, displayBounds, 'selectionOverlay');
-      window.show();
-      overlays.push(window);
+    await window.loadFile(this.windowConfigs.selectionOverlay.file);
+
+    if (process.platform === 'darwin') {
+      window.setAlwaysOnTop(true, 'screen-saver', 1);
+      window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    } else {
+      window.setAlwaysOnTop(true);
     }
 
-    this.selectionOverlayWindows = overlays;
-    if (overlays[0]) {
-      this.windows.set('selectionOverlay', overlays[0]);
-      overlays[0].focus();
+    window.setIgnoreMouseEvents(false);
+    this.setWindowBounds(window, virtualBounds, 'selectionOverlay');
+    window.show();
+    window.focus();
+    window.webContents.focus();
+
+    this.selectionOverlayWindows = [window];
+    this.windows.set('selectionOverlay', window);
+
+    if (process.platform === 'darwin') {
+      setTimeout(() => {
+        if (!window.isDestroyed()) {
+          window.setAlwaysOnTop(true, 'screen-saver', 1);
+        }
+      }, 100);
     }
 
-    logger.info('Selection overlays shown on all displays', {
+    logger.info('Selection overlay shown on virtual desktop', {
       displayCount: displays.length,
+      virtualBounds,
       displays: displays.map(display => ({
         id: display.id,
         bounds: display.bounds,
@@ -2326,7 +2424,7 @@ class WindowManager {
       }))
     });
 
-    return overlays.map(window => window.__selectionDisplay);
+    return [window.__selectionDisplay];
   }
 
   hideSelectionOverlay() {

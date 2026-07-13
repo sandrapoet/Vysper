@@ -144,10 +144,14 @@ npm run build
    - Uses the local `stt/sidecar.py` service with Silero VAD + faster-whisper.
    - Run the STT setup script for your platform before using voice recording.
    - Performance knobs for slower CPUs:
+     - The STT sidecar starts lazily, not at app startup. Switching to `secretaria` or `traductor` warms it up automatically and keeps it ready while you stay in that mode. Set `VYSPER_STT_PRELOAD=1` only if you prefer loading it during app startup.
      - In `secretaria`, `Alt+R` records raw audio first; pending audio is transcribed when `Ctrl+1` is pressed.
-     - `VYSPER_STT_MODEL=small` or `VYSPER_STT_MODEL=base` lowers CPU use versus `medium`.
+     - `VYSPER_STT_MODEL=small` is the default; use `base` for lower CPU/RAM or `medium` for higher accuracy.
      - `VYSPER_STT_INTERIM_SEC=0` disables repeated interim Whisper passes while recording. This is the default.
-     - `VYSPER_STT_CPU_THREADS=2` limits Whisper CPU threads if it competes with the rest of the desktop.
+     - `VYSPER_STT_CPU_THREADS=2` is the default and limits Whisper CPU threads if it competes with the rest of the desktop.
+     - `VYSPER_STT_IDLE_EXIT_MS=120000` unloads the sidecar after two idle minutes once you leave modes that keep speech ready. Set it to `0` to keep models loaded after first use.
+     - `VYSPER_ALWAYS_ON_TOP_ENFORCE_MS=0` keeps periodic window enforcement disabled; set a value like `10000` only if your desktop stops keeping the overlay on top.
+     - `VYSPER_SCREEN_SHARING_WATCH=1` re-enables screen-sharing polling; it is disabled by default to reduce idle CPU/GPU wakeups.
 
 2. **Google Gemini AI** (for intelligent responses)
    - Get API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
