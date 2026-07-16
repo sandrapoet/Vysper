@@ -2388,7 +2388,9 @@ class WindowManager {
       }
     });
 
-    await window.loadFile(this.windowConfigs.selectionOverlay.file);
+    await window.loadFile(this.windowConfigs.selectionOverlay.file, {
+      query: { stealth: this.pinnedDisplayMode ? '1' : '0' }
+    });
 
     if (process.platform === 'darwin') {
       window.setAlwaysOnTop(true, 'screen-saver', 1);

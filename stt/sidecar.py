@@ -29,6 +29,7 @@ import time
 import os
 import wave
 import numpy as np
+from collections import deque
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
@@ -85,6 +86,10 @@ CHUNK        = 512      # samples = 32 ms @ 16 kHz (Silero requirement)
 SPEECH_THR   = 0.4      # VAD probability threshold (lowered for loaded systems)
 MIN_SILENCE  = int(os.getenv("VYSPER_STT_MIN_SILENCE_MS", "2500"))
 PAD_MS       = 100      # ms of audio padding around speech edges
+PREROLL_MS   = 320      # ms of audio kept before VAD confirms speech start, to avoid
+                         # clipping the first syllable (VAD needs a few frames above
+                         # threshold before it fires the "start" event)
+PREROLL_CHUNKS = max(1, (PREROLL_MS * RATE + (1000 * CHUNK) - 1) // (1000 * CHUNK))
 INTERIM_SEC  = float(os.getenv("VYSPER_STT_INTERIM_SEC", "0"))
 LANGUAGE     = os.getenv("VYSPER_STT_LANGUAGE") or None
 BEAM_SIZE    = int(os.getenv("VYSPER_STT_BEAM_SIZE", "1"))
@@ -99,6 +104,7 @@ _is_raw_recording = threading.Event()
 _quit_event    = threading.Event()
 _flush_event   = threading.Event()
 _raw_done_event = threading.Event()
+_keep_capture_warm = threading.Event()
 _raw_path = None
 
 # ── audio capture ──────────────────────────────────────────────────────────
@@ -155,6 +161,13 @@ def _stop_capture() -> None:
         _capture_stream = None
         log("Microphone capture stopped.")
 
+def _release_capture_if_idle() -> None:
+    if _keep_capture_warm.is_set():
+        return
+    if _is_recording.is_set() or _is_raw_recording.is_set():
+        return
+    _stop_capture()
+
 def _float32_to_pcm16(audio: np.ndarray) -> bytes:
     clipped = np.clip(audio, -1.0, 1.0)
     return (clipped * 32767.0).astype(np.int16).tobytes()
@@ -178,7 +191,7 @@ def _stop_raw_recording() -> str:
     if not _is_raw_recording.is_set():
         return _raw_path or ""
     _is_raw_recording.clear()
-    _stop_capture()
+    _release_capture_if_idle()
     _raw_done_event.wait(timeout=5)
     return _raw_path or ""
 
@@ -220,6 +233,11 @@ def _vad_loop() -> None:
     speech_buf: list[np.ndarray] = []
     speaking       = False
     last_interim   = 0.0
+    was_recording  = False
+    # Rolling buffer of the most recent chunks NOT yet classified as speech.
+    # Silero VAD needs a few frames above threshold before it fires "start",
+    # so without this the first syllable is always lost.
+    preroll: deque = deque(maxlen=PREROLL_CHUNKS)
 
     def flush_current_speech(reason: str) -> None:
         nonlocal speaking, speech_buf
@@ -235,10 +253,21 @@ def _vad_loop() -> None:
                 emit({"type": "error", "message": f"Transcription error: {exc}"})
         speaking = False
         speech_buf.clear()
+        preroll.clear()
         if hasattr(vad_iter, "reset_states"):
             vad_iter.reset_states()
 
     while not _quit_event.is_set():
+        now_recording = _is_recording.is_set()
+        if now_recording and not was_recording:
+            # Fresh recording session: drop any stale audio left over from before.
+            preroll.clear()
+            speaking = False
+            speech_buf.clear()
+            if hasattr(vad_iter, "reset_states"):
+                vad_iter.reset_states()
+        was_recording = now_recording
+
         if _flush_event.is_set():
             _flush_event.clear()
             # Drenar chunks pendientes para no perder el final del audio
@@ -266,7 +295,10 @@ def _vad_loop() -> None:
         if event is not None:
             if "start" in event:
                 speaking = True
-                speech_buf.clear()
+                # Seed with the pre-roll so the syllable(s) spoken while the VAD
+                # was still ramping up aren't clipped from the transcription.
+                speech_buf = list(preroll)
+                preroll.clear()
                 last_interim = time.time()
                 log("Speech start detected.")
 
@@ -288,6 +320,8 @@ def _vad_loop() -> None:
                         emit({"type": "interim", "text": text})
                 except Exception:
                     pass  # interim errors are non-critical
+        else:
+            preroll.append(chunk)
 
     log("VAD loop exited.")
 
@@ -364,9 +398,25 @@ def _main() -> None:
             if _is_recording.is_set():
                 _flush_event.set()
                 _is_recording.clear()
-                _stop_capture()
+                _release_capture_if_idle()
                 emit({"type": "recording_stopped"})
                 log("Recording stopped.")
+
+        elif cmd == "set_capture_warm":
+            enabled = bool(msg.get("enabled"))
+            if enabled:
+                try:
+                    _keep_capture_warm.set()
+                    _start_capture()
+                    emit({"type": "capture_warmed"})
+                    log("Capture warm mode enabled.")
+                except Exception as exc:
+                    emit({"type": "error", "message": f"Microphone warm-up error: {exc}"})
+            else:
+                _keep_capture_warm.clear()
+                _release_capture_if_idle()
+                emit({"type": "capture_released"})
+                log("Capture warm mode disabled.")
 
         elif cmd == "start_raw":
             raw_path = msg.get("path")
@@ -391,6 +441,7 @@ def _main() -> None:
         elif cmd == "quit":
             _is_recording.clear()
             _is_raw_recording.clear()
+            _keep_capture_warm.clear()
             _stop_capture()
             _quit_event.set()
             log("Quit command received.")

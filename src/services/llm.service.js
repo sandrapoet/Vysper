@@ -147,10 +147,9 @@ class LLMService {
 
   shouldUseRagFirst(activeSkill, text = '') {
     const skillName = this.normalizeSkillName(activeSkill);
-    const isCompensationQuestion = this.isCompensationQuestion(text);
     return skillName === 'behavioral' ||
-      (skillName === 'negotiation' && isCompensationQuestion) ||
-      isCompensationQuestion;
+      skillName === 'negotiation' ||
+      this.isCompensationQuestion(text);
   }
 
   isBehavioralRagDebugRequest(text) {
@@ -165,7 +164,13 @@ class LLMService {
 
   isCompensationQuestion(text) {
     const normalized = String(text || '').toLowerCase();
-    return /\b(salary|compensation|pay|gross|net|annual|annually|monthly|month|yearly|expectation|expected|desired|benefits|working conditions|sueldo|salario|compensaci[oó]n|bruto|neto|mensual|anual|prestaciones|beneficios)\b/i.test(normalized);
+    // Spanish adjectives inflect for gender/number (salario/salarial/salariales,
+    // bruto/bruta/brutos/brutas, mensual/mensuales), so word-for-word \b matches on
+    // only the singular masculine form missed the plural/feminine phrasing people
+    // actually say in interviews ("expectativas salariales brutas mensuales").
+    // Also covers common EN/ES phrasing beyond the literal word "salary/salario":
+    // package, take-home, base pay, pretensión/aspiración salarial, remuneración.
+    return /\b(salary|salaries|compensation|pay|payroll|wage(?:s)?|earn(?:ings)?|bonus(?:es)?|package|take-home|take home|base pay|base salary|gross|net|annual(?:ly)?|monthly|month|yearly|expectation(?:s)?|expected|desired|benefit(?:s)?|working conditions?|salary range|pay range|sueldo(?:s)?|salari(?:o|os|al|ales)|compensaci[oó]n(?:es)?|remuneraci[oó]n(?:es)?|brut[oa](?:s)?|net[oa](?:s)?|mensual(?:es)?|anual(?:es)?|prestaci[oó]n(?:es)?|beneficio(?:s)?|pretensi[oó]n(?:es)?|aspiraci[oó]n(?:es)?|paquete(?:s)?|rango salarial|cu[aá]nto (?:ganas|esperas ganar|te gustar[ií]a ganar))\b/i.test(normalized);
   }
 
   buildCompensationRagQuery(userQuestion) {

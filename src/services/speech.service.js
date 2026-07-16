@@ -157,6 +157,14 @@ class SpeechService extends EventEmitter {
     return true;
   }
 
+  setCaptureWarm(enabled) {
+    if (!this._proc) {
+      if (!enabled) return;
+      this._spawnSidecar();
+    }
+    this._send({ cmd: 'set_capture_warm', enabled: Boolean(enabled) });
+  }
+
   setKeepAlive(enabled, reason = '') {
     this._keepAlive = Boolean(enabled);
     this._keepAliveReason = this._keepAlive ? reason : '';
@@ -165,10 +173,12 @@ class SpeechService extends EventEmitter {
       this._clearIdleExitTimer();
       logger.info('STT keep-alive enabled', { reason: this._keepAliveReason });
       this.warmUp(this._keepAliveReason || 'keep-alive');
+      this.setCaptureWarm(true);
       return;
     }
 
     logger.info('STT keep-alive disabled', { reason });
+    this.setCaptureWarm(false);
     this._scheduleIdleExit();
   }
 

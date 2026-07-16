@@ -20,6 +20,11 @@
       user-select: none;
     }
 
+    body.stealth {
+      background: transparent;
+      cursor: default;
+    }
+
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
@@ -54,15 +59,41 @@
       box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.18);
       pointer-events: none;
     }
+
+    .corner-marker {
+      position: fixed;
+      display: none;
+      width: 26px;
+      height: 26px;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      color: #ffd23f;
+      font-size: 22px;
+      line-height: 26px;
+      text-align: center;
+      text-shadow: 0 0 4px rgba(0, 0, 0, 0.85), 0 0 8px rgba(0, 0, 0, 0.5);
+    }
   </style>
 </head>
 <body tabindex="0">
   <div id="instructions">Drag to select a region. Press Escape to cancel.</div>
   <div id="selection"></div>
+  <div id="marker-start" class="corner-marker">&#9733;</div>
+  <div id="marker-end" class="corner-marker">&#9733;</div>
 
   <script>
     const selection = document.getElementById('selection');
     const instructions = document.getElementById('instructions');
+    const markerStart = document.getElementById('marker-start');
+    const markerEnd = document.getElementById('marker-end');
+
+    const params = new URLSearchParams(window.location.search);
+    const stealth = params.get('stealth') === '1';
+
+    if (stealth) {
+      document.body.classList.add('stealth');
+      instructions.remove();
+    }
 
     let isDragging = false;
     let startX = 0;
@@ -90,6 +121,12 @@
       selection.style.height = `${bounds.height}px`;
     }
 
+    function placeMarker(marker, x, y) {
+      marker.style.left = `${x}px`;
+      marker.style.top = `${y}px`;
+      marker.style.display = 'block';
+    }
+
     window.addEventListener('DOMContentLoaded', () => {
       document.body.focus();
     });
@@ -100,12 +137,18 @@
       isDragging = true;
       startX = event.clientX;
       startY = event.clientY;
-      instructions.classList.add('hidden');
-      drawSelection({ x: startX, y: startY, width: 0, height: 0 });
+
+      if (stealth) {
+        placeMarker(markerStart, startX, startY);
+      } else {
+        instructions.classList.add('hidden');
+        drawSelection({ x: startX, y: startY, width: 0, height: 0 });
+      }
     });
 
     window.addEventListener('mousemove', (event) => {
       if (!isDragging) return;
+      if (stealth) return;
       drawSelection(getBounds(event.clientX, event.clientY));
     });
 
@@ -116,7 +159,15 @@
       const bounds = getBounds(event.clientX, event.clientY);
 
       if (bounds.width < 10 || bounds.height < 10) {
+        markerStart.style.display = 'none';
+        markerEnd.style.display = 'none';
         send('selection-cancelled');
+        return;
+      }
+
+      if (stealth) {
+        placeMarker(markerEnd, event.clientX, event.clientY);
+        setTimeout(() => send('region-selected', bounds), 180);
         return;
       }
 
