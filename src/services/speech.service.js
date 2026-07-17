@@ -9,7 +9,7 @@ const logger           = require('../core/logger').createServiceLogger('SPEECH')
 // ── paths ──────────────────────────────────────────────────────────────────
 
 const SIDECAR_PATH      = path.join(__dirname, '../../stt/sidecar.py');
-const VENV_PYTHON_WIN   = path.join(__dirname, '../../stt/venv/Scripts/python.exe');
+const VENV_PYTHON_WIN   = path.join(__dirname, '../../stt/venv_windows/Scripts/python.exe');
 const VENV_PYTHON_UNIX  = path.join(__dirname, '../../stt/venv/bin/python');
 const STT_MODEL         = process.env.VYSPER_STT_MODEL || 'small';
 const STT_DEVICE        = process.env.VYSPER_STT_DEVICE || 'cpu';
@@ -39,6 +39,9 @@ class SpeechService extends EventEmitter {
     this._pendingFileTranscriptions = new Map();
     this._nextFileRequestId = 1;
     this._pendingRawStop = null;
+    this._pendingMeetingStop = null;
+    this.isMeetingRecording = false;
+    this.meetingSessionDir = null;
     this._idleExitTimer = null;
     this._keepAlive = false;
     this._keepAliveReason = '';
@@ -113,6 +116,11 @@ class SpeechService extends EventEmitter {
         this._pendingRawStop = null;
         pending.reject(new Error('STT sidecar exited during raw recording.'));
       }
+      if (this._pendingMeetingStop) {
+        const pending = this._pendingMeetingStop;
+        this._pendingMeetingStop = null;
+        pending.reject(new Error('STT sidecar exited during meeting recording.'));
+      }
       if (this.isRecording) {
         this.isRecording = false;
         this.emit('recording-stopped');
@@ -137,11 +145,11 @@ class SpeechService extends EventEmitter {
   _scheduleIdleExit() {
     if (!this._proc || STT_IDLE_EXIT_MS <= 0) return;
     if (this._keepAlive) return;
-    if (this.isRecording || this._pendingFileTranscriptions.size > 0 || this._pendingRawStop) return;
+    if (this.isRecording || this.isMeetingRecording || this._pendingFileTranscriptions.size > 0 || this._pendingRawStop || this._pendingMeetingStop) return;
 
     this._clearIdleExitTimer();
     this._idleExitTimer = setTimeout(() => {
-      if (!this._proc || this.isRecording || this._pendingFileTranscriptions.size > 0 || this._pendingRawStop) {
+      if (!this._proc || this.isRecording || this.isMeetingRecording || this._pendingFileTranscriptions.size > 0 || this._pendingRawStop || this._pendingMeetingStop) {
         return;
       }
       logger.info(`STT sidecar idle for ${STT_IDLE_EXIT_MS}ms; shutting it down to free CPU/RAM.`);
@@ -202,7 +210,7 @@ class SpeechService extends EventEmitter {
 
       case 'recording_started':
         this._clearIdleExitTimer();
-        this.isRecording      = true;
+        this.isRecording = true;
         this.sessionStartTime = Date.now();
         this.emit('recording-started');
         break;
@@ -215,6 +223,38 @@ class SpeechService extends EventEmitter {
           pending.resolve(msg.path || '');
         }
         this.emit('recording-stopped');
+        this._scheduleIdleExit();
+        break;
+
+      case 'meeting_started':
+        this._clearIdleExitTimer();
+        this.isMeetingRecording = true;
+        this.meetingSessionDir = msg.dir || null;
+        this.emit('meeting-started', {
+          dir: msg.dir || '',
+          segmentSec: msg.segment_sec,
+          overlapSec: msg.overlap_sec
+        });
+        break;
+
+      case 'meeting_segment':
+        this.emit('meeting-segment', {
+          path: msg.path,
+          index: msg.index,
+          duration: msg.duration,
+          final: Boolean(msg.final)
+        });
+        break;
+
+      case 'meeting_stopped':
+        this.isMeetingRecording = false;
+        this.meetingSessionDir = null;
+        if (this._pendingMeetingStop) {
+          const pending = this._pendingMeetingStop;
+          this._pendingMeetingStop = null;
+          pending.resolve(msg.dir || '');
+        }
+        this.emit('meeting-stopped', { dir: msg.dir || '' });
         this._scheduleIdleExit();
         break;
 
@@ -325,6 +365,49 @@ class SpeechService extends EventEmitter {
     });
   }
 
+  startMeetingRecording(sessionDir, options = {}) {
+    if (!this.isInitialized) {
+      this.emit('error', { message: 'Speech service not initialized. Run stt/setup.bat first.' });
+      return;
+    }
+    if (!sessionDir || typeof sessionDir !== 'string') {
+      this.emit('error', { message: 'Invalid meeting session directory.' });
+      return;
+    }
+    if (!this._proc) this._spawnSidecar();
+    this._send({
+      cmd: 'start_meeting',
+      dir: sessionDir,
+      segment_sec: Number(options.segmentSec || 300),
+      overlap_sec: Number(options.overlapSec || 3)
+    });
+  }
+
+  stopMeetingRecording() {
+    if (!this._proc) return Promise.resolve('');
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this._pendingMeetingStop = null;
+        reject(new Error('Meeting recording stop timed out.'));
+      }, 15000);
+      timeout.unref?.();
+
+      this._pendingMeetingStop = {
+        resolve: (sessionDir) => {
+          clearTimeout(timeout);
+          resolve(sessionDir);
+        },
+        reject: (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        }
+      };
+
+      this._send({ cmd: 'stop_meeting' });
+    });
+  }
+
   transcribeFile(filePath) {
     if (!this.isInitialized) {
       return Promise.reject(new Error('Speech service not initialized. Run stt/setup.bat first.'));
@@ -352,6 +435,8 @@ class SpeechService extends EventEmitter {
   getStatus() {
     return {
       isRecording:     this.isRecording,
+      isMeetingRecording: this.isMeetingRecording,
+      meetingSessionDir: this.meetingSessionDir,
       isInitialized:   this.isInitialized,
       isReady:         this.isReady,
       sidecarPid:      this._proc ? this._proc.pid : null,

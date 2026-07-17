@@ -58,7 +58,11 @@ class LLMService {
   }
 
   getRagEnvFilePath() {
-    return process.env.VYSPER_RAG_ENV_FILE || '/media/san/Miscosas6/Desarrollo/MiRag/LightRAG/.env';
+    if (process.env.VYSPER_RAG_ENV_FILE) return process.env.VYSPER_RAG_ENV_FILE;
+
+    return process.platform === 'win32'
+      ? 'F:\\Desarrollo\\MiRag\\LightRAG\\.env'
+      : '/media/san/Miscosas6/Desarrollo/MiRag/LightRAG/.env';
   }
 
   getRagStorageDir() {

@@ -201,9 +201,10 @@ echo "[OK] PyTorch audio stack installed."
 # ── 6. Install remaining dependencies ───────────────────────
 
 echo
-echo "[4/7] Installing faster-whisper, sounddevice, numpy, piper-tts, edge-tts..."
+echo "[4/7] Installing Python dependencies from requirements.txt..."
+echo "      This includes pyannote.audio for optional speaker diarization."
 
-pip install faster-whisper sounddevice numpy piper-tts edge-tts --quiet
+pip install -r requirements.txt
 
 if [ $? -ne 0 ]; then
     echo "[ERROR] Failed to install dependencies."
@@ -214,13 +215,29 @@ fi
 
 echo "[OK] Dependencies installed."
 
+PYANNOTE_VERSION="$(python - <<'PY'
+import importlib.metadata as metadata
+try:
+    print(metadata.version("pyannote.audio"))
+except metadata.PackageNotFoundError:
+    raise SystemExit(1)
+PY
+)"
+
+if [ $? -ne 0 ]; then
+    echo "[ERROR] pyannote.audio was not installed correctly."
+    exit 1
+fi
+
+echo "[OK] pyannote.audio ${PYANNOTE_VERSION} installed."
+
 # ── 7. Pre-download models ──────────────────────────────────
 
 echo
 echo "[5/7] Pre-downloading models, cached for future use..."
 echo "      Silero VAD model, approximately 2 MB..."
 
-python -c "import torch; torch.hub.load('snakers4/silero-vad', 'silero_vad', force_reload=True, verbose=True)"
+python -c "import torch; torch.hub.load('snakers4/silero-vad', 'silero_vad', force_reload=True, verbose=True, trust_repo=True)"
 
 if [ $? -ne 0 ]; then
     echo "[WARN] Silero VAD download failed - will retry on first use."
@@ -238,6 +255,13 @@ else
     echo "[OK] Models downloaded."
 fi
 
+echo
+echo "      pyannote.audio is installed for optional speaker diarization."
+echo "      Before using diarization, accept the Hugging Face model terms and set:"
+echo "        VYSPER_PYANNOTE_TOKEN=hf_..."
+echo "      Optional override:"
+echo "        VYSPER_PYANNOTE_MODEL=pyannote/speaker-diarization-community-1"
+
 # ── 8. Install Node dependencies and optionally launch app ──
 
 echo
@@ -251,6 +275,20 @@ if ! command -v npm >/dev/null 2>&1; then
     exit 1
 fi
 
+# node_modules holds native binaries (Electron's platform build, etc.), so it
+# can't be shared as-is between Linux and Windows on a dual-boot machine using
+# the same drive. Park whichever OS's copy isn't active under its own name and
+# restore/rebuild the Linux one, mirroring the venv_windows split.
+if [ -d "node_modules" ] && [ ! -f "node_modules/electron/dist/electron" ]; then
+    echo "[INFO] node_modules looks like it was built for a different OS - parking it as node_modules_windows..."
+    rm -rf "node_modules_windows"
+    mv "node_modules" "node_modules_windows"
+fi
+if [ ! -d "node_modules" ] && [ -d "node_modules_linux" ]; then
+    echo "[INFO] Restoring previously-built Linux node_modules..."
+    mv "node_modules_linux" "node_modules"
+fi
+
 npm install
 
 if [ $? -ne 0 ]; then
@@ -259,6 +297,17 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "[OK] Node dependencies installed."
+
+# npm >=11.16 holds back install scripts for packages it hasn't seen before
+# (e.g. electron's own installer that fetches the platform binary). Approve
+# whatever is pending and rebuild so those scripts actually run instead of
+# silently no-op'ing on a fresh clone.
+npm approve-scripts --all
+npm rebuild
+if [ $? -ne 0 ]; then
+    echo "[WARN] npm rebuild reported an error after approving install scripts."
+    echo "       If Electron fails to start, try running 'npm rebuild' manually."
+fi
 
 # ── 9. Start LightRAG via Docker Compose ────────────────────
 
@@ -308,10 +357,19 @@ echo " Setup complete!"
 echo "============================================================"
 echo
 
+# Editors/terminals built on Electron (VS Code, Cursor, etc.) set
+# ELECTRON_RUN_AS_NODE=1 for their own child processes. If that leaks into
+# this shell, electron silently runs as plain Node instead of opening any
+# windows - no error, no crash, just an instant, silent exit. Clear it before
+# launching so Vysper starts correctly regardless of which terminal this
+# script was run from.
+unset ELECTRON_RUN_AS_NODE
+
 if [ "$AUTO_START" -eq 1 ]; then
     echo "[INFO] Launching Vysper with npm run dev..."
     npm run dev
 else
     echo "Run Vysper later with:"
     echo "  cd \"$PROJECT_ROOT\" && npm run dev"
+    echo "  (if running from VS Code's terminal, first: unset ELECTRON_RUN_AS_NODE)"
 fi

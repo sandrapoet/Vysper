@@ -1059,6 +1059,11 @@ class WindowManager {
         } catch (error) {
           logger.debug('Unable to set display picker opacity', { error: error.message });
         }
+        try {
+          pickerWindow.setContentProtection(true);
+        } catch (error) {
+          logger.debug('Content protection not supported on this platform', { error: error.message });
+        }
         pickerWindow.show();
         this.displayPickerWindows.push(pickerWindow);
       }
@@ -2397,6 +2402,12 @@ class WindowManager {
       window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     } else {
       window.setAlwaysOnTop(true);
+    }
+
+    try {
+      window.setContentProtection(true);
+    } catch (error) {
+      logger.debug('Content protection not supported on this platform', { error: error.message });
     }
 
     window.setIgnoreMouseEvents(false);

@@ -9,6 +9,8 @@ Commands  (Node → Python, stdin):
   {"cmd": "start"}   — begin microphone capture + VAD + transcription
   {"cmd": "stop"}    — stop recording (sidecar stays alive, models remain loaded)
   {"cmd": "transcribe_file", "path": "...", "request_id": "..."} — transcribe audio file
+  {"cmd": "start_meeting", "dir": "...", "segment_sec": 300, "overlap_sec": 3}
+  {"cmd": "stop_meeting"} — stop long meeting capture and flush final segment
   {"cmd": "quit"}    — graceful shutdown
 
 Events  (Python → Node, stdout):
@@ -50,6 +52,7 @@ try:
         model="silero_vad",
         force_reload=False,
         verbose=False,
+        trust_repo=True,
     )
     (_, _, _, VADIterator, _) = _vad_utils
     log("Silero VAD ready.")
@@ -99,13 +102,20 @@ BEST_OF      = int(os.getenv("VYSPER_STT_BEST_OF", "1"))
 
 _audio_q: queue.Queue = queue.Queue()
 _raw_audio_q: queue.Queue = queue.Queue()
+_meeting_audio_q: queue.Queue = queue.Queue()
 _is_recording  = threading.Event()
 _is_raw_recording = threading.Event()
+_is_meeting_recording = threading.Event()
 _quit_event    = threading.Event()
 _flush_event   = threading.Event()
 _raw_done_event = threading.Event()
+_meeting_done_event = threading.Event()
 _keep_capture_warm = threading.Event()
 _raw_path = None
+_meeting_dir = None
+_meeting_segment_sec = 300.0
+_meeting_overlap_sec = 3.0
+_meeting_segment_index = 0
 
 # ── audio capture ──────────────────────────────────────────────────────────
 
@@ -134,6 +144,8 @@ def _audio_callback(indata, frames, t, status):
         _audio_q.put(indata[:, 0].copy())  # float32 mono, range [-1, 1]
     if _is_raw_recording.is_set():
         _raw_audio_q.put(indata[:, 0].copy())
+    if _is_meeting_recording.is_set():
+        _meeting_audio_q.put(indata[:, 0].copy())
 
 def _start_capture() -> None:
     global _capture_stream
@@ -164,7 +176,7 @@ def _stop_capture() -> None:
 def _release_capture_if_idle() -> None:
     if _keep_capture_warm.is_set():
         return
-    if _is_recording.is_set() or _is_raw_recording.is_set():
+    if _is_recording.is_set() or _is_raw_recording.is_set() or _is_meeting_recording.is_set():
         return
     _stop_capture()
 
@@ -194,6 +206,37 @@ def _stop_raw_recording() -> str:
     _release_capture_if_idle()
     _raw_done_event.wait(timeout=5)
     return _raw_path or ""
+
+def _drain_queue(q: queue.Queue) -> None:
+    while True:
+        try:
+            q.get_nowait()
+        except queue.Empty:
+            return
+
+def _start_meeting_recording(session_dir: str, segment_sec: float, overlap_sec: float) -> None:
+    global _meeting_dir, _meeting_segment_sec, _meeting_overlap_sec, _meeting_segment_index
+    if _is_meeting_recording.is_set():
+        return
+    if not session_dir:
+        raise ValueError("Meeting session dir is required.")
+    _meeting_dir = session_dir
+    _meeting_segment_sec = max(5.0, float(segment_sec or 300.0))
+    _meeting_overlap_sec = max(0.0, min(float(overlap_sec or 0.0), _meeting_segment_sec / 2.0))
+    _meeting_segment_index = 0
+    os.makedirs(os.path.join(_meeting_dir, "audio"), exist_ok=True)
+    _drain_queue(_meeting_audio_q)
+    _meeting_done_event.clear()
+    _start_capture()
+    _is_meeting_recording.set()
+
+def _stop_meeting_recording() -> None:
+    if not _is_meeting_recording.is_set():
+        _meeting_done_event.set()
+        return
+    _is_meeting_recording.clear()
+    _release_capture_if_idle()
+    _meeting_done_event.wait(timeout=10)
 
 # ── transcription ──────────────────────────────────────────────────────────
 
@@ -363,6 +406,100 @@ def _raw_writer_loop() -> None:
         close_writer()
     log("Raw writer loop exited.")
 
+def _open_meeting_writer(path: str):
+    writer = wave.open(path, "wb")
+    writer.setnchannels(1)
+    writer.setsampwidth(2)
+    writer.setframerate(RATE)
+    return writer
+
+def _meeting_segment_path(index: int) -> str:
+    assert _meeting_dir is not None
+    return os.path.join(_meeting_dir, "audio", f"{index:04d}.wav")
+
+def _meeting_writer_loop() -> None:
+    global _meeting_segment_index
+    writer = None
+    active_path = None
+    active_index = 0
+    frames_in_segment = 0
+    overlap_chunks: deque = deque()
+    overlap_max_chunks = 0
+
+    def close_segment(final: bool = False) -> None:
+        nonlocal writer, active_path, active_index, frames_in_segment
+        if writer is None:
+            return
+        writer.close()
+        duration = frames_in_segment / RATE
+        path = active_path
+        index = active_index
+        log(f"Meeting segment saved: {path}")
+        emit({
+            "type": "meeting_segment",
+            "path": path,
+            "index": index,
+            "duration": duration,
+            "final": bool(final),
+        })
+        writer = None
+        active_path = None
+        frames_in_segment = 0
+
+    def open_next_segment(prefill: list[np.ndarray] | None = None) -> None:
+        nonlocal writer, active_path, active_index, frames_in_segment
+        global _meeting_segment_index
+        _meeting_segment_index += 1
+        active_index = _meeting_segment_index
+        active_path = _meeting_segment_path(active_index)
+        writer = _open_meeting_writer(active_path)
+        frames_in_segment = 0
+        for overlap_chunk in prefill or []:
+            writer.writeframes(_float32_to_pcm16(overlap_chunk))
+            frames_in_segment += len(overlap_chunk)
+        log(f"Meeting segment writer started: {active_path}")
+
+    while not _quit_event.is_set():
+        if _is_meeting_recording.is_set() and writer is None and _meeting_dir:
+            overlap_max_chunks = max(0, int((_meeting_overlap_sec * RATE) / CHUNK))
+            overlap_chunks = deque(maxlen=overlap_max_chunks)
+            open_next_segment()
+            emit({
+                "type": "meeting_started",
+                "dir": _meeting_dir,
+                "segment_sec": _meeting_segment_sec,
+                "overlap_sec": _meeting_overlap_sec,
+            })
+
+        try:
+            chunk = _meeting_audio_q.get(timeout=0.1)
+        except queue.Empty:
+            if writer is not None and not _is_meeting_recording.is_set():
+                close_segment(final=True)
+                _meeting_done_event.set()
+                emit({"type": "meeting_stopped", "dir": _meeting_dir})
+            elif writer is None and not _is_meeting_recording.is_set():
+                _meeting_done_event.set()
+            continue
+
+        if writer is None:
+            continue
+
+        writer.writeframes(_float32_to_pcm16(chunk))
+        frames_in_segment += len(chunk)
+        if overlap_max_chunks > 0:
+            overlap_chunks.append(chunk.copy())
+
+        if frames_in_segment / RATE >= _meeting_segment_sec:
+            prefill = list(overlap_chunks)
+            close_segment(final=False)
+            if _is_meeting_recording.is_set():
+                open_next_segment(prefill)
+
+    if writer is not None:
+        close_segment(final=True)
+    log("Meeting writer loop exited.")
+
 # ── command loop (stdin) ───────────────────────────────────────────────────
 
 def _main() -> None:
@@ -370,6 +507,8 @@ def _main() -> None:
     vad_thread.start()
     raw_thread = threading.Thread(target=_raw_writer_loop, daemon=True, name="raw-writer-loop")
     raw_thread.start()
+    meeting_thread = threading.Thread(target=_meeting_writer_loop, daemon=True, name="meeting-writer-loop")
+    meeting_thread.start()
 
     for raw in sys.stdin:
         raw = raw.strip()
@@ -438,9 +577,27 @@ def _main() -> None:
             except Exception as exc:
                 emit({"type": "error", "message": f"Raw recording stop error: {exc}"})
 
+        elif cmd == "start_meeting":
+            try:
+                session_dir = msg.get("dir")
+                segment_sec = float(msg.get("segment_sec", 300))
+                overlap_sec = float(msg.get("overlap_sec", 3))
+                _start_meeting_recording(session_dir, segment_sec, overlap_sec)
+                log("Meeting recording started.")
+            except Exception as exc:
+                emit({"type": "error", "message": f"Meeting recording start error: {exc}"})
+
+        elif cmd == "stop_meeting":
+            try:
+                _stop_meeting_recording()
+                log("Meeting recording stopped.")
+            except Exception as exc:
+                emit({"type": "error", "message": f"Meeting recording stop error: {exc}"})
+
         elif cmd == "quit":
             _is_recording.clear()
             _is_raw_recording.clear()
+            _is_meeting_recording.clear()
             _keep_capture_warm.clear()
             _stop_capture()
             _quit_event.set()

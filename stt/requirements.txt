@@ -1,5 +1,5 @@
 # STT Sidecar dependencies
-# Install via: stt/setup.bat (Windows) or stt/setup.sh (Unix/Mac)
+# Install via: stt/setup.bat (Windows) or stt/setup_vysper_stt.sh (Unix/Mac)
 
 # Speech-to-text (faster reimplementation of Whisper via CTranslate2)
 faster-whisper>=1.1.0
@@ -14,6 +14,10 @@ numpy>=1.24.0
 # CPU-only torch/torchaudio are installed separately in setup script.
 torch>=2.1.0
 torchaudio>=2.1.0
+
+# Optional speaker diarization for long Secretaria meeting mode.
+# Requires a Hugging Face token and accepting the model terms before first use.
+pyannote.audio>=3.3.0
 
 # Local text-to-speech for secretaria mode (Ctrl+3)
 piper-tts>=1.2.0

@@ -150,6 +150,8 @@ npm run build
      - `VYSPER_STT_INTERIM_SEC=0` disables repeated interim Whisper passes while recording. This is the default.
      - `VYSPER_STT_CPU_THREADS=2` is the default and limits Whisper CPU threads if it competes with the rest of the desktop.
      - `VYSPER_STT_IDLE_EXIT_MS=120000` unloads the sidecar after two idle minutes once you leave modes that keep speech ready. Set it to `0` to keep models loaded after first use.
+     - Optional speaker diarization for long `secretaria` meetings uses `pyannote.audio`. Accept the Hugging Face model terms, then set `VYSPER_PYANNOTE_TOKEN=hf_...`. The default model is `pyannote/speaker-diarization-community-1`.
+     - Long `secretaria` meetings use `Alt+S`, with `VYSPER_MEETING_SEGMENT_SEC=300`, `VYSPER_MEETING_OVERLAP_SEC=3`, and per-fragment summaries enabled unless `VYSPER_MEETING_SEGMENT_SUMMARY=0`.
      - `VYSPER_ALWAYS_ON_TOP_ENFORCE_MS=0` keeps periodic window enforcement disabled; set a value like `10000` only if your desktop stops keeping the overlay on top.
      - `VYSPER_SCREEN_SHARING_WATCH=1` re-enables screen-sharing polling; it is disabled by default to reduce idle CPU/GPU wakeups.
 
