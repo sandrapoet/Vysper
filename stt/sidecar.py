@@ -94,6 +94,8 @@ PREROLL_MS   = int(os.getenv("VYSPER_STT_PREROLL_MS", "900"))
                          # clipping the first syllable (VAD needs a few frames above
                          # threshold before it fires the "start" event)
 PREROLL_CHUNKS = max(1, (PREROLL_MS * RATE + (1000 * CHUNK) - 1) // (1000 * CHUNK))
+WARM_PREROLL_MS = int(os.getenv("VYSPER_STT_WARM_PREROLL_MS", "1500"))
+WARM_PREROLL_CHUNKS = max(1, (WARM_PREROLL_MS * RATE + (1000 * CHUNK) - 1) // (1000 * CHUNK))
 INTERIM_SEC  = float(os.getenv("VYSPER_STT_INTERIM_SEC", "0"))
 LANGUAGE     = os.getenv("VYSPER_STT_LANGUAGE") or None
 BEAM_SIZE    = int(os.getenv("VYSPER_STT_BEAM_SIZE", "1"))
@@ -112,6 +114,8 @@ _flush_event   = threading.Event()
 _raw_done_event = threading.Event()
 _meeting_done_event = threading.Event()
 _keep_capture_warm = threading.Event()
+_warm_preroll: deque = deque(maxlen=WARM_PREROLL_CHUNKS)
+_warm_preroll_lock = threading.Lock()
 _raw_path = None
 _meeting_dir = None
 _meeting_segment_sec = 300.0
@@ -141,12 +145,16 @@ _capture_lock   = threading.Lock()
 def _audio_callback(indata, frames, t, status):
     if status:
         log("sounddevice status:", status)
+    chunk = indata[:, 0].copy()  # float32 mono, range [-1, 1]
     if _is_recording.is_set():
-        _audio_q.put(indata[:, 0].copy())  # float32 mono, range [-1, 1]
+        _audio_q.put(chunk)
+    elif _keep_capture_warm.is_set():
+        with _warm_preroll_lock:
+            _warm_preroll.append(chunk)
     if _is_raw_recording.is_set():
-        _raw_audio_q.put(indata[:, 0].copy())
+        _raw_audio_q.put(chunk.copy())
     if _is_meeting_recording.is_set():
-        _meeting_audio_q.put(indata[:, 0].copy())
+        _meeting_audio_q.put(chunk.copy())
 
 def _start_capture() -> None:
     global _capture_stream
@@ -214,6 +222,14 @@ def _drain_queue(q: queue.Queue) -> None:
             q.get_nowait()
         except queue.Empty:
             return
+
+def _prefill_recording_from_warm_preroll() -> int:
+    with _warm_preroll_lock:
+        chunks = list(_warm_preroll)
+        _warm_preroll.clear()
+    for chunk in chunks:
+        _audio_q.put(chunk.copy())
+    return len(chunks)
 
 def _start_meeting_recording(session_dir: str, segment_sec: float, overlap_sec: float) -> None:
     global _meeting_dir, _meeting_segment_sec, _meeting_overlap_sec, _meeting_segment_index
@@ -529,8 +545,9 @@ def _main() -> None:
                 try:
                     _start_capture()
                     _is_recording.set()
+                    warm_chunks = _prefill_recording_from_warm_preroll() if _keep_capture_warm.is_set() else 0
                     emit({"type": "recording_started"})
-                    log("Recording started.")
+                    log(f"Recording started. Warm preroll chunks: {warm_chunks}.")
                 except Exception as exc:
                     emit({"type": "error", "message": f"Microphone error: {exc}"})
 

@@ -327,6 +327,10 @@ class SpeechService extends EventEmitter {
       return;
     }
     if (!this._proc) this._spawnSidecar();
+    if (this._keepAlive) {
+      logger.info('Ensuring capture warm before recording', { reason: this._keepAliveReason });
+      this.setCaptureWarm(true);
+    }
     this._send({ cmd: 'start' });
   }
 

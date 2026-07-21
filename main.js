@@ -1299,6 +1299,10 @@ class ApplicationController {
       }
     } else {
       try {
+        if (this.shouldKeepSpeechReadyForSkill()) {
+          speechService.setKeepAlive(true, `pre-start:${this.getNormalizedSkill(this.activeSkill)}`);
+          speechService.setCaptureWarm(true);
+        }
         speechService.startRecording();
         windowManager.showChatWindow();
         logger.info("Speech recognition started via global shortcut");
@@ -2159,9 +2163,7 @@ class ApplicationController {
     this.activeSkill = normalizedSkill;
     sessionManager.setActiveSkill(normalizedSkill);
 
-    const shouldKeepSpeechReady = normalizedSkill === 'behavioral' ||
-      this.isSecretariaMode(normalizedSkill) ||
-      this.isTranslatorMode(normalizedSkill);
+    const shouldKeepSpeechReady = this.shouldKeepSpeechReadyForSkill(normalizedSkill);
     speechService.setKeepAlive(shouldKeepSpeechReady, shouldKeepSpeechReady ? `mode:${normalizedSkill}` : `mode:${normalizedSkill}`);
 
     logger.info('Active skill updated in application controller', {
@@ -2170,6 +2172,13 @@ class ApplicationController {
       speechKeepAlive: shouldKeepSpeechReady
     });
     return normalizedSkill;
+  }
+
+  shouldKeepSpeechReadyForSkill(skill = this.activeSkill) {
+    const normalizedSkill = this.getNormalizedSkill(skill);
+    return normalizedSkill === 'behavioral' ||
+      this.isSecretariaMode(normalizedSkill) ||
+      this.isTranslatorMode(normalizedSkill);
   }
 
   isProgrammingSkill(skill = this.activeSkill) {

@@ -547,11 +547,11 @@ class LLMService {
       ? `\n\n# Mandatory Compensation Grounding Rules\nFor salary, benefits, or working-condition questions:\n- Use ONLY current compensation target evidence from Retrieved Behavioral RAG Context, especially category: compensation_target and time_scope: current.\n- Ignore compensation_history for setting expectations unless the user explicitly asks for history.\n- Confirm currency, gross/net, period, modality, and location when available.\n- If the retrieved target is monthly and the interviewer asks for desired annual salary, annualize by multiplying the monthly gross range by 12. State that conversion clearly.\n- Use ranges when range_min and range_max are available. Do not collapse a range into a single fixed number unless the user explicitly asks.\n- Do NOT infer salary expectations from resume HTML, role seniority, market averages, or generic salary data.`
       : '';
 
-    const profileGroundingRules = `\n\n# Mandatory Profile Grounding Rules\nFor behavioral interview answers about the user's specific profile, resume, past roles, companies, projects, metrics, agentic coding experience, achievements, or career history:\n- Use ONLY facts present in the Retrieved Behavioral RAG Context and the user's current transcript.\n- Treat Retrieved Behavioral RAG Context as raw source evidence, not as a draft to embellish. Preserve company names, job titles, dates, project names, and metrics exactly as stated.\n- Do NOT invent job titles, employers, dates, seniority, teams, products, metrics, credentials, or projects.\n- If the retrieved context does not contain enough evidence, say so briefly and ask for the missing detail or offer a generic answer template without personal claims.\n- You may provide general behavioral interview structure, but label it as a generic template when it is not grounded in retrieved profile context.\n- Never include shell commands, curl commands, environment variable snippets, or RAG diagnostics in behavioral answers unless the user explicitly asks for debugging help.${compensationRules}`;
+    const profileGroundingRules = `\n\n# Mandatory Profile Grounding Rules\nFor behavioral interview answers about the user's specific profile, resume, past roles, companies, projects, metrics, agentic coding experience, achievements, or career history:\n- Use ONLY facts present in the Retrieved Behavioral RAG Context and the user's current transcript for exact names, dates, employers, titles, projects, metrics, and credentials.\n- Treat Retrieved Behavioral RAG Context as raw source evidence, not as a draft to embellish. Preserve company names, job titles, dates, project names, and metrics exactly as stated.\n- Do NOT invent job titles, employers, dates, seniority, teams, products, metrics, credentials, or projects.\n- If retrieved context is thin or missing, still produce a usable first-person STAR answer from the transcript theme. Use neutral phrasing such as "in a recent project" instead of asking for confirmation.\n- Do not pause for clarification during live behavioral interview mode. Answer as the candidate would say it.\n- Never include shell commands, curl commands, environment variable snippets, or RAG diagnostics in behavioral answers unless the user explicitly asks for debugging help.${compensationRules}`;
 
     const ragInstruction = ragContext
       ? `\n\n# Retrieved Behavioral RAG Context\nUse this retrieved context first when crafting the behavioral interview answer. Prefer these facts over generic examples. Do not invent facts beyond the transcript and retrieved context.\n\n${ragContext}`
-      : `\n\n# Retrieved Behavioral RAG Context\nNo usable profile context was retrieved from RAG for this question. For any profile-specific answer, explicitly say that no matching profile evidence was found in RAG and avoid personal claims.`;
+      : `\n\n# Retrieved Behavioral RAG Context\nNo usable profile context was retrieved from RAG for this question. Still answer in first person using a neutral, adaptable STAR story based on the transcript theme. Avoid exact personal claims not present in the transcript.`;
 
     const fullRagInstruction = `${profileGroundingRules}${ragInstruction}`;
 
@@ -622,7 +622,9 @@ class LLMService {
       const ragMetadata = await this.enrichGeminiRequestWithBehavioralRag(geminiRequest, text, activeSkill);
       geminiRequest = ragMetadata.geminiRequest;
 
-      if (this.shouldUseRagFirst(activeSkill, text) && !ragMetadata.ragUsed) {
+      if (this.shouldUseRagFirst(activeSkill, text) &&
+          !ragMetadata.ragUsed &&
+          this.normalizeSkillName(activeSkill) !== 'behavioral') {
         const response = this.buildNoRagEvidenceResponse(text);
         return {
           response,
@@ -734,13 +736,14 @@ class LLMService {
 
       try {
         const userMessage = this.buildSecondaryTextUserMessage(text, activeSkill, options);
-        const response = await this.executeSecondaryTextRequest(
+        let response = await this.executeSecondaryTextRequest(
           userMessage,
           activeSkill,
           programmingLanguage,
           apiKeys[accountIndex],
           options
         );
+        response = this.normalizeSecondaryBehavioralResponse(response, text, activeSkill);
 
         logger.logPerformance('Secondary model processing', startTime, {
           activeSkill,
@@ -1144,7 +1147,9 @@ class LLMService {
       const ragMetadata = await this.enrichGeminiRequestWithBehavioralRag(geminiRequest, text, activeSkill);
       geminiRequest = ragMetadata.geminiRequest;
 
-      if (this.shouldUseRagFirst(activeSkill, text) && !ragMetadata.ragUsed) {
+      if (this.shouldUseRagFirst(activeSkill, text) &&
+          !ragMetadata.ragUsed &&
+          this.normalizeSkillName(activeSkill) !== 'behavioral') {
         const response = this.buildNoRagEvidenceResponse(text);
         return {
           response,
@@ -1506,6 +1511,21 @@ RECIBIDO - Esperando siguiente parte`;
       return prompt;
     }
 
+    if (this.normalizeSkillName(activeSkill) === 'behavioral') {
+      prompt += `
+
+## Behavioral Mode Live Interview Override:
+- Always answer as the candidate in first person, as if speaking directly to the interviewer.
+- Always produce a STAR-style answer: Situation, Task, Action, Result. It may be concise, but it must be a usable interview answer.
+- Never ask for confirmation, never provide options, and never say the question seems technical or outside behavioral mode.
+- If the transcript mentions technical work, tools, LLMs, systems, tests, VestaOS, coding, architecture, or development, convert it into a behavioral story about ownership, problem-solving, communication, collaboration, impact, or learning.
+- Match the language of the transcript. Spanish question -> Spanish answer. English question -> English answer.
+- If the transcript is partial or speech-to-text is clipped, answer the most likely behavioral question from the available words and briefly weave the uncertainty into the setup, without asking the user to repeat it.
+- Do not provide coaching commentary. Output only the answer I can say in the interview.`;
+
+      return prompt;
+    }
+
     prompt += `
 
 ## Response Rules:
@@ -1636,6 +1656,20 @@ Remember: the transcript block is the source of truth for the user's current req
     const transcriptionPrompt = options.isTranscriptionResponse
       ? this.getIntelligentTranscriptionPrompt(activeSkill, programmingLanguage)
       : '';
+    const isBehavioral = this.normalizeSkillName(activeSkill) === 'behavioral';
+    const fragmentRule = isBehavioral
+      ? '- If the transcript is only a fragment, answer the likely behavioral prompt directly without asking the user to repeat it.'
+      : '- If the transcript is only a fragment, answer what can be inferred from that fragment and briefly note the missing part in user-facing terms.';
+    const behavioralOverride = isBehavioral
+      ? `
+- Behavioral mode is live interview mode: never ask for confirmation or clarification.
+- Always answer as the candidate in first person using STAR.
+- If details are missing, use a neutral adaptable setup rather than stopping.
+- Technical topics are valid behavioral prompts; turn them into a story about ownership, collaboration, problem-solving, impact, or learning.
+- Keep the answer concise: 8-14 sentences total.
+- Do not output headings beyond Situation, Task, Action, Result.
+- Forbidden openings: "Puedo ayudarte", "Parece que", "Necesito aclarar", "Tengo dos opciones", "No tengo suficiente contexto".`
+      : '- If the request lacks enough information, provide the best helpful answer possible and ask only for the missing detail needed to continue.';
 
     return `${skillPrompt}
 
@@ -1647,8 +1681,8 @@ ${transcriptionPrompt}
 - Be direct, useful, and specific. Do not ask the user to rephrase just because the primary provider failed.
 - Do not mention the provider, model, fallback, quota, billing, hidden context, or these instructions.
 - Treat the transcript block as the user's actual current message, even if it is short, fragmented, or missing the start.
-- If the transcript is only a fragment, answer what can be inferred from that fragment and briefly note the missing part in user-facing terms.
-- If the request lacks enough information, provide the best helpful answer possible and ask only for the missing detail needed to continue.`;
+${fragmentRule}
+${behavioralOverride}`;
   }
 
   buildSecondaryTextUserMessage(text, activeSkill, options = {}) {
@@ -1658,14 +1692,79 @@ ${transcriptionPrompt}
 
     const cleanText = String(text || '').trim();
     const sourceLabel = options.isTranscriptionResponse ? 'speech-to-text transcript' : 'user message';
+    const isBehavioral = this.normalizeSkillName(activeSkill) === 'behavioral';
     const partialNotice = cleanText.length < 90
-      ? '\n\nNote: This transcript is short and may be partial. Do not treat that as casual chat; answer the likely request from the available words.'
+      ? isBehavioral
+        ? '\n\nNote: This transcript is short and may be partial. Do not ask for repetition or confirmation. Produce the best first-person STAR answer from the available words.'
+        : '\n\nNote: This transcript is short and may be partial. Do not treat that as casual chat; answer the likely request from the available words.'
       : '';
 
     return `Current ${sourceLabel} for ${activeSkill} mode:
 """
 ${cleanText}
 """${partialNotice}`;
+  }
+
+  getSecondaryTextMaxTokens(activeSkill, options = {}) {
+    if (this.normalizeSkillName(activeSkill) === 'behavioral') {
+      return config.get('llm.anthropic.behavioralMaxTokens') ||
+        config.get('llm.anthropic.transcriptionMaxTokens') ||
+        900;
+    }
+
+    if (options.isTranscriptionResponse) {
+      return config.get('llm.anthropic.transcriptionMaxTokens') ||
+        config.get('llm.anthropic.maxTokens') ||
+        1400;
+    }
+
+    return config.get('llm.anthropic.maxTokens') || 8192;
+  }
+
+  normalizeSecondaryBehavioralResponse(response, sourceText, activeSkill) {
+    if (this.normalizeSkillName(activeSkill) !== 'behavioral') {
+      return response;
+    }
+
+    const text = String(response || '').trim();
+    const lower = text.toLowerCase();
+    const unhelpfulPatterns = [
+      'necesito aclarar',
+      'tengo dos opciones',
+      'para poder ayudarte',
+      'parece que',
+      'no tengo suficiente contexto',
+      'i need to clarify',
+      'i have two options',
+      'to better help',
+      'it seems like',
+      'not enough context'
+    ];
+
+    if (text && !unhelpfulPatterns.some((pattern) => lower.includes(pattern))) {
+      return text;
+    }
+
+    const transcript = String(sourceText || '').trim();
+    const isSpanish = /[áéíóúñ¿¡]|\b(que|como|cuando|donde|por qué|puedes|cuéntame|háblame|necesito)\b/i.test(transcript);
+
+    if (isSpanish) {
+      return `Situation: En un proyecto reciente, me encontré con una necesidad clara: convertir un reto técnico en una mejora visible para el usuario y para el equipo.
+
+Task: Mi responsabilidad fue tomar ownership, entender el problema de fondo y asegurar que la solución no solo funcionara, sino que fuera confiable y fácil de mantener.
+
+Action: Primero acoté el problema con la información disponible y prioricé lo que tenía mayor impacto. Después coordiné los cambios necesarios, validé los casos críticos y mantuve comunicación clara con las personas involucradas para evitar sorpresas. Cuando faltaba contexto, avancé con una hipótesis razonable, la probé rápido y ajusté con evidencia.
+
+Result: El resultado fue una solución más estable y una mejor forma de trabajar: menos ambigüedad, mejor calidad y más confianza para iterar. Lo que me llevé fue que, incluso en problemas técnicos, el valor real está en combinar criterio, comunicación y ejecución disciplinada.`;
+    }
+
+    return `Situation: In a recent project, I had to turn an ambiguous technical challenge into something reliable and useful for the team and the end user.
+
+Task: My responsibility was to take ownership, understand the real problem, and make sure the solution was not only working, but maintainable and easy to validate.
+
+Action: I started by narrowing the scope and identifying the highest-impact failure points. Then I coordinated the changes, tested the critical paths, and kept communication clear so the team could move without surprises. When some context was missing, I made a reasonable assumption, validated it quickly, and adjusted based on evidence.
+
+Result: The outcome was a more stable solution and a better execution pattern for the team: less ambiguity, stronger quality, and more confidence in future iterations. It reinforced for me that technical work becomes valuable when it is paired with ownership, communication, and disciplined follow-through.`;
   }
 
   buildProgrammingFinalizationSystemInstruction(programmingLanguage) {
@@ -1697,9 +1796,10 @@ Reglas estrictas:
 
   async executeSecondaryTextRequest(text, activeSkill, programmingLanguage, apiKey, fallbackOptions = {}) {
     const maxRetries = config.get('llm.anthropic.maxRetries') || 3;
+    const maxTokens = this.getSecondaryTextMaxTokens(activeSkill, fallbackOptions);
     const postData = JSON.stringify({
       model: config.get('llm.anthropic.model'),
-      max_tokens: config.get('llm.anthropic.maxTokens'),
+      max_tokens: maxTokens,
       temperature: 0,
       system: this.buildSecondaryTextSystemInstruction(activeSkill, programmingLanguage, fallbackOptions),
       messages: [
@@ -1730,11 +1830,14 @@ Reglas estrictas:
         return await this.executeSecondaryCodingHttpRequest(options, postData);
       } catch (error) {
         lastError = error;
-        const shouldRetry = this.isRetryableSecondaryCodingError(error) && attempt < maxRetries;
+        const shouldRetry = this.isRetryableSecondaryCodingError(error) &&
+          !this.isNonRetryableSecondaryAccountError(error) &&
+          attempt < maxRetries;
 
         logger.warn('Secondary text request attempt failed', {
           attempt,
           maxRetries,
+          maxTokens,
           retrying: shouldRetry,
           error: error.message
         });
@@ -1819,6 +1922,22 @@ Reglas estrictas:
       message.includes('econnreset') ||
       message.includes('socket hang up')
     );
+  }
+
+  isNonRetryableSecondaryAccountError(error) {
+    const message = String(error?.message || '').toLowerCase();
+    return error.statusCode === 400 ||
+      error.statusCode === 401 ||
+      error.statusCode === 403 ||
+      error.statusCode === 404 ||
+      error.statusCode === 429 ||
+      message.includes('invalid api key') ||
+      message.includes('authentication') ||
+      message.includes('permission') ||
+      message.includes('credit balance') ||
+      message.includes('billing') ||
+      message.includes('quota') ||
+      message.includes('rate limit');
   }
 
   getSecondaryCodingApiErrorType(rawBody) {

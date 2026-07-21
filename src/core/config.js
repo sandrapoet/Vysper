@@ -52,6 +52,8 @@ class ConfigManager {
         anthropic: {
           model: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest',
           maxTokens: Number(process.env.ANTHROPIC_MAX_TOKENS || 8192),
+          behavioralMaxTokens: Number(process.env.ANTHROPIC_BEHAVIORAL_MAX_TOKENS || 900),
+          transcriptionMaxTokens: Number(process.env.ANTHROPIC_TRANSCRIPTION_MAX_TOKENS || 1400),
           maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES || 3),
           timeout: Number(process.env.ANTHROPIC_TIMEOUT || 120000)
         }
