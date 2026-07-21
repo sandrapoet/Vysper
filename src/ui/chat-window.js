@@ -215,6 +215,11 @@ class ChatWindowUI {
                             this.addMessage(`Gemini fallback: ${data.metadata.fallbackReason}`, 'error');
                         }
                     }
+
+                    if (data.metadata && data.metadata.sourceTranscriptLength && data.metadata.sourceTranscriptLength < 90) {
+                        const preview = data.metadata.sourceTranscriptPreview || '';
+                        this.addMessage(`Transcript corto recibido (${data.metadata.sourceTranscriptLength} chars): ${preview}`, 'system');
+                    }
                     
                     // Add assistant response with formatting
                     this.addMessage(data.response, 'assistant');

@@ -517,6 +517,11 @@ class WindowManager {
     // More aggressive event listeners to maintain always-on-top behavior
     const enforceAlwaysOnTop = () => {
       if (!window.isDestroyed()) {
+        if (this.displayPickerWindows && this.displayPickerWindows.length > 0) {
+          // No pelear por el tope mientras el selector de monitor esta activo,
+          // o tapa el picker y el click nunca llega a la ventana de seleccion.
+          return;
+        }
         try {
           if (process.platform === 'darwin') {
             // Try multiple levels on macOS
@@ -1065,6 +1070,7 @@ class WindowManager {
           logger.debug('Content protection not supported on this platform', { error: error.message });
         }
         pickerWindow.show();
+        pickerWindow.moveTop();
         this.displayPickerWindows.push(pickerWindow);
       }
 

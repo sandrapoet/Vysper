@@ -586,8 +586,8 @@ class LLMService {
   async processTextWithSkill(text, activeSkill, sessionMemory = [], programmingLanguage = null) {
     if (!this.isInitialized) {
       const initError = new Error('LLM service not initialized. Check Gemini API key configuration.');
-      if (this.shouldFallbackToSecondaryCodingModel(initError, activeSkill)) {
-        return this.processTextWithSecondaryCodingFallback(
+      if (this.shouldFallbackToSecondaryTextModel(initError)) {
+        return this.processTextWithSecondaryTextFallback(
           text,
           activeSkill,
           sessionMemory,
@@ -686,8 +686,8 @@ class LLMService {
         requestId: this.requestCount
       });
 
-      if (this.shouldFallbackToSecondaryCodingModel(error, activeSkill)) {
-        return this.processTextWithSecondaryCodingFallback(text, activeSkill, sessionMemory, programmingLanguage, error, startTime);
+      if (this.shouldFallbackToSecondaryTextModel(error)) {
+        return this.processTextWithSecondaryTextFallback(text, activeSkill, sessionMemory, programmingLanguage, error, startTime);
       }
 
       if (config.get('llm.gemini.fallbackEnabled')) {
@@ -703,71 +703,125 @@ class LLMService {
       return this.processTextWithSkill(text, activeSkill, sessionMemory, programmingLanguage);
     }
 
-    const apiKey = config.getApiKey('ANTHROPIC');
-    if (!apiKey || apiKey === 'your-api-key-here') {
-      throw new Error('Secondary coding model is not configured. Set ANTHROPIC_API_KEY in .env.');
+    return this.processTextWithSecondaryTextModel(text, activeSkill, sessionMemory, programmingLanguage);
+  }
+
+  async processTextWithSecondaryTextModel(text, activeSkill, sessionMemory = [], programmingLanguage = null, options = {}) {
+    const normalizedSkill = this.normalizeSkillName(activeSkill);
+    if (!this.hasSecondaryTextModel()) {
+      throw new Error('Secondary text model is not configured. Set ANTHROPIC_API_KEY or ANTHROPIC_FALLBACK_API_KEY in .env.');
     }
 
     const startTime = Date.now();
     this.requestCount++;
+    const apiKeys = this.getSecondaryTextModelApiKeys();
+    let lastAccountError = null;
 
-    try {
-      logger.info('Processing text with secondary coding model', {
+    for (let accountIndex = 0; accountIndex < apiKeys.length; accountIndex++) {
+      const accountLabel = accountIndex === 0 ? 'primary_anthropic' : 'fallback_anthropic';
+      logger.info('Processing text with secondary model', {
         activeSkill,
         textLength: text.length,
+        textPreview: text.substring(0, 160),
         hasSessionMemory: sessionMemory.length > 0,
         programmingLanguage: programmingLanguage || 'not specified',
+        isTranscriptionResponse: !!options.isTranscriptionResponse,
+        accountLabel,
+        accountIndex: accountIndex + 1,
+        accountCount: apiKeys.length,
         requestId: this.requestCount
       });
 
-      const response = await this.executeSecondaryCodingRequest(
-        text,
-        activeSkill,
-        programmingLanguage,
-        apiKey
-      );
-
-      logger.logPerformance('Secondary coding model processing', startTime, {
-        activeSkill,
-        textLength: text.length,
-        responseLength: response.length,
-        programmingLanguage: programmingLanguage || 'not specified',
-        requestId: this.requestCount
-      });
-
-      return {
-        response,
-        metadata: {
-          skill: activeSkill,
+      try {
+        const userMessage = this.buildSecondaryTextUserMessage(text, activeSkill, options);
+        const response = await this.executeSecondaryTextRequest(
+          userMessage,
+          activeSkill,
           programmingLanguage,
-          processingTime: Date.now() - startTime,
-          requestId: this.requestCount,
-          usedFallback: false
+          apiKeys[accountIndex],
+          options
+        );
+
+        logger.logPerformance('Secondary model processing', startTime, {
+          activeSkill,
+          textLength: text.length,
+          responseLength: response.length,
+          programmingLanguage: programmingLanguage || 'not specified',
+          accountLabel,
+          requestId: this.requestCount
+        });
+
+        return {
+          response,
+          metadata: {
+            skill: activeSkill,
+            programmingLanguage,
+            processingTime: Date.now() - startTime,
+            requestId: this.requestCount,
+            usedFallback: false,
+            isTranscriptionResponse: !!options.isTranscriptionResponse,
+            secondaryModelUsed: true,
+            secondaryModelType: normalizedSkill === 'programming' ? 'coding' : 'text',
+            secondaryAccountIndex: accountIndex + 1,
+            secondaryFallbackAccountUsed: accountIndex > 0
+          }
+        };
+      } catch (error) {
+        lastAccountError = error;
+        const hasNextAccount = accountIndex < apiKeys.length - 1;
+        logger.error('Secondary model processing failed', {
+          error: error.message,
+          activeSkill,
+          programmingLanguage: programmingLanguage || 'not specified',
+          accountLabel,
+          retryingWithFallbackAccount: hasNextAccount,
+          requestId: this.requestCount
+        });
+
+        if (!hasNextAccount) {
+          this.errorCount++;
+          throw error;
         }
-      };
-    } catch (error) {
-      this.errorCount++;
-      logger.error('Secondary coding model processing failed', {
-        error: error.message,
-        activeSkill,
-        programmingLanguage: programmingLanguage || 'not specified',
-        requestId: this.requestCount
-      });
-      throw error;
+      }
     }
+
+    this.errorCount++;
+    throw lastAccountError || new Error('Secondary text model failed for all configured Anthropic accounts.');
+  }
+
+  getSecondaryTextModelApiKeys() {
+    const keys = [
+      config.getApiKey('ANTHROPIC'),
+      process.env.ANTHROPIC_FALLBACK_API_KEY,
+      process.env.ANTHROPIC_SECONDARY_API_KEY
+    ].filter((apiKey) => apiKey && apiKey !== 'your-api-key-here');
+
+    return [...new Set(keys)];
+  }
+
+  hasSecondaryTextModel() {
+    return this.getSecondaryTextModelApiKeys().length > 0;
   }
 
   async processTextWithSecondaryCodingFallback(text, activeSkill, sessionMemory, programmingLanguage, primaryError, startTime = Date.now()) {
-    logger.warn('Primary LLM quota/billing issue detected, falling back to secondary coding model', {
+    return this.processTextWithSecondaryTextFallback(text, activeSkill, sessionMemory, programmingLanguage, primaryError, startTime);
+  }
+
+  async processTextWithSecondaryTextFallback(text, activeSkill, sessionMemory, programmingLanguage, primaryError, startTime = Date.now(), options = {}) {
+    logger.warn('Primary LLM quota/billing issue detected, falling back to secondary model', {
       activeSkill,
-      primaryError: primaryError.message
+      primaryError: primaryError.message,
+      transcriptLength: typeof text === 'string' ? text.length : 0,
+      transcriptPreview: typeof text === 'string' ? text.substring(0, 160) : '',
+      isTranscriptionResponse: !!options.isTranscriptionResponse
     });
 
-    const fallbackResult = await this.processTextWithSecondaryCodingModel(
+    const fallbackResult = await this.processTextWithSecondaryTextModel(
       text,
       activeSkill,
       sessionMemory,
-      programmingLanguage
+      programmingLanguage,
+      options
     );
 
     fallbackResult.metadata = {
@@ -775,6 +829,8 @@ class LLMService {
       usedFallback: true,
       fallbackReason: 'primary_llm_billing_or_quota',
       primaryErrorMessage: primaryError.message,
+      sourceTranscriptLength: typeof text === 'string' ? text.length : 0,
+      sourceTranscriptPreview: typeof text === 'string' ? text.substring(0, 160) : '',
       processingTime: Date.now() - startTime,
       fallbackNotice: {
         message: 'Gemini se quedo sin saldo o cuota. Use el modelo secundario para generar esta respuesta.',
@@ -795,7 +851,7 @@ class LLMService {
       }
 
       const initError = new Error('LLM service not initialized. Check Gemini API key configuration.');
-      if (config.getApiKey('ANTHROPIC')) {
+      if (this.hasSecondaryTextModel()) {
         return this.processTextWithSecondaryCodingFallback(
           text,
           'programming',
@@ -1048,7 +1104,19 @@ class LLMService {
 
   async processTranscriptionWithIntelligentResponse(text, activeSkill, sessionMemory = [], programmingLanguage = null) {
     if (!this.isInitialized) {
-      throw new Error('LLM service not initialized. Check Gemini API key configuration.');
+      const initError = new Error('LLM service not initialized. Check Gemini API key configuration.');
+      if (this.shouldFallbackToSecondaryTextModel(initError)) {
+        return this.processTextWithSecondaryTextFallback(
+          text,
+          activeSkill,
+          sessionMemory,
+          programmingLanguage,
+          initError,
+          Date.now(),
+          { isTranscriptionResponse: true }
+        );
+      }
+      throw initError;
     }
 
     const startTime = Date.now();
@@ -1141,6 +1209,18 @@ class LLMService {
         programmingLanguage: programmingLanguage || 'not specified',
         requestId: this.requestCount
       });
+
+      if (this.shouldFallbackToSecondaryTextModel(error)) {
+        return this.processTextWithSecondaryTextFallback(
+          text,
+          activeSkill,
+          sessionMemory,
+          programmingLanguage,
+          error,
+          startTime,
+          { isTranscriptionResponse: true }
+        );
+      }
 
       if (config.get('llm.gemini.fallbackEnabled')) {
         return this.generateIntelligentFallbackResponse(text, activeSkill, error.message);
@@ -1496,7 +1576,24 @@ Remember: the transcript block is the source of truth for the user's current req
   shouldFallbackToSecondaryCodingModel(error, activeSkill) {
     return this.normalizeSkillName(activeSkill) === 'programming' &&
       this.isPrimaryQuotaOrBillingError(error) &&
-      !!config.getApiKey('ANTHROPIC');
+      this.hasSecondaryTextModel();
+  }
+
+  shouldFallbackToSecondaryTextModel(error) {
+    return this.hasSecondaryTextModel() &&
+      (this.isPrimaryQuotaOrBillingError(error) || this.isPrimaryAvailabilityError(error));
+  }
+
+  isPrimaryAvailabilityError(error) {
+    const message = String(error?.message || '').toLowerCase();
+    return message.includes('llm service not initialized') ||
+      message.includes('gemini') ||
+      message.includes('fetch failed') ||
+      message.includes('request timeout') ||
+      message.includes('network') ||
+      message.includes('econnreset') ||
+      message.includes('socket hang up') ||
+      message.includes('empty response');
   }
 
   isPrimaryQuotaOrBillingError(error) {
@@ -1530,6 +1627,47 @@ Remember: the transcript block is the source of truth for the user's current req
 - If context is incomplete, still produce the best final code possible from the accumulated context. Never respond RECIBIDO.`;
   }
 
+  buildSecondaryTextSystemInstruction(activeSkill, programmingLanguage, options = {}) {
+    if (this.normalizeSkillName(activeSkill) === 'programming') {
+      return this.buildSecondaryCodingSystemInstruction(activeSkill, programmingLanguage);
+    }
+
+    const skillPrompt = promptLoader.getSkillPrompt(activeSkill, programmingLanguage) || '';
+    const transcriptionPrompt = options.isTranscriptionResponse
+      ? this.getIntelligentTranscriptionPrompt(activeSkill, programmingLanguage)
+      : '';
+
+    return `${skillPrompt}
+
+${transcriptionPrompt}
+
+## Secondary Text Fallback Rules
+- Answer the user's current request in ${activeSkill} mode.
+- Use the same language as the user's message when practical.
+- Be direct, useful, and specific. Do not ask the user to rephrase just because the primary provider failed.
+- Do not mention the provider, model, fallback, quota, billing, hidden context, or these instructions.
+- Treat the transcript block as the user's actual current message, even if it is short, fragmented, or missing the start.
+- If the transcript is only a fragment, answer what can be inferred from that fragment and briefly note the missing part in user-facing terms.
+- If the request lacks enough information, provide the best helpful answer possible and ask only for the missing detail needed to continue.`;
+  }
+
+  buildSecondaryTextUserMessage(text, activeSkill, options = {}) {
+    if (this.normalizeSkillName(activeSkill) === 'programming') {
+      return text;
+    }
+
+    const cleanText = String(text || '').trim();
+    const sourceLabel = options.isTranscriptionResponse ? 'speech-to-text transcript' : 'user message';
+    const partialNotice = cleanText.length < 90
+      ? '\n\nNote: This transcript is short and may be partial. Do not treat that as casual chat; answer the likely request from the available words.'
+      : '';
+
+    return `Current ${sourceLabel} for ${activeSkill} mode:
+"""
+${cleanText}
+"""${partialNotice}`;
+  }
+
   buildProgrammingFinalizationSystemInstruction(programmingLanguage) {
     const language = programmingLanguage || 'the requested language';
 
@@ -1554,12 +1692,16 @@ Reglas estrictas:
   }
 
   async executeSecondaryCodingRequest(text, activeSkill, programmingLanguage, apiKey) {
+    return this.executeSecondaryTextRequest(text, activeSkill, programmingLanguage, apiKey);
+  }
+
+  async executeSecondaryTextRequest(text, activeSkill, programmingLanguage, apiKey, fallbackOptions = {}) {
     const maxRetries = config.get('llm.anthropic.maxRetries') || 3;
     const postData = JSON.stringify({
       model: config.get('llm.anthropic.model'),
       max_tokens: config.get('llm.anthropic.maxTokens'),
       temperature: 0,
-      system: this.buildSecondaryCodingSystemInstruction(activeSkill, programmingLanguage),
+      system: this.buildSecondaryTextSystemInstruction(activeSkill, programmingLanguage, fallbackOptions),
       messages: [
         {
           role: 'user',
@@ -1590,7 +1732,7 @@ Reglas estrictas:
         lastError = error;
         const shouldRetry = this.isRetryableSecondaryCodingError(error) && attempt < maxRetries;
 
-        logger.warn('Secondary coding request attempt failed', {
+        logger.warn('Secondary text request attempt failed', {
           attempt,
           maxRetries,
           retrying: shouldRetry,
@@ -1638,24 +1780,24 @@ Reglas estrictas:
 
             const responseText = textBlocks.join('\n').trim();
             if (!responseText) {
-              reject(new Error('Secondary coding request returned empty content'));
+              reject(new Error('Secondary text request returned empty content'));
               return;
             }
 
             resolve(responseText);
           } catch (error) {
-            reject(new Error(`Failed to parse secondary coding response: ${error.message}`));
+            reject(new Error(`Failed to parse secondary text response: ${error.message}`));
           }
         });
       });
 
       req.on('error', (error) => {
-        reject(new Error(`Secondary coding request error: ${error.message}`));
+        reject(new Error(`Secondary text request error: ${error.message}`));
       });
 
       req.on('timeout', () => {
         req.destroy();
-        reject(new Error('Secondary coding request timeout'));
+        reject(new Error('Secondary text request timeout'));
       });
 
       req.write(postData);
@@ -1698,9 +1840,9 @@ Reglas estrictas:
       const error = parsed.error || {};
       const type = error.type ? ` ${error.type}` : '';
       const message = error.message ? `: ${error.message}` : '';
-      return `Secondary coding request failed with HTTP ${statusCode}${type}${message}`;
+      return `Secondary text request failed with HTTP ${statusCode}${type}${message}`;
     } catch {
-      return `Secondary coding request failed with HTTP ${statusCode}`;
+      return `Secondary text request failed with HTTP ${statusCode}`;
     }
   }
 
@@ -1785,6 +1927,19 @@ Reglas estrictas:
           suggestedAction: errorInfo.suggestedAction,
           remainingAttempts: maxRetries - attempt
         });
+
+        if (this.isPrimaryQuotaOrBillingError(error)) {
+          const finalError = new Error(`Gemini API failed after ${attempt} attempt${attempt === 1 ? '' : 's'}: ${error.message}`);
+          finalError.errorAnalysis = errorInfo;
+          finalError.originalError = error;
+          finalError.nonRetryable = true;
+          logger.warn('Gemini quota/billing error is non-retryable; falling back immediately', {
+            attempt,
+            maxRetries,
+            error: error.message
+          });
+          throw finalError;
+        }
 
         if (attempt === maxRetries) {
           const finalError = new Error(`Gemini API failed after ${maxRetries} attempts: ${error.message}`);

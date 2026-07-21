@@ -20,8 +20,16 @@ const STT_PRELOAD       = process.env.VYSPER_STT_PRELOAD === '1';
 const STT_IDLE_EXIT_MS  = Number(process.env.VYSPER_STT_IDLE_EXIT_MS || 120000);
 
 function _resolvePython() {
-  if (fs.existsSync(VENV_PYTHON_WIN))  return VENV_PYTHON_WIN;
-  if (fs.existsSync(VENV_PYTHON_UNIX)) return VENV_PYTHON_UNIX;
+  // El disco puede estar compartido entre Windows y Linux (dual boot), asi que
+  // ambos venvs pueden existir a la vez: hay que elegir por plataforma actual,
+  // no por cual existe primero, o en Linux se intenta ejecutar el .exe de Windows.
+  if (process.platform === 'win32') {
+    if (fs.existsSync(VENV_PYTHON_WIN))  return VENV_PYTHON_WIN;
+    if (fs.existsSync(VENV_PYTHON_UNIX)) return VENV_PYTHON_UNIX;
+  } else {
+    if (fs.existsSync(VENV_PYTHON_UNIX)) return VENV_PYTHON_UNIX;
+    if (fs.existsSync(VENV_PYTHON_WIN))  return VENV_PYTHON_WIN;
+  }
   return process.env.PYTHON_PATH || 'python';
 }
 

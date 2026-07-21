@@ -89,7 +89,8 @@ CHUNK        = 512      # samples = 32 ms @ 16 kHz (Silero requirement)
 SPEECH_THR   = 0.4      # VAD probability threshold (lowered for loaded systems)
 MIN_SILENCE  = int(os.getenv("VYSPER_STT_MIN_SILENCE_MS", "2500"))
 PAD_MS       = 100      # ms of audio padding around speech edges
-PREROLL_MS   = 320      # ms of audio kept before VAD confirms speech start, to avoid
+PREROLL_MS   = int(os.getenv("VYSPER_STT_PREROLL_MS", "900"))
+                         # ms of audio kept before VAD confirms speech start, to avoid
                          # clipping the first syllable (VAD needs a few frames above
                          # threshold before it fires the "start" event)
 PREROLL_CHUNKS = max(1, (PREROLL_MS * RATE + (1000 * CHUNK) - 1) // (1000 * CHUNK))

@@ -165,8 +165,10 @@ Create `.env`:
 GEMINI_API_KEY=your_gemini_api_key
 GEMINI_MODEL=gemini-3.5-flash
 ANTHROPIC_API_KEY=your_anthropic_api_key
+ANTHROPIC_FALLBACK_API_KEY=your_second_anthropic_api_key
 ANTHROPIC_MODEL=claude-3-5-sonnet-latest
 ANTHROPIC_MAX_TOKENS=2048
+VYSPER_STT_PREROLL_MS=900
 ```
 
 ## ⌨️ Essential Shortcuts
