@@ -46,7 +46,6 @@ const MEETING_OVERLAP_SEC = Number(process.env.VYSPER_MEETING_OVERLAP_SEC || 3);
 const MEETING_SEGMENT_SUMMARY = process.env.VYSPER_MEETING_SEGMENT_SUMMARY !== '0';
 const MEETING_FINAL_TRANSCRIPT_CHARS = Number(process.env.VYSPER_MEETING_FINAL_TRANSCRIPT_CHARS || 60000);
 const DIARIZE_HELPER_PATH = path.join(__dirname, 'stt', 'diarize.py');
-const SEGMENT_AUDIO_HELPER_PATH = path.join(__dirname, 'stt', 'segment_audio.py');
 
 function signalShortcut(message, meta = {}) {
   console.log(`[Vysper shortcut] ${message}`);
@@ -1604,35 +1603,6 @@ class ApplicationController {
     });
   }
 
-  runSecretariaAudioSegmentation(filePath, outputDir, { segmentSec, overlapSec }) {
-    return new Promise((resolve, reject) => {
-      const python = this.resolveSttPython();
-      execFile(
-        python,
-        [
-          SEGMENT_AUDIO_HELPER_PATH,
-          filePath,
-          '--output-dir', outputDir,
-          '--segment-sec', String(segmentSec),
-          '--overlap-sec', String(overlapSec)
-        ],
-        { encoding: 'utf8', timeout: 30 * 60 * 1000, maxBuffer: 10 * 1024 * 1024 },
-        (error, stdout, stderr) => {
-          if (error) {
-            reject(new Error((stderr || stdout || error.message).trim()));
-            return;
-          }
-          try {
-            const segments = JSON.parse(stdout);
-            resolve(Array.isArray(segments) ? segments : []);
-          } catch (parseError) {
-            reject(new Error(`No se pudo interpretar la salida de segmentacion: ${parseError.message}`));
-          }
-        }
-      );
-    });
-  }
-
   resolveSttPython() {
     if (process.env.PYTHON_PATH) return process.env.PYTHON_PATH;
 
@@ -1927,32 +1897,204 @@ class ApplicationController {
   }
 
   async processSecretariaAudioFileAsMeeting(filePath) {
+    // A diferencia de Alt+S (grabacion en vivo, que si necesita ir cortando en
+    // fragmentos de audio porque el archivo aun se esta escribiendo), aca el
+    // archivo ya existe completo: una sola transcripcion (gratis, local) y una
+    // sola pasada de diarizacion alcanzan. La minuta se genera desde el TEXTO
+    // completo en una sola llamada al LLM, y solo se parte en bloques si el
+    // transcript no entra en una request (ver buildSecretariaMinutaFromText).
     const session = this.createSecretariaMeetingSessionState();
-    signalMeetingStatus('INICIANDO', `procesando archivo subido como reunion en ${session.sessionDir}`, { filePath });
+    signalMeetingStatus('INICIANDO', `procesando archivo subido en ${session.sessionDir}`, { filePath });
     windowManager.showChatWindow();
 
     try {
       session.status = 'processing';
       this.writeSecretariaMeetingManifest(session);
-      signalMeetingStatus('PROCESANDO', 'segmentando el archivo subido...', { filePath });
+      signalMeetingStatus('PROCESANDO', 'transcribiendo archivo completo...', { filePath });
 
-      const segments = await this.runSecretariaAudioSegmentation(
-        filePath,
-        path.join(session.sessionDir, 'audio'),
-        { segmentSec: session.segmentSec, overlapSec: session.overlapSec }
-      );
+      const transcript = (await speechService.transcribeFile(filePath)).trim();
+      const transcriptPath = this.saveSecretariaTranscriptToFile(transcript, filePath);
 
-      for (const segmentData of segments) {
-        await this.enqueueSecretariaMeetingSegment(session, segmentData);
+      const speakersPath = path.join(session.sessionDir, 'speakers', '0001.json');
+      try {
+        await this.runSecretariaDiarization(filePath, speakersPath);
+      } catch (error) {
+        fs.writeFileSync(speakersPath, JSON.stringify({ error: error.message }, null, 2) + '\n', 'utf8');
+        logger.warn('Ctrl+5 diarizacion omitida', { error: error.message });
       }
+
+      session.segments = [{
+        index: 1,
+        audioPath: filePath,
+        transcriptPath,
+        speakersPath,
+        textLength: transcript.length,
+        final: true
+      }];
+      this.writeSecretariaMeetingManifest(session);
 
       session.status = 'finalizing';
       this.writeSecretariaMeetingManifest(session);
-      signalMeetingStatus('FINALIZANDO', 'generando transcript completo y minuta final...');
-      await this.finalizeSecretariaMeetingSession(session);
+      signalMeetingStatus('FINALIZANDO', 'generando minuta final...');
+      await this.finalizeSecretariaMeetingSessionFromTranscript(session, transcript, transcriptPath);
     } finally {
       this.secretariaMeetingSession = null;
     }
+  }
+
+  async finalizeSecretariaMeetingSessionFromTranscript(session, transcript, transcriptPath) {
+    const finalDir = path.join(session.sessionDir, 'final');
+    fs.mkdirSync(finalDir, { recursive: true });
+    const fullTranscriptPath = path.join(finalDir, 'transcript-full.txt');
+    fs.writeFileSync(fullTranscriptPath, `${transcript.trim()}\n`, 'utf8');
+
+    const minutesPath = path.join(finalDir, 'minuta.md');
+    try {
+      const llmResult = await this.buildSecretariaMinutaFromText(transcript, transcriptPath);
+      fs.writeFileSync(minutesPath, `${llmResult.response.trim()}\n`, 'utf8');
+      signalMeetingStatus('FINALIZADO', `minuta final lista: ${minutesPath}`);
+      windowManager.showLLMResponse(llmResult.response, {
+        skill: 'secretaria',
+        processingTime: llmResult.metadata?.processingTime || 0,
+        usedFallback: llmResult.metadata?.usedFallback || false
+      });
+    } catch (error) {
+      const fallback = [
+        '# Minuta no generada',
+        '',
+        `Error del LLM: ${error.message}`,
+        '',
+        `Transcripcion completa: ${fullTranscriptPath}`
+      ].join('\n');
+      fs.writeFileSync(minutesPath, `${fallback}\n`, 'utf8');
+      signalMeetingStatus('FINALIZADO CON ERROR', `transcripcion lista, pero fallo la minuta LLM: ${error.message}`);
+    }
+
+    session.finalizedAt = new Date().toISOString();
+    session.fullTranscriptPath = fullTranscriptPath;
+    session.minutesPath = minutesPath;
+    session.originalTranscriptPath = transcriptPath;
+    this.writeSecretariaMeetingManifest(session);
+  }
+
+  async buildSecretariaMinutaFromText(transcript, transcriptPath) {
+    const trimmed = String(transcript || '').trim();
+    if (!trimmed) {
+      return {
+        response: '# Minuta no generada\n\nNo se detecto texto en la transcripcion.',
+        metadata: {}
+      };
+    }
+
+    if (trimmed.length <= MEETING_FINAL_TRANSCRIPT_CHARS) {
+      return llmService.processTextWithSkill(this.buildSecretariaMinutaPrompt(trimmed), 'secretaria', [], null);
+    }
+
+    // Transcript demasiado largo para una sola llamada: se resume en cascada
+    // por bloques grandes de texto (no de audio), minimizando llamadas al LLM
+    // al minimo necesario segun el tamano real del transcript.
+    const chunks = this.splitTextIntoChunks(trimmed, MEETING_FINAL_TRANSCRIPT_CHARS);
+    logger.info('Ctrl+5: transcript excede el limite, resumiendo en cascada', {
+      transcriptPath,
+      transcriptLength: trimmed.length,
+      chunkCount: chunks.length,
+      chunkCharLimit: MEETING_FINAL_TRANSCRIPT_CHARS
+    });
+
+    let previousSummary = '';
+    const chunkSummaries = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const prompt = this.buildSecretariaChunkSummaryPrompt(chunks[i], i + 1, chunks.length, previousSummary);
+      const result = await llmService.processTextWithSkill(prompt, 'secretaria', [], null);
+      previousSummary = result.response.trim();
+      chunkSummaries.push(previousSummary);
+    }
+
+    const consolidationPrompt = this.buildSecretariaMinutaPrompt(null, chunkSummaries);
+    return llmService.processTextWithSkill(consolidationPrompt, 'secretaria', [], null);
+  }
+
+  splitTextIntoChunks(text, maxChars) {
+    const paragraphs = text.split(/\n{2,}/);
+    const chunks = [];
+    let current = '';
+
+    for (const paragraph of paragraphs) {
+      const candidate = current ? `${current}\n\n${paragraph}` : paragraph;
+      if (candidate.length > maxChars && current) {
+        chunks.push(current);
+        current = paragraph;
+      } else {
+        current = candidate;
+      }
+
+      while (current.length > maxChars) {
+        chunks.push(current.slice(0, maxChars));
+        current = current.slice(maxChars);
+      }
+    }
+
+    if (current) chunks.push(current);
+    return chunks;
+  }
+
+  buildSecretariaMinutaPrompt(transcriptText, chunkSummaries = null) {
+    const lines = [
+      'Genera una minuta ejecutiva en espanol a partir de esta transcripcion de reunion.',
+      '',
+      'Incluye estas secciones:',
+      '- Resumen ejecutivo',
+      '- Temas tratados',
+      '- Decisiones',
+      '- Tareas con responsable si se puede inferir',
+      '- Riesgos o dudas abiertas',
+      '- Proximos pasos',
+      '',
+      'No inventes datos que no esten en la transcripcion. Si no hay responsables claros, escribe "No especificado".',
+      ''
+    ];
+
+    if (chunkSummaries?.length) {
+      lines.push(
+        'La transcripcion original era muy larga y se reasumio en bloques secuenciales antes de esta consolidacion.',
+        'Usa estos resumenes de bloque, en orden cronologico, como tu unica fuente:',
+        '"""',
+        chunkSummaries.join('\n\n---\n\n'),
+        '"""'
+      );
+    } else {
+      lines.push('TRANSCRIPCION:', '"""', transcriptText, '"""');
+    }
+
+    return lines.join('\n');
+  }
+
+  buildSecretariaChunkSummaryPrompt(chunkText, index, total, previousSummary) {
+    const lines = [
+      `Este es el bloque ${index} de ${total} de una transcripcion larga de reunion, en orden cronologico.`,
+      'Resume este bloque en espanol: puntos tratados, decisiones, tareas/compromisos y dudas abiertas.',
+      'No inventes nombres, responsables ni decisiones que no esten explicitas en el texto.'
+    ];
+
+    if (previousSummary) {
+      lines.push(
+        '',
+        'Resumen acumulado de los bloques anteriores (para que mantengas continuidad y no repitas puntos):',
+        '"""',
+        previousSummary,
+        '"""'
+      );
+    }
+
+    lines.push(
+      '',
+      `TRANSCRIPCION DEL BLOQUE ${index}:`,
+      '"""',
+      chunkText,
+      '"""'
+    );
+
+    return lines.join('\n');
   }
 
   async handleTypeSymbolShortcut(symbol, label = 'shortcut') {

@@ -47,7 +47,8 @@ class ConfigManager {
           codingMaxOutputTokens: Number(process.env.GEMINI_CODING_MAX_OUTPUT_TOKENS || 16384),
           finalizationMaxOutputTokens: Number(process.env.GEMINI_FINALIZATION_MAX_OUTPUT_TOKENS || 16384),
           fallbackEnabled: true,
-          enableFallbackMethod: true
+          enableFallbackMethod: true,
+          quotaCooldownMs: Number(process.env.GEMINI_QUOTA_COOLDOWN_MS || 10 * 60 * 1000)
         },
         anthropic: {
           model: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest',

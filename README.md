@@ -10,7 +10,7 @@ Ctrl+3	Secretaria: arma el siguiente envío del chat para convertirlo a MP3 (Edg
 Ctrl+4	Secretaria: subir archivo de audio para transcribir
 Alt+R	Iniciar / detener grabación; en secretaria graba audio crudo pendiente de transcripción
 Alt+S	Secretaria: inicia / detiene una sesión de grabación larga (reunión) en segundo plano; al detenerla genera transcripción completa + minuta (resumen) en minutas/
-Ctrl+5	Secretaria: sube un archivo de audio existente y lo procesa con el mismo pipeline de Alt+S (segmentación, transcripción/diarización/resumen por fragmento, y minuta final) en vez de grabarlo en vivo
+Ctrl+5	Secretaria: sube un archivo de audio existente, lo transcribe completo en una sola pasada (como Ctrl+4, guardando en transcripciones/) y genera la minuta final a partir del texto, minimizando llamadas al LLM
 Ctrl+Shift+L	Liberar todo el buffer en cualquier modo (secretaria: buffer de dictado; resto: contexto + imágenes acumuladas, equivale a °°°). También cancela un pegado/copiado en curso
 Ctrl+Shift+B	Copiar selección con el mouse, sin teclazos (sigiloso): pulsa, selecciona, y al soltar el mouse copia al portapapeles. Funciona en todos los modos
 Ctrl+Shift+V	Pegar el portapapeles en el cursor, tecleado por "cubetazos" (simula escritura humana). Funciona en todos los modos; cancelable con Ctrl+Shift+L
@@ -166,6 +166,7 @@ Create `.env`:
 ```bash
 GEMINI_API_KEY=your_gemini_api_key
 GEMINI_MODEL=gemini-3.5-flash
+GEMINI_QUOTA_COOLDOWN_MS=600000
 ANTHROPIC_API_KEY=your_anthropic_api_key
 ANTHROPIC_FALLBACK_API_KEY=your_second_anthropic_api_key
 ANTHROPIC_MODEL=claude-3-5-sonnet-latest
@@ -185,7 +186,7 @@ VYSPER_STT_WARM_PREROLL_MS=1500
 | `Alt/Option + B` | Capture image region without OCR |
 | `Alt/Option + R` | Voice Recording Toggle |
 | `Alt/Option + S` | Meeting Recording Toggle (secretaria mode only) — starts/stops a long background recording and generates a final summary. See [Meeting Recording & Auto-Summary](#meeting-recording--auto-summary-secretaria-mode) |
-| `Ctrl/Cmd + 5` | Upload an existing audio file (secretaria mode only) and run it through the same segmentation + transcription/diarization/summary + final minuta pipeline as `Alt+S`, instead of recording live |
+| `Ctrl/Cmd + 5` | Upload an existing audio file (secretaria mode only): single-pass transcription + diarization, then generate the final minuta from the text, minimizing LLM calls |
 | `Ctrl/Cmd + Shift + Z` | Show/Hide All Windows |
 | `Ctrl/Cmd + Shift + I` / `Alt + A` | Toggle Interactive Mode |
 
@@ -292,7 +293,13 @@ VYSPER_PYANNOTE_DEVICE=auto           # cpu / cuda / auto
 VYSPER_PYANNOTE_MODEL=pyannote/speaker-diarization-community-1
 ```
 
-**Already have a recording?** `Ctrl/Cmd + 5` (secretaria mode only) opens the same file picker as `Ctrl+4`, but instead of a single one-shot transcription it runs the uploaded file through the exact same pipeline as `Alt+S`: the file gets split into `VYSPER_MEETING_SEGMENT_SEC`-long chunks with `VYSPER_MEETING_OVERLAP_SEC` overlap, each chunk is transcribed/diarized/summarized as it's produced, and once all chunks are processed you get the same `final/transcript-full.txt`, `final/minuta.md`, and `session.json` under a new `minutas/reunion-<timestamp>/` folder — no live recording involved. It accepts the same formats as `Ctrl+4` (wav, mp3, m4a, aac, flac, ogg, opus, webm, mp4, mpeg). The same "OCUPADO" busy-guard applies: if a meeting session (live or uploaded) is already running, pressing `Ctrl+5` again just reports it's busy instead of starting a second one.
+**Already have a recording?** `Ctrl/Cmd + 5` (secretaria mode only) opens the same file picker as `Ctrl+4` and accepts the same formats (wav, mp3, m4a, aac, flac, ogg, opus, webm, mp4, mpeg), but instead of leaving you to generate the summary by hand, it produces the same `final/transcript-full.txt`, `final/minuta.md`, and `session.json` as `Alt+S`, under a new `minutas/reunion-<timestamp>/` folder — with a cheaper pipeline built specifically for a file that already exists in full (unlike `Alt+S`, which must process incrementally because it's still recording):
+- The whole file is transcribed in **one local Whisper pass** (same as `Ctrl+4` — no LLM cost at all) and also saved to `transcripciones/`, exactly like `Ctrl+4` does.
+- Speaker diarization (if `VYSPER_PYANNOTE_TOKEN` is configured) also runs **once** on the full file instead of per-chunk, which is both cheaper and more accurate since it has the whole conversation for context.
+- The minuta is generated from the **full transcript in a single LLM call** whenever it fits under `VYSPER_MEETING_FINAL_TRANSCRIPT_CHARS` (the common case) — matching what you'd get pasting the whole transcript into Gemini yourself. Only if the transcript is longer than that limit does it fall back to summarizing a handful of large text blocks in sequence (each one aware of the previous block's summary) and consolidating them into one minuta — still far fewer LLM calls than one-per-5-minutes.
+- If Gemini's quota/billing limit is hit, the app now remembers that for a cooldown period (`llm.gemini.quotaCooldownMs`, default 10 min) and skips straight to the Anthropic fallback on subsequent calls instead of re-trying (and re-failing) Gemini every time.
+
+The same "OCUPADO" busy-guard applies: if a meeting session (live via `Alt+S`, or from a previous `Ctrl+5` upload) is already running, pressing `Ctrl+5` again just reports it's busy instead of starting a second one.
 
 ## 🤝 Contributing
 

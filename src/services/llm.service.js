@@ -12,7 +12,8 @@ class LLMService {
     this.isInitialized = false;
     this.requestCount = 0;
     this.errorCount = 0;
-    
+    this.primaryQuotaExhaustedUntil = 0;
+
     this.initializeClient();
   }
 
@@ -623,9 +624,19 @@ class LLMService {
       throw initError;
     }
 
+    if (this.isPrimaryQuotaExhausted() && this.hasSecondaryTextModel()) {
+      return this.processTextWithSecondaryTextFallback(
+        text,
+        activeSkill,
+        sessionMemory,
+        programmingLanguage,
+        new Error('Gemini quota cooldown active; skipping primary attempt.')
+      );
+    }
+
     const startTime = Date.now();
     this.requestCount++;
-    
+
     try {
       logger.info('Processing text with LLM', {
         activeSkill,
@@ -714,13 +725,14 @@ class LLMService {
       });
 
       if (this.shouldFallbackToSecondaryTextModel(error)) {
+        this.markPrimaryQuotaExhausted(error);
         return this.processTextWithSecondaryTextFallback(text, activeSkill, sessionMemory, programmingLanguage, error, startTime);
       }
 
       if (config.get('llm.gemini.fallbackEnabled')) {
         return this.generateFallbackResponse(text, activeSkill);
       }
-      
+
       throw error;
     }
   }
@@ -1162,9 +1174,21 @@ class LLMService {
       throw initError;
     }
 
+    if (this.isPrimaryQuotaExhausted() && this.hasSecondaryTextModel()) {
+      return this.processTextWithSecondaryTextFallback(
+        text,
+        activeSkill,
+        sessionMemory,
+        programmingLanguage,
+        new Error('Gemini quota cooldown active; skipping primary attempt.'),
+        Date.now(),
+        { isTranscriptionResponse: true }
+      );
+    }
+
     const startTime = Date.now();
     this.requestCount++;
-    
+
     try {
       logger.info('Processing transcription with intelligent response', {
         activeSkill,
@@ -1256,6 +1280,7 @@ class LLMService {
       });
 
       if (this.shouldFallbackToSecondaryTextModel(error)) {
+        this.markPrimaryQuotaExhausted(error);
         return this.processTextWithSecondaryTextFallback(
           text,
           activeSkill,
@@ -1654,6 +1679,21 @@ Remember: the transcript block is the source of truth for the user's current req
       message.includes('econnreset') ||
       message.includes('socket hang up') ||
       message.includes('empty response');
+  }
+
+  markPrimaryQuotaExhausted(error) {
+    if (!this.isPrimaryQuotaOrBillingError(error)) return;
+
+    const cooldownMs = config.get('llm.gemini.quotaCooldownMs') || 10 * 60 * 1000;
+    this.primaryQuotaExhaustedUntil = Date.now() + cooldownMs;
+    logger.warn('Gemini marked as quota-exhausted; skipping it for subsequent calls during cooldown', {
+      cooldownMs,
+      resumesAt: new Date(this.primaryQuotaExhaustedUntil).toISOString()
+    });
+  }
+
+  isPrimaryQuotaExhausted() {
+    return this.primaryQuotaExhaustedUntil > Date.now();
   }
 
   isPrimaryQuotaOrBillingError(error) {
