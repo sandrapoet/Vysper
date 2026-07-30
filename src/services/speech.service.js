@@ -272,7 +272,10 @@ class SpeechService extends EventEmitter {
 
       case 'transcription':
         if (msg.source === 'file' && msg.request_id) {
-          this._resolveFileTranscription(msg.request_id, null, msg.text || '');
+          this._resolveFileTranscription(msg.request_id, null, {
+            text: msg.text || '',
+            segments: Array.isArray(msg.segments) ? msg.segments : []
+          });
           this._scheduleIdleExit();
         } else {
           this.emit('transcription', msg.text || '');
@@ -304,7 +307,7 @@ class SpeechService extends EventEmitter {
     this._proc.stdin.write(JSON.stringify(obj) + '\n');
   }
 
-  _resolveFileTranscription(requestId, error, text = '') {
+  _resolveFileTranscription(requestId, error, result = { text: '', segments: [] }) {
     const pending = this._pendingFileTranscriptions.get(requestId);
     if (!pending) return;
 
@@ -316,7 +319,7 @@ class SpeechService extends EventEmitter {
       return;
     }
 
-    pending.resolve(text);
+    pending.resolve(result);
   }
 
   // ── public API (same interface as before) ─────────────────────────────────
@@ -420,7 +423,7 @@ class SpeechService extends EventEmitter {
     });
   }
 
-  transcribeFile(filePath) {
+  _transcribeFileRaw(filePath) {
     if (!this.isInitialized) {
       return Promise.reject(new Error('Speech service not initialized. Run stt/setup.bat first.'));
     }
@@ -442,6 +445,16 @@ class SpeechService extends EventEmitter {
       this._pendingFileTranscriptions.set(requestId, { resolve, reject, timeout });
       this._send({ cmd: 'transcribe_file', path: filePath, request_id: requestId });
     });
+  }
+
+  transcribeFile(filePath) {
+    return this._transcribeFileRaw(filePath).then((result) => result.text);
+  }
+
+  // Like transcribeFile, but also resolves per-segment {start, end, text} timestamps
+  // so callers can line up the transcript with a separate speaker-diarization pass.
+  transcribeFileWithSegments(filePath) {
+    return this._transcribeFileRaw(filePath);
   }
 
   getStatus() {

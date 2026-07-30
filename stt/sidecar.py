@@ -19,6 +19,8 @@ Events  (Python → Node, stdout):
   {"type": "recording_stopped"}
   {"type": "interim",        "text": "..."}   — partial, every ~2 s while speaking
   {"type": "transcription",  "text": "..."}   — final, after silence detected
+  {"type": "transcription", "source": "file", "text": "...", "segments": [{"start", "end", "text"}, ...]}
+                                               — reply to "transcribe_file", with per-segment timestamps
   {"type": "error",          "message": "..."}
 """
 
@@ -268,7 +270,9 @@ def _transcribe(audio_np: np.ndarray, fast: bool = False) -> str:
     )
     return " ".join(seg.text.strip() for seg in segments).strip()
 
-def _transcribe_file(path: str) -> str:
+def _transcribe_file_with_segments(path: str) -> dict:
+    """Like _transcribe_file, but also returns per-segment start/end timestamps
+    so the caller can line up transcript text with speaker-diarization segments."""
     segments, _ = _whisper.transcribe(
         path,
         language=LANGUAGE,
@@ -277,7 +281,19 @@ def _transcribe_file(path: str) -> str:
         vad_filter=True,
         condition_on_previous_text=True,
     )
-    return " ".join(seg.text.strip() for seg in segments).strip()
+    seg_list = []
+    text_parts = []
+    for seg in segments:
+        text = seg.text.strip()
+        if not text:
+            continue
+        seg_list.append({
+            "start": round(float(seg.start), 3),
+            "end": round(float(seg.end), 3),
+            "text": text,
+        })
+        text_parts.append(text)
+    return {"text": " ".join(text_parts).strip(), "segments": seg_list}
 
 # ── VAD processing loop ────────────────────────────────────────────────────
 
@@ -636,12 +652,13 @@ def _main() -> None:
 
             try:
                 log(f"Transcribing audio file: {audio_path}")
-                text = _transcribe_file(audio_path)
+                result = _transcribe_file_with_segments(audio_path)
                 emit({
                     "type": "transcription",
                     "source": "file",
                     "request_id": request_id,
-                    "text": text,
+                    "text": result["text"],
+                    "segments": result["segments"],
                 })
             except Exception as exc:
                 emit({

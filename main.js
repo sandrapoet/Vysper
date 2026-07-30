@@ -1626,7 +1626,10 @@ class ApplicationController {
       finalizedAt: session.finalizedAt,
       segmentSec: session.segmentSec,
       overlapSec: session.overlapSec,
-      segments: session.segments
+      segments: session.segments,
+      fullTranscriptPath: session.fullTranscriptPath,
+      speakerTranscriptPath: session.speakerTranscriptPath,
+      minutesPath: session.minutesPath
     };
     fs.writeFileSync(path.join(session.sessionDir, 'session.json'), JSON.stringify(manifest, null, 2) + '\n', 'utf8');
   }
@@ -1648,6 +1651,32 @@ class ApplicationController {
     fs.mkdirSync(finalDir, { recursive: true });
     const fullTranscriptPath = path.join(finalDir, 'transcript-full.txt');
     fs.writeFileSync(fullTranscriptPath, `${fullTranscript.trim()}\n`, 'utf8');
+
+    // Diarizacion por fragmento (arriba) no es consistente entre fragmentos:
+    // SPEAKER_00 en el fragmento 1 no necesariamente es la misma persona que
+    // SPEAKER_00 en el fragmento 2, porque cada fragmento se diariza aparte.
+    // Para el transcript con hablantes, se concatena el audio de toda la
+    // reunion y se transcribe/diariza UNA sola vez sobre el timeline completo.
+    let speakerTranscriptPath = null;
+    const audioSegments = processedSegments.filter((segment) => segment.audioPath && fs.existsSync(segment.audioPath));
+    if (audioSegments.length) {
+      try {
+        const fullAudioPath = path.join(finalDir, 'full-audio.wav');
+        this.concatenateWavFiles(audioSegments.map((segment) => segment.audioPath), fullAudioPath);
+
+        const { segments: transcriptSegments } = await speechService.transcribeFileWithSegments(fullAudioPath);
+        const speakersFullPath = path.join(finalDir, 'speakers-full.json');
+        await this.runSecretariaDiarization(fullAudioPath, speakersFullPath);
+
+        const speakerTranscript = await this.buildSecretariaSpeakerTranscript(transcriptSegments, speakersFullPath);
+        if (speakerTranscript && speakerTranscript.trim()) {
+          speakerTranscriptPath = path.join(finalDir, 'transcript-hablantes.txt');
+          fs.writeFileSync(speakerTranscriptPath, `${speakerTranscript.trim()}\n`, 'utf8');
+        }
+      } catch (error) {
+        logger.warn('No se pudo generar el transcript con hablantes de la reunion', { error: error.message });
+      }
+    }
 
     const summaries = processedSegments
       .map((segment) => {
@@ -1712,6 +1741,7 @@ class ApplicationController {
 
     session.finalizedAt = new Date().toISOString();
     session.fullTranscriptPath = fullTranscriptPath;
+    session.speakerTranscriptPath = speakerTranscriptPath;
     session.minutesPath = minutesPath;
     this.writeSecretariaMeetingManifest(session);
   }
@@ -1912,12 +1942,15 @@ class ApplicationController {
       this.writeSecretariaMeetingManifest(session);
       signalMeetingStatus('PROCESANDO', 'transcribiendo archivo completo...', { filePath });
 
-      const transcript = (await speechService.transcribeFile(filePath)).trim();
+      const { text: rawTranscript, segments: transcriptSegments } = await speechService.transcribeFileWithSegments(filePath);
+      const transcript = rawTranscript.trim();
       const transcriptPath = this.saveSecretariaTranscriptToFile(transcript, filePath);
 
       const speakersPath = path.join(session.sessionDir, 'speakers', '0001.json');
+      let diarizationOk = false;
       try {
         await this.runSecretariaDiarization(filePath, speakersPath);
+        diarizationOk = true;
       } catch (error) {
         fs.writeFileSync(speakersPath, JSON.stringify({ error: error.message }, null, 2) + '\n', 'utf8');
         logger.warn('Ctrl+5 diarizacion omitida', { error: error.message });
@@ -1936,17 +1969,33 @@ class ApplicationController {
       session.status = 'finalizing';
       this.writeSecretariaMeetingManifest(session);
       signalMeetingStatus('FINALIZANDO', 'generando minuta final...');
-      await this.finalizeSecretariaMeetingSessionFromTranscript(session, transcript, transcriptPath);
+
+      let speakerTranscript = null;
+      if (diarizationOk) {
+        try {
+          speakerTranscript = await this.buildSecretariaSpeakerTranscript(transcriptSegments, speakersPath);
+        } catch (error) {
+          logger.warn('No se pudo construir el transcript con hablantes', { error: error.message });
+        }
+      }
+
+      await this.finalizeSecretariaMeetingSessionFromTranscript(session, transcript, transcriptPath, speakerTranscript);
     } finally {
       this.secretariaMeetingSession = null;
     }
   }
 
-  async finalizeSecretariaMeetingSessionFromTranscript(session, transcript, transcriptPath) {
+  async finalizeSecretariaMeetingSessionFromTranscript(session, transcript, transcriptPath, speakerTranscript = null) {
     const finalDir = path.join(session.sessionDir, 'final');
     fs.mkdirSync(finalDir, { recursive: true });
     const fullTranscriptPath = path.join(finalDir, 'transcript-full.txt');
     fs.writeFileSync(fullTranscriptPath, `${transcript.trim()}\n`, 'utf8');
+
+    let speakerTranscriptPath = null;
+    if (speakerTranscript && speakerTranscript.trim()) {
+      speakerTranscriptPath = path.join(finalDir, 'transcript-hablantes.txt');
+      fs.writeFileSync(speakerTranscriptPath, `${speakerTranscript.trim()}\n`, 'utf8');
+    }
 
     const minutesPath = path.join(finalDir, 'minuta.md');
     try {
@@ -1972,6 +2021,7 @@ class ApplicationController {
 
     session.finalizedAt = new Date().toISOString();
     session.fullTranscriptPath = fullTranscriptPath;
+    session.speakerTranscriptPath = speakerTranscriptPath;
     session.minutesPath = minutesPath;
     session.originalTranscriptPath = transcriptPath;
     this.writeSecretariaMeetingManifest(session);
@@ -2095,6 +2145,165 @@ class ApplicationController {
     );
 
     return lines.join('\n');
+  }
+
+  // ── Transcript con hablantes (diarizacion + transcripcion con timestamps) ──
+
+  mergeTranscriptSegmentsWithSpeakers(transcriptSegments, diarizationSegments) {
+    if (!Array.isArray(transcriptSegments) || transcriptSegments.length === 0) return [];
+    const speakerSegments = Array.isArray(diarizationSegments) ? diarizationSegments : [];
+    if (!speakerSegments.length) return [];
+
+    const findSpeaker = (start, end) => {
+      let best = null;
+      let bestOverlap = 0;
+      for (const seg of speakerSegments) {
+        const overlap = Math.min(end, seg.end) - Math.max(start, seg.start);
+        if (overlap > bestOverlap) {
+          bestOverlap = overlap;
+          best = seg.speaker;
+        }
+      }
+      if (best) return best;
+
+      const mid = (start + end) / 2;
+      let nearest = null;
+      let nearestDist = Infinity;
+      for (const seg of speakerSegments) {
+        const dist = Math.abs((seg.start + seg.end) / 2 - mid);
+        if (dist < nearestDist) {
+          nearestDist = dist;
+          nearest = seg.speaker;
+        }
+      }
+      return nearest;
+    };
+
+    const lines = [];
+    let currentSpeaker = null;
+    let currentText = [];
+
+    for (const segment of transcriptSegments) {
+      const speaker = findSpeaker(segment.start, segment.end) || 'HABLANTE_DESCONOCIDO';
+      if (speaker !== currentSpeaker) {
+        if (currentSpeaker !== null && currentText.length) {
+          lines.push({ speaker: currentSpeaker, text: currentText.join(' ').trim() });
+        }
+        currentSpeaker = speaker;
+        currentText = [segment.text];
+      } else {
+        currentText.push(segment.text);
+      }
+    }
+    if (currentSpeaker !== null && currentText.length) {
+      lines.push({ speaker: currentSpeaker, text: currentText.join(' ').trim() });
+    }
+
+    return lines;
+  }
+
+  formatSecretariaSpeakerLines(lines) {
+    return lines.map((line) => `${line.speaker}: ${line.text}`).join('\n\n');
+  }
+
+  async resolveSecretariaSpeakerNames(speakerLabeledText) {
+    const speakerLabels = [...new Set((speakerLabeledText.match(/^\S+(?=:)/gm) || []))];
+    if (!speakerLabels.length) return {};
+
+    const prompt = [
+      'Este es un transcript de una reunion con hablantes etiquetados genericamente (por ejemplo SPEAKER_00, SPEAKER_01).',
+      'Identifica el nombre real de cada etiqueta SOLO si se menciona con claridad en el dialogo (alguien se presenta, lo llaman por nombre, firma, etc).',
+      'Devuelve UNICAMENTE un JSON con esta forma exacta, sin texto adicional ni markdown:',
+      '{"ETIQUETA": "Nombre real" }  (usa null como valor si no hay evidencia clara; no inventes nombres)',
+      '',
+      'ETIQUETAS A RESOLVER:',
+      speakerLabels.join(', '),
+      '',
+      'TRANSCRIPCION:',
+      '"""',
+      speakerLabeledText.length > MEETING_FINAL_TRANSCRIPT_CHARS
+        ? speakerLabeledText.slice(0, MEETING_FINAL_TRANSCRIPT_CHARS)
+        : speakerLabeledText,
+      '"""'
+    ].join('\n');
+
+    try {
+      const result = await llmService.processTextWithSkill(prompt, 'secretaria', [], null);
+      const jsonMatch = result.response.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return {};
+
+      const parsed = JSON.parse(jsonMatch[0]);
+      const resolved = {};
+      for (const [label, name] of Object.entries(parsed)) {
+        if (typeof name === 'string' && name.trim() && name.trim().toLowerCase() !== 'null') {
+          resolved[label] = name.trim();
+        }
+      }
+      return resolved;
+    } catch (error) {
+      logger.warn('No se pudieron resolver nombres de hablantes', { error: error.message });
+      return {};
+    }
+  }
+
+  applySecretariaSpeakerNames(speakerLabeledText, nameMap) {
+    if (!nameMap || Object.keys(nameMap).length === 0) return speakerLabeledText;
+
+    let result = speakerLabeledText;
+    for (const [label, name] of Object.entries(nameMap)) {
+      const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      result = result.replace(new RegExp(`^${escaped}:`, 'gm'), `${name}:`);
+    }
+    return result;
+  }
+
+  async buildSecretariaSpeakerTranscript(transcriptSegments, diarizationResultPath) {
+    let diarizationSegments = [];
+    try {
+      const raw = JSON.parse(fs.readFileSync(diarizationResultPath, 'utf8'));
+      diarizationSegments = Array.isArray(raw.segments) ? raw.segments : [];
+    } catch (error) {
+      logger.warn('No se pudo leer la diarizacion para el transcript con hablantes', {
+        error: error.message,
+        diarizationResultPath
+      });
+      return null;
+    }
+
+    const lines = this.mergeTranscriptSegmentsWithSpeakers(transcriptSegments, diarizationSegments);
+    if (!lines.length) return null;
+
+    const labeledText = this.formatSecretariaSpeakerLines(lines);
+    const nameMap = await this.resolveSecretariaSpeakerNames(labeledText);
+    return this.applySecretariaSpeakerNames(labeledText, nameMap);
+  }
+
+  // Concatena WAV PCM16 mono generados por nuestro propio pipeline (mismo
+  // formato: header canonico de 44 bytes de wave.open). No apto para archivos
+  // subidos por el usuario, que pueden tener headers/formatos arbitrarios.
+  concatenateWavFiles(paths, outputPath) {
+    const RATE = 16000;
+    const WAV_HEADER_BYTES = 44;
+
+    const dataBuffer = Buffer.concat(paths.map((filePath) => fs.readFileSync(filePath).subarray(WAV_HEADER_BYTES)));
+
+    const header = Buffer.alloc(WAV_HEADER_BYTES);
+    header.write('RIFF', 0, 'ascii');
+    header.writeUInt32LE(36 + dataBuffer.length, 4);
+    header.write('WAVE', 8, 'ascii');
+    header.write('fmt ', 12, 'ascii');
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20); // PCM
+    header.writeUInt16LE(1, 22); // mono
+    header.writeUInt32LE(RATE, 24);
+    header.writeUInt32LE(RATE * 2, 28); // byte rate (16-bit mono)
+    header.writeUInt16LE(2, 32); // block align
+    header.writeUInt16LE(16, 34); // bits per sample
+    header.write('data', 36, 'ascii');
+    header.writeUInt32LE(dataBuffer.length, 40);
+
+    fs.writeFileSync(outputPath, Buffer.concat([header, dataBuffer]));
+    return outputPath;
   }
 
   async handleTypeSymbolShortcut(symbol, label = 'shortcut') {
