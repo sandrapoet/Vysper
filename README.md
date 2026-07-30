@@ -9,6 +9,8 @@ Ctrl+|	Fallback de consolidación ||| (programming/dsa/labelling)
 Ctrl+3	Secretaria: arma el siguiente envío del chat para convertirlo a MP3 (Edge por defecto; usa ¬|1 para Piper y |1.5 para el ritmo)
 Ctrl+4	Secretaria: subir archivo de audio para transcribir
 Alt+R	Iniciar / detener grabación; en secretaria graba audio crudo pendiente de transcripción
+Alt+S	Secretaria: inicia / detiene una sesión de grabación larga (reunión) en segundo plano; al detenerla genera transcripción completa + minuta (resumen) en minutas/
+Ctrl+5	Secretaria: sube un archivo de audio existente y lo procesa con el mismo pipeline de Alt+S (segmentación, transcripción/diarización/resumen por fragmento, y minuta final) en vez de grabarlo en vivo
 Ctrl+Shift+L	Liberar todo el buffer en cualquier modo (secretaria: buffer de dictado; resto: contexto + imágenes acumuladas, equivale a °°°). También cancela un pegado/copiado en curso
 Ctrl+Shift+B	Copiar selección con el mouse, sin teclazos (sigiloso): pulsa, selecciona, y al soltar el mouse copia al portapapeles. Funciona en todos los modos
 Ctrl+Shift+V	Pegar el portapapeles en el cursor, tecleado por "cubetazos" (simula escritura humana). Funciona en todos los modos; cancelable con Ctrl+Shift+L
@@ -182,6 +184,8 @@ VYSPER_STT_WARM_PREROLL_MS=1500
 | `Ctrl/Cmd + Shift + S` | Select Screen Region + OCR Analysis |
 | `Alt/Option + B` | Capture image region without OCR |
 | `Alt/Option + R` | Voice Recording Toggle |
+| `Alt/Option + S` | Meeting Recording Toggle (secretaria mode only) — starts/stops a long background recording and generates a final summary. See [Meeting Recording & Auto-Summary](#meeting-recording--auto-summary-secretaria-mode) |
+| `Ctrl/Cmd + 5` | Upload an existing audio file (secretaria mode only) and run it through the same segmentation + transcription/diarization/summary + final minuta pipeline as `Alt+S`, instead of recording live |
 | `Ctrl/Cmd + Shift + Z` | Show/Hide All Windows |
 | `Ctrl/Cmd + Shift + I` / `Alt + A` | Toggle Interactive Mode |
 
@@ -258,6 +262,37 @@ VYSPER_STT_WARM_PREROLL_MS=1500
 
 ### Session Memory
 The app remembers your interview context across multiple questions:
+
+### Meeting Recording & Auto-Summary (`secretaria` mode)
+Long-form recording with automatic transcription and a final summary ("minuta"), independent from the normal `Alt+R` voice-command flow. Useful for recording a full meeting/call and getting a written summary afterward instead of a live AI answer per question.
+
+**1. Switch to the `secretaria` skill first.** Cycle skills with `Ctrl/Cmd + Up/Down` while Interactive Mode is on, or pick it from Settings. `Alt+S` only works in `secretaria` mode — in any other skill it's ignored (you'll see an "IGNORADO" notice).
+
+**2. Press `Alt+S` to start.** This creates `minutas/reunion-<YYYY-MM-DD-HH-MM-SS>/` (with subfolders `audio/`, `transcripts/`, `speakers/`, `summaries/`, `final/`) and starts recording from the microphone in the background.
+- Recording keeps going even if you switch to another skill or use `Alt+R` for a normal voice command at the same time — the microphone stream is shared, so the meeting capture is never interrupted by anything else you do.
+- Every `VYSPER_MEETING_SEGMENT_SEC` seconds (default `300` = 5 min, with `VYSPER_MEETING_OVERLAP_SEC` = `3`s of overlap for continuity) a segment closes and is saved as `audio/0001.wav`, `audio/0002.wav`, etc. Each finished segment is automatically transcribed (`transcripts/000N.txt`), diarized if configured (`speakers/000N.json`), and summarized (`summaries/000N.md`) *while the meeting keeps recording* — so you get partial progress before you even stop.
+- Speaker diarization ("who said what") is optional and best-effort: set `VYSPER_PYANNOTE_TOKEN` (a Hugging Face token with access to `pyannote/speaker-diarization-community-1`) to enable it. If it's missing, or diarization fails for a segment, transcription and summaries still work — you just don't get speaker labels for that segment.
+- Status updates are broadcast to the app windows as it progresses (e.g. "GRABANDO", "FRAGMENTO N: guardado; transcribiendo...").
+
+**3. Press `Alt+S` again to stop and generate the summary.** This closes the last segment, waits for any pending transcription/diarization/segment-summary jobs to finish, then writes:
+- `final/transcript-full.txt` — the full meeting transcript (all segments concatenated).
+- `final/minuta.md` — the AI-generated summary (Resumen ejecutivo, Temas tratados, Decisiones, Tareas, Riesgos, Próximos pasos). If the LLM call fails, this falls back to pointing at the raw transcript instead of losing the session.
+- `session.json` — a manifest with timestamps and status history for the session.
+
+Consolidation time depends on meeting length and segment count (a few seconds to a couple of minutes) — the status moves through "PROCESANDO" → "FINALIZADO". While it's mid-stop (status `stopping`/`processing`/`finalizing`), pressing `Alt+S` again does nothing but report "OCUPADO" — wait for "FINALIZADO" instead of pressing repeatedly.
+
+**Related environment variables** (add to `.env`, see [Environment File](#environment-file) above):
+```bash
+VYSPER_MEETING_SEGMENT_SEC=300        # segment length in seconds
+VYSPER_MEETING_OVERLAP_SEC=3          # overlap between segments, for continuity
+VYSPER_MEETING_SEGMENT_SUMMARY=1      # set to 0 to skip per-segment LLM summaries (still transcribes)
+VYSPER_MEETING_FINAL_TRANSCRIPT_CHARS=60000  # above this length, the final prompt references the file instead of inlining it
+VYSPER_PYANNOTE_TOKEN=hf_...          # Hugging Face token to enable speaker diarization (optional)
+VYSPER_PYANNOTE_DEVICE=auto           # cpu / cuda / auto
+VYSPER_PYANNOTE_MODEL=pyannote/speaker-diarization-community-1
+```
+
+**Already have a recording?** `Ctrl/Cmd + 5` (secretaria mode only) opens the same file picker as `Ctrl+4`, but instead of a single one-shot transcription it runs the uploaded file through the exact same pipeline as `Alt+S`: the file gets split into `VYSPER_MEETING_SEGMENT_SEC`-long chunks with `VYSPER_MEETING_OVERLAP_SEC` overlap, each chunk is transcribed/diarized/summarized as it's produced, and once all chunks are processed you get the same `final/transcript-full.txt`, `final/minuta.md`, and `session.json` under a new `minutas/reunion-<timestamp>/` folder — no live recording involved. It accepts the same formats as `Ctrl+4` (wav, mp3, m4a, aac, flac, ogg, opus, webm, mp4, mpeg). The same "OCUPADO" busy-guard applies: if a meeting session (live or uploaded) is already running, pressing `Ctrl+5` again just reports it's busy instead of starting a second one.
 
 ## 🤝 Contributing
 

@@ -526,9 +526,9 @@ class LLMService {
     return 'No encontré evidencia de perfil en el RAG para esa pregunta, así que no debo afirmar roles, empresas, fechas, proyectos o métricas específicas. Una respuesta genérica segura sería: "He trabajado con flujos de desarrollo asistidos por IA, pero necesito los detalles exactos del proyecto para dar un ejemplo STAR fundamentado."';
   }
 
-  async enrichGeminiRequestWithBehavioralRag(geminiRequest, userQuestion, activeSkill) {
+  async getBehavioralRagContext(activeSkill, userQuestion) {
     if (!this.shouldUseRagFirst(activeSkill, userQuestion)) {
-      return { geminiRequest, ragUsed: false, ragEndpoint: null, ragContextLength: 0 };
+      return { applicable: false, ragContext: '', ragUsed: false, ragEndpoint: null, ragContextLength: 0 };
     }
 
     const ragResult = await this.queryBehavioralRag(userQuestion);
@@ -543,6 +543,27 @@ class LLMService {
       ragContext = `${derivedCompensationContext}\n\n${ragContext}`;
     }
 
+    if (!ragContext) {
+      logger.warn('Behavioral RAG returned no usable context; profile-specific claims are disabled', {
+        endpoint: ragResult.endpoint
+      });
+    } else {
+      logger.info('Behavioral RAG context retrieved', {
+        endpoint: ragResult.endpoint,
+        contextLength: ragContext.length
+      });
+    }
+
+    return {
+      applicable: true,
+      ragContext,
+      ragUsed: !!ragContext,
+      ragEndpoint: ragResult.endpoint,
+      ragContextLength: ragContext.length
+    };
+  }
+
+  buildBehavioralRagInstructionBlock(ragContext, userQuestion) {
     const compensationRules = this.isCompensationQuestion(userQuestion)
       ? `\n\n# Mandatory Compensation Grounding Rules\nFor salary, benefits, or working-condition questions:\n- Use ONLY current compensation target evidence from Retrieved Behavioral RAG Context, especially category: compensation_target and time_scope: current.\n- Ignore compensation_history for setting expectations unless the user explicitly asks for history.\n- Confirm currency, gross/net, period, modality, and location when available.\n- If the retrieved target is monthly and the interviewer asks for desired annual salary, annualize by multiplying the monthly gross range by 12. State that conversion clearly.\n- Use ranges when range_min and range_max are available. Do not collapse a range into a single fixed number unless the user explicitly asks.\n- Do NOT infer salary expectations from resume HTML, role seniority, market averages, or generic salary data.`
       : '';
@@ -553,7 +574,16 @@ class LLMService {
       ? `\n\n# Retrieved Behavioral RAG Context\nUse this retrieved context first when crafting the behavioral interview answer. Prefer these facts over generic examples. Do not invent facts beyond the transcript and retrieved context.\n\n${ragContext}`
       : `\n\n# Retrieved Behavioral RAG Context\nNo usable profile context was retrieved from RAG for this question. Still answer in first person using a neutral, adaptable STAR story based on the transcript theme. Avoid exact personal claims not present in the transcript.`;
 
-    const fullRagInstruction = `${profileGroundingRules}${ragInstruction}`;
+    return `${profileGroundingRules}${ragInstruction}`;
+  }
+
+  async enrichGeminiRequestWithBehavioralRag(geminiRequest, userQuestion, activeSkill) {
+    const ragData = await this.getBehavioralRagContext(activeSkill, userQuestion);
+    if (!ragData.applicable) {
+      return { geminiRequest, ragUsed: false, ragEndpoint: null, ragContextLength: 0 };
+    }
+
+    const fullRagInstruction = this.buildBehavioralRagInstructionBlock(ragData.ragContext, userQuestion);
 
     if (geminiRequest.systemInstruction?.parts?.[0]?.text) {
       geminiRequest.systemInstruction.parts[0].text = `${geminiRequest.systemInstruction.parts[0].text}${fullRagInstruction}`;
@@ -563,23 +593,18 @@ class LLMService {
       };
     }
 
-    if (!ragContext) {
-      logger.warn('Behavioral RAG returned no usable context; profile-specific claims are disabled', {
-        endpoint: ragResult.endpoint
+    if (ragData.ragUsed) {
+      logger.info('Behavioral RAG context attached to Gemini request', {
+        endpoint: ragData.ragEndpoint,
+        contextLength: ragData.ragContextLength
       });
-      return { geminiRequest, ragUsed: false, ragEndpoint: ragResult.endpoint, ragContextLength: 0 };
     }
-
-    logger.info('Behavioral RAG context attached to Gemini request', {
-      endpoint: ragResult.endpoint,
-      contextLength: ragContext.length
-    });
 
     return {
       geminiRequest,
-      ragUsed: true,
-      ragEndpoint: ragResult.endpoint,
-      ragContextLength: ragContext.length
+      ragUsed: ragData.ragUsed,
+      ragEndpoint: ragData.ragEndpoint,
+      ragContextLength: ragData.ragContextLength
     };
   }
 
@@ -719,6 +744,18 @@ class LLMService {
     const apiKeys = this.getSecondaryTextModelApiKeys();
     let lastAccountError = null;
 
+    const ragData = await this.getBehavioralRagContext(activeSkill, text);
+    const ragInstructionBlock = ragData.applicable
+      ? this.buildBehavioralRagInstructionBlock(ragData.ragContext, text)
+      : '';
+    if (ragData.ragUsed) {
+      logger.info('Behavioral RAG context attached to secondary (Anthropic) request', {
+        endpoint: ragData.ragEndpoint,
+        contextLength: ragData.ragContextLength
+      });
+    }
+    const requestOptions = { ...options, ragInstructionBlock };
+
     for (let accountIndex = 0; accountIndex < apiKeys.length; accountIndex++) {
       const accountLabel = accountIndex === 0 ? 'primary_anthropic' : 'fallback_anthropic';
       logger.info('Processing text with secondary model', {
@@ -735,13 +772,13 @@ class LLMService {
       });
 
       try {
-        const userMessage = this.buildSecondaryTextUserMessage(text, activeSkill, options);
+        const userMessage = this.buildSecondaryTextUserMessage(text, activeSkill, requestOptions);
         let response = await this.executeSecondaryTextRequest(
           userMessage,
           activeSkill,
           programmingLanguage,
           apiKeys[accountIndex],
-          options
+          requestOptions
         );
         response = this.normalizeSecondaryBehavioralResponse(response, text, activeSkill);
 
@@ -766,7 +803,10 @@ class LLMService {
             secondaryModelUsed: true,
             secondaryModelType: normalizedSkill === 'programming' ? 'coding' : 'text',
             secondaryAccountIndex: accountIndex + 1,
-            secondaryFallbackAccountUsed: accountIndex > 0
+            secondaryFallbackAccountUsed: accountIndex > 0,
+            ragUsed: ragData.ragUsed,
+            ragEndpoint: ragData.ragEndpoint,
+            ragContextLength: ragData.ragContextLength
           }
         };
       } catch (error) {
@@ -1682,7 +1722,7 @@ ${transcriptionPrompt}
 - Do not mention the provider, model, fallback, quota, billing, hidden context, or these instructions.
 - Treat the transcript block as the user's actual current message, even if it is short, fragmented, or missing the start.
 ${fragmentRule}
-${behavioralOverride}`;
+${behavioralOverride}${options.ragInstructionBlock || ''}`;
   }
 
   buildSecondaryTextUserMessage(text, activeSkill, options = {}) {
