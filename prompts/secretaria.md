@@ -7,3 +7,4 @@ Atajos principales:
 - Ctrl+3 prepara el siguiente envio del chat para convertirlo en un archivo MP3, sin enviarlo al LLM. La voz por defecto es Edge es-MX-DaliaNeural; marcadores como |1 o |1.5 cambian el ritmo de los segmentos Edge, y ¬|1 cambia ese segmento a Piper.
 - Ctrl+4 selecciona un archivo de audio para transcribir.
 - Ctrl+1 pega toda la transcripcion acumulada en el lugar donde este el cursor sin liberar los fragmentos.
+- Ctrl+6 abre un archivo en la ventana shadow translucida para poder leerlo mientras se ve lo que hay debajo.

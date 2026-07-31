@@ -11,6 +11,7 @@ Ctrl+4	Secretaria: subir archivo de audio para transcribir
 Alt+R	Iniciar / detener grabación; en secretaria graba audio crudo pendiente de transcripción
 Alt+S	Secretaria: inicia / detiene una sesión de grabación larga (reunión) en segundo plano; al detenerla genera transcripción completa + minuta (resumen) en minutas/
 Ctrl+5	Secretaria: sube un archivo de audio existente, lo transcribe completo en una sola pasada (como Ctrl+4, guardando en transcripciones/) y genera la minuta final a partir del texto, minimizando llamadas al LLM
+Ctrl+6	Secretaria: abrir un archivo en la ventana shadow translúcida para ver lo que hay debajo
 Ctrl+Shift+L	Liberar todo el buffer en cualquier modo (secretaria: buffer de dictado; resto: contexto + imágenes acumuladas, equivale a °°°). También cancela un pegado/copiado en curso
 Ctrl+Shift+B	Copiar selección con el mouse, sin teclazos (sigiloso): pulsa, selecciona, y al soltar el mouse copia al portapapeles. Funciona en todos los modos
 Ctrl+Shift+V	Pegar el portapapeles en el cursor, tecleado por "cubetazos" (simula escritura humana). Funciona en todos los modos; cancelable con Ctrl+Shift+L
@@ -187,6 +188,7 @@ VYSPER_STT_WARM_PREROLL_MS=1500
 | `Alt/Option + R` | Voice Recording Toggle |
 | `Alt/Option + S` | Meeting Recording Toggle (secretaria mode only) — starts/stops a long background recording and generates a final summary. See [Meeting Recording & Auto-Summary](#meeting-recording--auto-summary-secretaria-mode) |
 | `Ctrl/Cmd + 5` | Upload an existing audio file (secretaria mode only): single-pass transcription + diarization, then generate the final minuta from the text, minimizing LLM calls |
+| `Ctrl/Cmd + 6` | Open a file in the translucent shadow window (secretaria mode only) |
 | `Ctrl/Cmd + Shift + Z` | Show/Hide All Windows |
 | `Ctrl/Cmd + Shift + I` / `Alt + A` | Toggle Interactive Mode |
 

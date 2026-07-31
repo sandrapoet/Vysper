@@ -16,6 +16,7 @@ const sessionManager = require("./src/managers/session.manager");
 const { execFile, execSync, spawnSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 
 let typingTool = null; // null = pendiente, false = no disponible, string = herramienta lista
 
@@ -661,6 +662,7 @@ class ApplicationController {
       "CommandOrControl+3": () => this.handleSecretariaTextToSpeechShortcut(),
       "CommandOrControl+4": () => this.handleSecretariaAudioUploadShortcut(),
       "CommandOrControl+5": () => this.handleSecretariaAudioMeetingUploadShortcut(),
+      "CommandOrControl+6": () => this.handleSecretariaShadowFileShortcut(),
       "CommandOrControl+|": () => this.handleSecondaryCodingFallbackShortcut(),
       "CommandOrControl+Shift+Z": () => windowManager.toggleVisibility(),
       "CommandOrControl+Shift+X": () => {
@@ -1924,6 +1926,75 @@ class ApplicationController {
       logger.error('No se pudo procesar el audio subido como reunion', { error: error.message });
       signalMeetingStatus('ERROR', `no se pudo procesar el audio subido: ${error.message}`);
     }
+  }
+
+  async handleSecretariaShadowFileShortcut() {
+    if (!this.isSecretariaMode()) {
+      logger.warn('Ctrl+6 solo abre archivos en la ventana shadow en modo secretaria');
+      return;
+    }
+
+    try {
+      const result = await dialog.showOpenDialog({
+        title: 'Selecciona un archivo para abrir en la ventana shadow',
+        properties: ['openFile'],
+        filters: [
+          { name: 'Documentos', extensions: ['md', 'markdown', 'txt', 'text', 'pdf', 'html', 'htm'] },
+          { name: 'Imagenes', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] },
+          { name: 'Todos los archivos', extensions: ['*'] }
+        ]
+      });
+
+      if (result.canceled || !result.filePaths?.[0]) {
+        signalShortcut('Ctrl+6 cancelado: no se selecciono archivo');
+        return;
+      }
+
+      const filePath = result.filePaths[0];
+      const payload = this.buildSecretariaShadowFilePayload(filePath);
+      signalShortcut('Ctrl+6 abriendo archivo en ventana shadow', { filePath, kind: payload.kind });
+      windowManager.showLLMResponse(payload.content || payload.title, {
+        skill: 'secretaria',
+        isShadowFile: true,
+        shadowFile: payload
+      });
+    } catch (error) {
+      logger.error('No se pudo abrir el archivo en la ventana shadow', { error: error.message });
+      this.broadcastLLMError(`No se pudo abrir el archivo en la ventana shadow: ${error.message}`);
+    }
+  }
+
+  buildSecretariaShadowFilePayload(filePath) {
+    const extension = path.extname(filePath).slice(1).toLowerCase();
+    const title = path.basename(filePath);
+    const textExtensions = new Set(['md', 'markdown', 'txt', 'text', 'log', 'csv', 'json']);
+    const imageExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']);
+    const fileUrl = pathToFileURL(filePath).toString();
+
+    if (textExtensions.has(extension)) {
+      const content = fs.readFileSync(filePath, 'utf8');
+      return {
+        kind: extension === 'md' || extension === 'markdown' ? 'markdown' : 'text',
+        title,
+        filePath,
+        extension,
+        content
+      };
+    }
+
+    if (imageExtensions.has(extension)) {
+      return { kind: 'image', title, filePath, extension, fileUrl };
+    }
+
+    if (extension === 'pdf') {
+      return { kind: 'pdf', title, filePath, extension, fileUrl };
+    }
+
+    if (extension === 'html' || extension === 'htm') {
+      return { kind: 'html', title, filePath, extension, fileUrl };
+    }
+
+    return { kind: 'embed', title, filePath, extension, fileUrl };
   }
 
   async processSecretariaAudioFileAsMeeting(filePath) {

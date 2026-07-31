@@ -67,6 +67,41 @@
             font-style: italic;
             color: #d1d5db;
         }
+        .shadow-file-header {
+            color: rgba(255, 255, 255, 0.75);
+            font-size: 0.72rem;
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .shadow-file-pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+            color: white;
+            font-family: 'Courier New', monospace;
+            font-size: 0.82rem;
+            line-height: 1.5;
+        }
+        .shadow-file-media {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: calc(100vh - 3rem);
+        }
+        .shadow-file-media img {
+            max-width: 100%;
+            max-height: calc(100vh - 4rem);
+            object-fit: contain;
+        }
+        .shadow-file-frame {
+            width: 100%;
+            height: calc(100vh - 3.2rem);
+            border: 0;
+            background: rgba(255, 255, 255, 0.02);
+        }
 
         /* Main container - ensures full viewport usage */
         .main-container {
@@ -540,6 +575,11 @@
                 });
                 return;
             }
+
+            if (data.metadata && data.metadata.isShadowFile && data.metadata.shadowFile) {
+                displayShadowFile(data.metadata.shadowFile);
+                return;
+            }
             
             // Check if response contains code blocks
             const codeBlocks = extractCodeBlocks(response);
@@ -565,6 +605,40 @@
                         console.error('Failed to resize window:', error);
                     });
             }, 200);
+        }
+
+        function displayShadowFile(file) {
+            hasCode = false;
+            document.body.classList.remove('code-only-layout');
+            document.getElementById('split-layout').classList.add('hidden');
+            document.getElementById('full-content').classList.remove('hidden');
+
+            const container = document.getElementById('full-markdown');
+            const title = escapeHtml(file.title || 'Archivo');
+            const kind = String(file.kind || '').toLowerCase();
+
+            if (kind === 'markdown') {
+                container.innerHTML = `<div class="shadow-file-header">${title}</div>${marked.parse(file.content || '')}`;
+            } else if (kind === 'text') {
+                container.innerHTML = `<div class="shadow-file-header">${title}</div><pre class="shadow-file-pre">${escapeHtml(file.content || '')}</pre>`;
+            } else if (kind === 'image') {
+                container.innerHTML = `<div class="shadow-file-header">${title}</div><div class="shadow-file-media"><img src="${escapeAttribute(file.fileUrl)}" alt="${title}"></div>`;
+            } else {
+                container.innerHTML = `<div class="shadow-file-header">${title}</div><iframe class="shadow-file-frame" src="${escapeAttribute(file.fileUrl)}"></iframe>`;
+            }
+
+            const lineCount = (file.content || '').split('\n').length || 30;
+            const avgLineLength = (file.content || '').split('\n').reduce((max, line) => Math.max(max, line.length), 80);
+            window.electronAPI.resizeLlmWindowForContent({
+                lineCount: kind === 'image' || kind === 'pdf' || kind === 'html' || kind === 'embed' ? 32 : lineCount,
+                avgLineLength: kind === 'image' || kind === 'pdf' || kind === 'html' || kind === 'embed' ? 100 : avgLineLength,
+                hasCode: false,
+                complexity: 'high'
+            }).catch(error => {
+                console.error('Failed to resize shadow file window:', error);
+            });
+
+            Prism.highlightAll();
         }
 
         function setupScrolling() {
@@ -727,6 +801,10 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        function escapeAttribute(text) {
+            return escapeHtml(String(text || '')).replace(/"/g, '&quot;');
         }
 
         // Handle window focus
