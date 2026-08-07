@@ -14,10 +14,7 @@ import json
 import os
 import sys
 import warnings
-import wave
 from pathlib import Path
-
-import numpy as np
 
 
 DEFAULT_MODEL = "pyannote/speaker-diarization-community-1"
@@ -90,40 +87,24 @@ def _iter_segments(diarization):
         raise RuntimeError("Unsupported pyannote diarization result format.") from exc
 
 
-def _load_wav_for_pyannote(audio_path: Path) -> dict:
-    with wave.open(str(audio_path), "rb") as reader:
-        channels = reader.getnchannels()
-        sample_rate = reader.getframerate()
-        sample_width = reader.getsampwidth()
-        frames = reader.readframes(reader.getnframes())
-
-    if sample_width == 1:
-        audio = np.frombuffer(frames, dtype=np.uint8).astype(np.float32)
-        audio = (audio - 128.0) / 128.0
-    elif sample_width == 2:
-        audio = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
-    elif sample_width == 4:
-        audio = np.frombuffer(frames, dtype="<i4").astype(np.float32) / 2147483648.0
-    else:
-        raise RuntimeError(f"Unsupported WAV sample width: {sample_width} bytes")
-
-    if channels > 1:
-        audio = audio.reshape(-1, channels).T
-    else:
-        audio = audio.reshape(1, -1)
-
+def _load_audio_for_pyannote(audio_path: Path) -> dict:
+    # No delegamos en la carga de audio propia de pyannote (via torchaudio),
+    # porque para formatos que no son WAV requiere el backend "torchcodec",
+    # que no esta instalado en este venv y hace fallar la diarizacion en
+    # silencio para cualquier archivo subido que no sea .wav (mp3, m4a, etc).
+    # decode_audio ya viene con faster-whisper (usa PyAV) y decodifica
+    # cualquier formato soportado sin depender de torchcodec ni ffmpeg propio.
+    from faster_whisper.audio import decode_audio
     import torch
 
+    rate = 16_000
+    audio = decode_audio(str(audio_path), sampling_rate=rate)
+    waveform = torch.from_numpy(audio).unsqueeze(0)  # (1, time): mono
+
     return {
-        "waveform": torch.from_numpy(audio),
-        "sample_rate": sample_rate,
+        "waveform": waveform,
+        "sample_rate": rate,
     }
-
-
-def _load_audio_for_pyannote(audio_path: Path):
-    if audio_path.suffix.lower() == ".wav":
-        return _load_wav_for_pyannote(audio_path)
-    return str(audio_path)
 
 
 def diarize(audio_path: Path) -> dict:

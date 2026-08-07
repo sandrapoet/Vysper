@@ -1443,6 +1443,65 @@ class ApplicationController {
     return true;
   }
 
+  // Busca en minutas/ una sesion previa (de una corrida anterior de la app,
+  // por eso se lee del disco y no de this.secretariaMeetingSession) para el
+  // mismo archivo de origen que todavia no llego a stage "done". Se usa para
+  // ofrecer retomar en vez de volver a transcribir/diarizar desde cero.
+  findResumableSecretariaMeetingSession(filePath) {
+    const meetingsDir = this.getSecretariaMeetingsDir();
+    if (!fs.existsSync(meetingsDir)) return null;
+
+    const resolvedTarget = path.resolve(filePath);
+    const candidates = [];
+
+    for (const name of fs.readdirSync(meetingsDir)) {
+      const sessionDir = path.join(meetingsDir, name);
+      const manifestPath = path.join(sessionDir, 'session.json');
+      if (!fs.existsSync(manifestPath)) continue;
+
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        // sourceFilePath es el campo nuevo; segments[0].audioPath cubre
+        // sesiones de Ctrl+5 creadas antes de que existiera ese campo.
+        const manifestSourcePath = manifest.sourceFilePath || manifest.segments?.[0]?.audioPath;
+        if (!manifestSourcePath || path.resolve(manifestSourcePath) !== resolvedTarget) continue;
+        if (manifest.stage === 'done') continue;
+
+        candidates.push({ sessionDir, manifest });
+      } catch (error) {
+        continue;
+      }
+    }
+
+    if (!candidates.length) return null;
+
+    candidates.sort((a, b) => new Date(b.manifest.startedAt || 0) - new Date(a.manifest.startedAt || 0));
+    return candidates[0];
+  }
+
+  restoreSecretariaMeetingSessionState(sessionDir, manifest) {
+    const session = {
+      status: 'processing',
+      sessionDir,
+      startedAt: manifest.startedAt || new Date().toISOString(),
+      segments: Array.isArray(manifest.segments) ? manifest.segments : [],
+      segmentSec: manifest.segmentSec || MEETING_SEGMENT_SEC,
+      overlapSec: manifest.overlapSec || MEETING_OVERLAP_SEC,
+      sourceFilePath: manifest.sourceFilePath,
+      stage: manifest.stage,
+      lastError: manifest.lastError,
+      originalTranscriptPath: manifest.originalTranscriptPath,
+      fullTranscriptPath: manifest.fullTranscriptPath,
+      speakerTranscriptPath: manifest.speakerTranscriptPath,
+      teamsTranscriptPath: manifest.teamsTranscriptPath,
+      minutesPath: manifest.minutesPath,
+      minutaGenerated: Boolean(manifest.minutaGenerated)
+    };
+    this.secretariaMeetingSession = session;
+    this.secretariaMeetingProcessingQueue = Promise.resolve();
+    return session;
+  }
+
   async startSecretariaMeetingSession() {
     const session = this.createSecretariaMeetingSessionState();
 
@@ -1625,15 +1684,20 @@ class ApplicationController {
     const manifest = {
       startedAt: session.startedAt,
       status: session.status,
+      stage: session.stage,
+      lastError: session.lastError,
+      sourceFilePath: session.sourceFilePath,
       recordingStartedAt: session.recordingStartedAt,
       finalizedAt: session.finalizedAt,
       segmentSec: session.segmentSec,
       overlapSec: session.overlapSec,
       segments: session.segments,
       fullTranscriptPath: session.fullTranscriptPath,
+      originalTranscriptPath: session.originalTranscriptPath,
       speakerTranscriptPath: session.speakerTranscriptPath,
       teamsTranscriptPath: session.teamsTranscriptPath,
-      minutesPath: session.minutesPath
+      minutesPath: session.minutesPath,
+      minutaGenerated: session.minutaGenerated
     };
     fs.writeFileSync(path.join(session.sessionDir, 'session.json'), JSON.stringify(manifest, null, 2) + '\n', 'utf8');
   }
@@ -1929,7 +1993,27 @@ class ApplicationController {
         return;
       }
 
-      await this.processSecretariaAudioFileAsMeeting(result.filePaths[0]);
+      const filePath = result.filePaths[0];
+      const resumable = this.findResumableSecretariaMeetingSession(filePath);
+
+      let session = null;
+      if (resumable) {
+        const choice = await dialog.showMessageBox({
+          type: 'question',
+          buttons: ['Retomar', 'Empezar de nuevo'],
+          defaultId: 0,
+          cancelId: 1,
+          title: 'Sesion incompleta encontrada',
+          message: `Hay una sesion sin terminar de este mismo archivo (llego hasta: ${resumable.manifest.stage || resumable.manifest.status}).`,
+          detail: `Carpeta: ${resumable.sessionDir}\n\nRetomarla evita volver a transcribir el audio completo.`
+        });
+
+        if (choice.response === 0) {
+          session = this.restoreSecretariaMeetingSessionState(resumable.sessionDir, resumable.manifest);
+        }
+      }
+
+      await this.processSecretariaAudioFileAsMeeting(filePath, session);
     } catch (error) {
       logger.error('No se pudo procesar el audio subido como reunion', { error: error.message });
       signalMeetingStatus('ERROR', `no se pudo procesar el audio subido: ${error.message}`);
@@ -2049,35 +2133,116 @@ class ApplicationController {
     return { kind: 'embed', title, filePath, extension, fileUrl };
   }
 
-  async processSecretariaAudioFileAsMeeting(filePath) {
+  // Etapa 1/4: transcripcion. Idempotente — si ya existen transcripts/0001.txt
+  // y 0001.segments.json (de un intento anterior de esta misma sesion), los
+  // reutiliza en vez de volver a pagar el costo de re-transcribir el audio.
+  async ensureSecretariaTranscript(session, filePath) {
+    const transcriptsDir = path.join(session.sessionDir, 'transcripts');
+    fs.mkdirSync(transcriptsDir, { recursive: true });
+    const sessionTranscriptPath = path.join(transcriptsDir, '0001.txt');
+    const segmentsPath = path.join(transcriptsDir, '0001.segments.json');
+
+    if (session.originalTranscriptPath && fs.existsSync(sessionTranscriptPath) && fs.existsSync(segmentsPath)) {
+      try {
+        const transcript = fs.readFileSync(sessionTranscriptPath, 'utf8').trim();
+        const transcriptSegments = JSON.parse(fs.readFileSync(segmentsPath, 'utf8'));
+        if (transcript && Array.isArray(transcriptSegments) && transcriptSegments.length) {
+          logger.info('Ctrl+5: retomando sesion, reutilizando transcripcion ya generada', { sessionTranscriptPath });
+          return { transcript, transcriptPath: session.originalTranscriptPath, transcriptSegments };
+        }
+      } catch (error) {
+        logger.warn('No se pudo reutilizar la transcripcion guardada, se vuelve a generar', { error: error.message });
+      }
+    }
+
+    signalMeetingStatus('PROCESANDO', 'transcribiendo archivo completo...', { filePath });
+    const { text: rawTranscript, segments: transcriptSegments } = await speechService.transcribeFileWithSegments(filePath);
+    const transcript = rawTranscript.trim();
+
+    fs.writeFileSync(sessionTranscriptPath, `${transcript}\n`, 'utf8');
+    fs.writeFileSync(segmentsPath, JSON.stringify(transcriptSegments, null, 2) + '\n', 'utf8');
+    const transcriptPath = this.saveSecretariaTranscriptToFile(transcript, filePath);
+
+    session.originalTranscriptPath = transcriptPath;
+    session.stage = 'transcribed';
+    this.writeSecretariaMeetingManifest(session);
+
+    return { transcript, transcriptPath, transcriptSegments };
+  }
+
+  // Etapa 2/4: diarizacion. Si ya quedo guardada y valida, la reutiliza; si
+  // quedo marcada como fallida (o no existe), la reintenta siempre — es
+  // barata comparada con re-transcribir, así que no hay razon para no
+  // reintentarla en cada resume.
+  async ensureSecretariaDiarization(session, filePath, speakersPath) {
+    if (fs.existsSync(speakersPath)) {
+      try {
+        const existing = JSON.parse(fs.readFileSync(speakersPath, 'utf8'));
+        if (!existing.error && Array.isArray(existing.segments)) {
+          logger.info('Ctrl+5: retomando sesion, diarizacion ya disponible', { speakersPath });
+          session.stage = 'diarized';
+          this.writeSecretariaMeetingManifest(session);
+          return true;
+        }
+        logger.info('Ctrl+5: reintentando diarizacion que habia quedado marcada como fallida', {
+          speakersPath,
+          previousError: existing.error
+        });
+      } catch (error) {
+        // Archivo corrupto/ilegible: se trata igual que "sin diarizacion" y se reintenta.
+      }
+    }
+
+    try {
+      await this.runSecretariaDiarization(filePath, speakersPath);
+      session.stage = 'diarized';
+      session.lastError = null;
+      this.writeSecretariaMeetingManifest(session);
+      return true;
+    } catch (error) {
+      fs.writeFileSync(speakersPath, JSON.stringify({ error: error.message }, null, 2) + '\n', 'utf8');
+      logger.warn('Ctrl+5 diarizacion omitida', { error: error.message });
+      session.stage = 'diarization_failed';
+      session.lastError = error.message;
+      this.writeSecretariaMeetingManifest(session);
+      return false;
+    }
+  }
+
+  async processSecretariaAudioFileAsMeeting(filePath, existingSession = null) {
     // A diferencia de Alt+S (grabacion en vivo, que si necesita ir cortando en
     // fragmentos de audio porque el archivo aun se esta escribiendo), aca el
     // archivo ya existe completo: una sola transcripcion (gratis, local) y una
     // sola pasada de diarizacion alcanzan. La minuta se genera desde el TEXTO
     // completo en una sola llamada al LLM, y solo se parte en bloques si el
     // transcript no entra en una request (ver buildSecretariaMinutaFromText).
-    const session = this.createSecretariaMeetingSessionState();
-    signalMeetingStatus('INICIANDO', `procesando archivo subido en ${session.sessionDir}`, { filePath });
+    //
+    // Cada etapa (ensureSecretariaTranscript, ensureSecretariaDiarization,
+    // finalizeSecretariaMeetingSessionFromTranscript) es idempotente: si ya
+    // corrio con exito en un intento previo de esta misma sesion (existingSession
+    // != null), reutiliza su resultado en vez de repetir el trabajo. Asi esta
+    // misma funcion sirve tanto para una corrida nueva como para retomar una
+    // que quedo a mitad de camino (ver findResumableSecretariaMeetingSession).
+    const session = existingSession || this.createSecretariaMeetingSessionState();
+    session.sourceFilePath = filePath;
+    this.secretariaMeetingSession = session;
+    this.secretariaMeetingProcessingQueue = Promise.resolve();
+
+    signalMeetingStatus(
+      existingSession ? 'RETOMANDO' : 'INICIANDO',
+      `procesando archivo subido en ${session.sessionDir}`,
+      { filePath }
+    );
     windowManager.showChatWindow();
 
     try {
       session.status = 'processing';
       this.writeSecretariaMeetingManifest(session);
-      signalMeetingStatus('PROCESANDO', 'transcribiendo archivo completo...', { filePath });
 
-      const { text: rawTranscript, segments: transcriptSegments } = await speechService.transcribeFileWithSegments(filePath);
-      const transcript = rawTranscript.trim();
-      const transcriptPath = this.saveSecretariaTranscriptToFile(transcript, filePath);
+      const { transcript, transcriptPath, transcriptSegments } = await this.ensureSecretariaTranscript(session, filePath);
 
       const speakersPath = path.join(session.sessionDir, 'speakers', '0001.json');
-      let diarizationOk = false;
-      try {
-        await this.runSecretariaDiarization(filePath, speakersPath);
-        diarizationOk = true;
-      } catch (error) {
-        fs.writeFileSync(speakersPath, JSON.stringify({ error: error.message }, null, 2) + '\n', 'utf8');
-        logger.warn('Ctrl+5 diarizacion omitida', { error: error.message });
-      }
+      const diarizationOk = await this.ensureSecretariaDiarization(session, filePath, speakersPath);
 
       session.segments = [{
         index: 1,
@@ -2108,44 +2273,59 @@ class ApplicationController {
     }
   }
 
+  // Etapas 3-4/4: transcript con hablantes/Teams + minuta. Cada archivo se
+  // deja de regenerar si ya quedo escrito con exito en un intento anterior de
+  // esta sesion (ver session.minutaGenerated) — la minuta cuesta llamadas al
+  // LLM, asi que no tiene sentido rehacerla si ya salio bien.
   async finalizeSecretariaMeetingSessionFromTranscript(session, transcript, transcriptPath, speakerResult = null) {
     const finalDir = path.join(session.sessionDir, 'final');
     fs.mkdirSync(finalDir, { recursive: true });
     const fullTranscriptPath = path.join(finalDir, 'transcript-full.txt');
     fs.writeFileSync(fullTranscriptPath, `${transcript.trim()}\n`, 'utf8');
 
-    let speakerTranscriptPath = null;
-    if (speakerResult?.hablantesText?.trim()) {
+    let speakerTranscriptPath = session.speakerTranscriptPath && fs.existsSync(session.speakerTranscriptPath)
+      ? session.speakerTranscriptPath
+      : null;
+    if (!speakerTranscriptPath && speakerResult?.hablantesText?.trim()) {
       speakerTranscriptPath = path.join(finalDir, 'transcript-hablantes.txt');
       fs.writeFileSync(speakerTranscriptPath, `${speakerResult.hablantesText.trim()}\n`, 'utf8');
     }
 
-    let teamsTranscriptPath = null;
-    if (speakerResult?.teamsText?.trim()) {
+    let teamsTranscriptPath = session.teamsTranscriptPath && fs.existsSync(session.teamsTranscriptPath)
+      ? session.teamsTranscriptPath
+      : null;
+    if (!teamsTranscriptPath && speakerResult?.teamsText?.trim()) {
       teamsTranscriptPath = path.join(finalDir, 'transcript-teams.txt');
       fs.writeFileSync(teamsTranscriptPath, `${speakerResult.teamsText.trim()}\n`, 'utf8');
     }
 
     const minutesPath = path.join(finalDir, 'minuta.md');
-    try {
-      const llmResult = await this.buildSecretariaMinutaFromText(transcript, transcriptPath);
-      fs.writeFileSync(minutesPath, `${llmResult.response.trim()}\n`, 'utf8');
+    if (session.minutaGenerated && fs.existsSync(minutesPath)) {
+      logger.info('Ctrl+5: retomando sesion, minuta ya generada', { minutesPath });
       signalMeetingStatus('FINALIZADO', `minuta final lista: ${minutesPath}`);
-      windowManager.showLLMResponse(llmResult.response, {
-        skill: 'secretaria',
-        processingTime: llmResult.metadata?.processingTime || 0,
-        usedFallback: llmResult.metadata?.usedFallback || false
-      });
-    } catch (error) {
-      const fallback = [
-        '# Minuta no generada',
-        '',
-        `Error del LLM: ${error.message}`,
-        '',
-        `Transcripcion completa: ${fullTranscriptPath}`
-      ].join('\n');
-      fs.writeFileSync(minutesPath, `${fallback}\n`, 'utf8');
-      signalMeetingStatus('FINALIZADO CON ERROR', `transcripcion lista, pero fallo la minuta LLM: ${error.message}`);
+    } else {
+      try {
+        const llmResult = await this.buildSecretariaMinutaFromText(transcript, transcriptPath);
+        fs.writeFileSync(minutesPath, `${llmResult.response.trim()}\n`, 'utf8');
+        session.minutaGenerated = true;
+        signalMeetingStatus('FINALIZADO', `minuta final lista: ${minutesPath}`);
+        windowManager.showLLMResponse(llmResult.response, {
+          skill: 'secretaria',
+          processingTime: llmResult.metadata?.processingTime || 0,
+          usedFallback: llmResult.metadata?.usedFallback || false
+        });
+      } catch (error) {
+        const fallback = [
+          '# Minuta no generada',
+          '',
+          `Error del LLM: ${error.message}`,
+          '',
+          `Transcripcion completa: ${fullTranscriptPath}`
+        ].join('\n');
+        fs.writeFileSync(minutesPath, `${fallback}\n`, 'utf8');
+        session.minutaGenerated = false;
+        signalMeetingStatus('FINALIZADO CON ERROR', `transcripcion lista, pero fallo la minuta LLM: ${error.message}`);
+      }
     }
 
     session.finalizedAt = new Date().toISOString();
@@ -2154,6 +2334,7 @@ class ApplicationController {
     session.teamsTranscriptPath = teamsTranscriptPath;
     session.minutesPath = minutesPath;
     session.originalTranscriptPath = transcriptPath;
+    session.stage = session.minutaGenerated ? 'done' : 'minuta_failed';
     this.writeSecretariaMeetingManifest(session);
   }
 
