@@ -12,6 +12,7 @@ Alt+R	Iniciar / detener grabación; en secretaria graba audio crudo pendiente de
 Alt+S	Secretaria: inicia / detiene una sesión de grabación larga (reunión) en segundo plano; al detenerla genera transcripción completa + minuta (resumen) en minutas/
 Ctrl+5	Secretaria: sube un archivo de audio existente, lo transcribe completo en una sola pasada (como Ctrl+4, guardando en transcripciones/) y genera la minuta final a partir del texto, minimizando llamadas al LLM
 Ctrl+6	Secretaria: abrir un archivo en la ventana shadow translúcida para ver lo que hay debajo
+Ctrl+7	Secretaria: convierte una transcripción de texto existente ("Hablante: texto" por línea, sin timestamps) al formato Microsoft Teams, estimando tiempos por cantidad de palabras
 Ctrl+Shift+L	Liberar todo el buffer en cualquier modo (secretaria: buffer de dictado; resto: contexto + imágenes acumuladas, equivale a °°°). También cancela un pegado/copiado en curso
 Ctrl+Shift+B	Copiar selección con el mouse, sin teclazos (sigiloso): pulsa, selecciona, y al soltar el mouse copia al portapapeles. Funciona en todos los modos
 Ctrl+Shift+V	Pegar el portapapeles en el cursor, tecleado por "cubetazos" (simula escritura humana). Funciona en todos los modos; cancelable con Ctrl+Shift+L
@@ -188,6 +189,7 @@ VYSPER_STT_WARM_PREROLL_MS=1500
 | `Alt/Option + R` | Voice Recording Toggle |
 | `Alt/Option + S` | Meeting Recording Toggle (secretaria mode only) — starts/stops a long background recording and generates a final summary. See [Meeting Recording & Auto-Summary](#meeting-recording--auto-summary-secretaria-mode) |
 | `Ctrl/Cmd + 5` | Upload an existing audio file (secretaria mode only): single-pass transcription + diarization, then generate the final minuta from the text, minimizing LLM calls |
+| `Ctrl/Cmd + 7` | Convert an existing plain-text transcript (secretaria mode only, `Hablante: texto` per line) to Microsoft-Teams-style format with estimated timestamps |
 | `Ctrl/Cmd + 6` | Open a file in the translucent shadow window (secretaria mode only) |
 | `Ctrl/Cmd + Shift + Z` | Show/Hide All Windows |
 | `Ctrl/Cmd + Shift + I` / `Alt + A` | Toggle Interactive Mode |
@@ -280,6 +282,7 @@ Long-form recording with automatic transcription and a final summary ("minuta"),
 **3. Press `Alt+S` again to stop and generate the summary.** This closes the last segment, waits for any pending transcription/diarization/segment-summary jobs to finish, then writes:
 - `final/transcript-full.txt` — the full meeting transcript (all segments concatenated).
 - `final/transcript-hablantes.txt` — the transcript labeled by speaker (`Hablante: lo que dijo`), one paragraph per turn. Because per-segment diarization isn't consistent across segments (`SPEAKER_00` in segment 1 isn't necessarily the same person as `SPEAKER_00` in segment 2), this file comes from a separate one-time pass: all segment audio is concatenated into `final/full-audio.wav` and re-transcribed + re-diarized once over the full timeline (`final/speakers-full.json`), then a single LLM call tries to resolve generic labels (`SPEAKER_00`) into real names when they're clearly stated in the dialogue (self-introductions, being addressed by name) — otherwise it keeps the generic label. Skipped if diarization isn't configured/fails.
+- `final/transcript-teams.txt` — the same speaker-labeled transcript, reformatted Microsoft-Teams-style: `HH:MM:SS  **NOMBRE**  texto`, one blank line between turns, real timestamps (not estimated), names in caps/bold, and turns split whenever there's a pause longer than 5s even if it's the same speaker. Reuses the same name resolution as `transcript-hablantes.txt` — no extra LLM call.
 - `final/minuta.md` — the AI-generated summary (Resumen ejecutivo, Temas tratados, Decisiones, Tareas, Riesgos, Próximos pasos). If the LLM call fails, this falls back to pointing at the raw transcript instead of losing the session.
 - `session.json` — a manifest with timestamps and status history for the session.
 
@@ -296,13 +299,15 @@ VYSPER_PYANNOTE_DEVICE=auto           # cpu / cuda / auto
 VYSPER_PYANNOTE_MODEL=pyannote/speaker-diarization-community-1
 ```
 
-**Already have a recording?** `Ctrl/Cmd + 5` (secretaria mode only) opens the same file picker as `Ctrl+4` and accepts the same formats (wav, mp3, m4a, aac, flac, ogg, opus, webm, mp4, mpeg), but instead of leaving you to generate the summary by hand, it produces the same `final/transcript-full.txt`, `final/transcript-hablantes.txt`, `final/minuta.md`, and `session.json` as `Alt+S`, under a new `minutas/reunion-<timestamp>/` folder — with a cheaper pipeline built specifically for a file that already exists in full (unlike `Alt+S`, which must process incrementally because it's still recording):
+**Already have a recording?** `Ctrl/Cmd + 5` (secretaria mode only) opens the same file picker as `Ctrl+4` and accepts the same formats (wav, mp3, m4a, aac, flac, ogg, opus, webm, mp4, mpeg), but instead of leaving you to generate the summary by hand, it produces the same `final/transcript-full.txt`, `final/transcript-hablantes.txt`, `final/transcript-teams.txt`, `final/minuta.md`, and `session.json` as `Alt+S`, under a new `minutas/reunion-<timestamp>/` folder — with a cheaper pipeline built specifically for a file that already exists in full (unlike `Alt+S`, which must process incrementally because it's still recording):
 - The whole file is transcribed in **one local Whisper pass** (same as `Ctrl+4` — no LLM cost at all) and also saved to `transcripciones/`, exactly like `Ctrl+4` does.
 - Speaker diarization (if `VYSPER_PYANNOTE_TOKEN` is configured) also runs **once** on the full file instead of per-chunk, which is both cheaper and more accurate since it has the whole conversation for context — and, unlike `Alt+S`'s per-segment diarization, speaker labels stay consistent across the whole file since there's only one diarization pass.
 - The minuta is generated from the **full transcript in a single LLM call** whenever it fits under `VYSPER_MEETING_FINAL_TRANSCRIPT_CHARS` (the common case) — matching what you'd get pasting the whole transcript into Gemini yourself. Only if the transcript is longer than that limit does it fall back to summarizing a handful of large text blocks in sequence (each one aware of the previous block's summary) and consolidating them into one minuta — still far fewer LLM calls than one-per-5-minutes.
 - If Gemini's quota/billing limit is hit, the app now remembers that for a cooldown period (`llm.gemini.quotaCooldownMs`, default 10 min) and skips straight to the Anthropic fallback on subsequent calls instead of re-trying (and re-failing) Gemini every time.
 
 The same "OCUPADO" busy-guard applies: if a meeting session (live via `Alt+S`, or from a previous `Ctrl+5` upload) is already running, pressing `Ctrl+5` again just reports it's busy instead of starting a second one.
+
+**Already have a plain-text transcript from somewhere else?** `Ctrl/Cmd + 7` (secretaria mode only) opens a file picker for an existing `.txt` transcript in `Hablante: texto` format (one line per turn, no timestamps — e.g. one you already had lying around, not necessarily produced by Vysper) and converts it to the same Microsoft-Teams-style format as `transcript-teams.txt`, saved next to the original as `<archivo>-teams.txt`. Since there's no real audio to time against, timestamps are **estimated** from a ~150-words-per-minute reading pace, accumulated turn by turn from `00:00:00` — treat them as approximate, not exact. Consecutive same-speaker lines are merged into one turn (adding a period between sentences if one is missing); any label that isn't a generic `SPEAKER_NN`/`Hablante desconocido` pattern is treated as an already-identified real name and kept as-is (uppercased).
 
 ## 🤝 Contributing
 

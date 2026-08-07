@@ -663,6 +663,7 @@ class ApplicationController {
       "CommandOrControl+4": () => this.handleSecretariaAudioUploadShortcut(),
       "CommandOrControl+5": () => this.handleSecretariaAudioMeetingUploadShortcut(),
       "CommandOrControl+6": () => this.handleSecretariaShadowFileShortcut(),
+      "CommandOrControl+7": () => this.handleSecretariaTeamsTranscriptConversionShortcut(),
       "CommandOrControl+|": () => this.handleSecondaryCodingFallbackShortcut(),
       "CommandOrControl+Shift+Z": () => windowManager.toggleVisibility(),
       "CommandOrControl+Shift+X": () => {
@@ -1631,6 +1632,7 @@ class ApplicationController {
       segments: session.segments,
       fullTranscriptPath: session.fullTranscriptPath,
       speakerTranscriptPath: session.speakerTranscriptPath,
+      teamsTranscriptPath: session.teamsTranscriptPath,
       minutesPath: session.minutesPath
     };
     fs.writeFileSync(path.join(session.sessionDir, 'session.json'), JSON.stringify(manifest, null, 2) + '\n', 'utf8');
@@ -1660,6 +1662,7 @@ class ApplicationController {
     // Para el transcript con hablantes, se concatena el audio de toda la
     // reunion y se transcribe/diariza UNA sola vez sobre el timeline completo.
     let speakerTranscriptPath = null;
+    let teamsTranscriptPath = null;
     const audioSegments = processedSegments.filter((segment) => segment.audioPath && fs.existsSync(segment.audioPath));
     if (audioSegments.length) {
       try {
@@ -1670,10 +1673,14 @@ class ApplicationController {
         const speakersFullPath = path.join(finalDir, 'speakers-full.json');
         await this.runSecretariaDiarization(fullAudioPath, speakersFullPath);
 
-        const speakerTranscript = await this.buildSecretariaSpeakerTranscript(transcriptSegments, speakersFullPath);
-        if (speakerTranscript && speakerTranscript.trim()) {
+        const speakerResult = await this.buildSecretariaSpeakerTranscript(transcriptSegments, speakersFullPath);
+        if (speakerResult?.hablantesText?.trim()) {
           speakerTranscriptPath = path.join(finalDir, 'transcript-hablantes.txt');
-          fs.writeFileSync(speakerTranscriptPath, `${speakerTranscript.trim()}\n`, 'utf8');
+          fs.writeFileSync(speakerTranscriptPath, `${speakerResult.hablantesText.trim()}\n`, 'utf8');
+        }
+        if (speakerResult?.teamsText?.trim()) {
+          teamsTranscriptPath = path.join(finalDir, 'transcript-teams.txt');
+          fs.writeFileSync(teamsTranscriptPath, `${speakerResult.teamsText.trim()}\n`, 'utf8');
         }
       } catch (error) {
         logger.warn('No se pudo generar el transcript con hablantes de la reunion', { error: error.message });
@@ -1744,6 +1751,7 @@ class ApplicationController {
     session.finalizedAt = new Date().toISOString();
     session.fullTranscriptPath = fullTranscriptPath;
     session.speakerTranscriptPath = speakerTranscriptPath;
+    session.teamsTranscriptPath = teamsTranscriptPath;
     session.minutesPath = minutesPath;
     this.writeSecretariaMeetingManifest(session);
   }
@@ -1928,6 +1936,50 @@ class ApplicationController {
     }
   }
 
+  async handleSecretariaTeamsTranscriptConversionShortcut() {
+    if (!this.isSecretariaMode()) {
+      logger.warn('Ctrl+7 solo convierte transcripciones en modo secretaria');
+      return;
+    }
+
+    try {
+      const result = await dialog.showOpenDialog({
+        title: 'Selecciona una transcripcion de texto ("Hablante: texto" por linea) para convertir a formato Teams',
+        properties: ['openFile'],
+        filters: [
+          { name: 'Texto', extensions: ['txt'] },
+          { name: 'Todos los archivos', extensions: ['*'] }
+        ]
+      });
+
+      if (result.canceled || !result.filePaths?.[0]) {
+        signalShortcut('Ctrl+7 cancelado: no se selecciono archivo');
+        return;
+      }
+
+      const inputPath = result.filePaths[0];
+      const rawText = fs.readFileSync(inputPath, 'utf8');
+      const teamsText = this.estimateSecretariaTeamsTranscriptFromPlainText(rawText);
+
+      if (!teamsText.trim()) {
+        signalShortcut('Ctrl+7: no se pudo interpretar el archivo (se esperaba "Hablante: texto" por linea)', { inputPath });
+        return;
+      }
+
+      const outputPath = path.join(
+        path.dirname(inputPath),
+        `${path.basename(inputPath, path.extname(inputPath))}-teams.txt`
+      );
+      fs.writeFileSync(outputPath, `${teamsText.trim()}\n`, 'utf8');
+
+      signalShortcut('Ctrl+7 convirtio la transcripcion a formato Teams', { inputPath, outputPath });
+      signalUserNotice('Transcripcion convertida a formato Teams', { outputPath });
+    } catch (error) {
+      logger.error('No se pudo convertir la transcripcion a formato Teams', { error: error.message });
+      this.broadcastLLMError(`No se pudo convertir la transcripcion: ${error.message}`);
+    }
+  }
+
   async handleSecretariaShadowFileShortcut() {
     if (!this.isSecretariaMode()) {
       logger.warn('Ctrl+6 solo abre archivos en la ventana shadow en modo secretaria');
@@ -2041,31 +2093,37 @@ class ApplicationController {
       this.writeSecretariaMeetingManifest(session);
       signalMeetingStatus('FINALIZANDO', 'generando minuta final...');
 
-      let speakerTranscript = null;
+      let speakerResult = null;
       if (diarizationOk) {
         try {
-          speakerTranscript = await this.buildSecretariaSpeakerTranscript(transcriptSegments, speakersPath);
+          speakerResult = await this.buildSecretariaSpeakerTranscript(transcriptSegments, speakersPath);
         } catch (error) {
           logger.warn('No se pudo construir el transcript con hablantes', { error: error.message });
         }
       }
 
-      await this.finalizeSecretariaMeetingSessionFromTranscript(session, transcript, transcriptPath, speakerTranscript);
+      await this.finalizeSecretariaMeetingSessionFromTranscript(session, transcript, transcriptPath, speakerResult);
     } finally {
       this.secretariaMeetingSession = null;
     }
   }
 
-  async finalizeSecretariaMeetingSessionFromTranscript(session, transcript, transcriptPath, speakerTranscript = null) {
+  async finalizeSecretariaMeetingSessionFromTranscript(session, transcript, transcriptPath, speakerResult = null) {
     const finalDir = path.join(session.sessionDir, 'final');
     fs.mkdirSync(finalDir, { recursive: true });
     const fullTranscriptPath = path.join(finalDir, 'transcript-full.txt');
     fs.writeFileSync(fullTranscriptPath, `${transcript.trim()}\n`, 'utf8');
 
     let speakerTranscriptPath = null;
-    if (speakerTranscript && speakerTranscript.trim()) {
+    if (speakerResult?.hablantesText?.trim()) {
       speakerTranscriptPath = path.join(finalDir, 'transcript-hablantes.txt');
-      fs.writeFileSync(speakerTranscriptPath, `${speakerTranscript.trim()}\n`, 'utf8');
+      fs.writeFileSync(speakerTranscriptPath, `${speakerResult.hablantesText.trim()}\n`, 'utf8');
+    }
+
+    let teamsTranscriptPath = null;
+    if (speakerResult?.teamsText?.trim()) {
+      teamsTranscriptPath = path.join(finalDir, 'transcript-teams.txt');
+      fs.writeFileSync(teamsTranscriptPath, `${speakerResult.teamsText.trim()}\n`, 'utf8');
     }
 
     const minutesPath = path.join(finalDir, 'minuta.md');
@@ -2093,6 +2151,7 @@ class ApplicationController {
     session.finalizedAt = new Date().toISOString();
     session.fullTranscriptPath = fullTranscriptPath;
     session.speakerTranscriptPath = speakerTranscriptPath;
+    session.teamsTranscriptPath = teamsTranscriptPath;
     session.minutesPath = minutesPath;
     session.originalTranscriptPath = transcriptPath;
     this.writeSecretariaMeetingManifest(session);
@@ -2220,10 +2279,30 @@ class ApplicationController {
 
   // ── Transcript con hablantes (diarizacion + transcripcion con timestamps) ──
 
-  mergeTranscriptSegmentsWithSpeakers(transcriptSegments, diarizationSegments) {
+  // Une texto de oraciones consecutivas del mismo turno, insertando un punto
+  // si a la oracion anterior le faltaba puntuacion final (evita fusiones como
+  // "...reunion Tenemos varios puntos..." sin separador).
+  appendSecretariaSentence(parts, text) {
+    if (parts.length) {
+      const last = parts[parts.length - 1];
+      if (last && !/[.?!¡¿…]"?$/.test(last)) {
+        parts[parts.length - 1] = `${last}.`;
+      }
+    }
+    parts.push(text);
+    return parts;
+  }
+
+  // maxPauseSec: si se define, un silencio mayor a ese umbral entre segmentos
+  // del MISMO hablante igual corta el turno (usado para el formato Teams).
+  // Sin definir, se mantiene el comportamiento previo (solo corta por cambio
+  // de hablante) para no alterar transcript-hablantes.txt.
+  mergeTranscriptSegmentsWithSpeakers(transcriptSegments, diarizationSegments, options = {}) {
     if (!Array.isArray(transcriptSegments) || transcriptSegments.length === 0) return [];
     const speakerSegments = Array.isArray(diarizationSegments) ? diarizationSegments : [];
     if (!speakerSegments.length) return [];
+
+    const maxPauseSec = Number.isFinite(options.maxPauseSec) ? options.maxPauseSec : Infinity;
 
     const findSpeaker = (start, end) => {
       let best = null;
@@ -2251,23 +2330,24 @@ class ApplicationController {
     };
 
     const lines = [];
-    let currentSpeaker = null;
-    let currentText = [];
+    let current = null;
 
     for (const segment of transcriptSegments) {
       const speaker = findSpeaker(segment.start, segment.end) || 'HABLANTE_DESCONOCIDO';
-      if (speaker !== currentSpeaker) {
-        if (currentSpeaker !== null && currentText.length) {
-          lines.push({ speaker: currentSpeaker, text: currentText.join(' ').trim() });
+      const gap = current ? segment.start - current.end : 0;
+      const shouldBreak = !current || speaker !== current.speaker || gap > maxPauseSec;
+
+      if (shouldBreak) {
+        if (current) {
+          lines.push({ speaker: current.speaker, start: current.start, end: current.end, text: current.textParts.join(' ').trim() });
         }
-        currentSpeaker = speaker;
-        currentText = [segment.text];
-      } else {
-        currentText.push(segment.text);
+        current = { speaker, start: segment.start, end: segment.end, textParts: [] };
       }
+      this.appendSecretariaSentence(current.textParts, segment.text);
+      current.end = segment.end;
     }
-    if (currentSpeaker !== null && currentText.length) {
-      lines.push({ speaker: currentSpeaker, text: currentText.join(' ').trim() });
+    if (current) {
+      lines.push({ speaker: current.speaker, start: current.start, end: current.end, text: current.textParts.join(' ').trim() });
     }
 
     return lines;
@@ -2275,6 +2355,43 @@ class ApplicationController {
 
   formatSecretariaSpeakerLines(lines) {
     return lines.map((line) => `${line.speaker}: ${line.text}`).join('\n\n');
+  }
+
+  formatTeamsTimestamp(seconds) {
+    const total = Math.max(0, Math.round(seconds || 0));
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const secs = total % 60;
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(hours)}:${pad(minutes)}:${pad(secs)}`;
+  }
+
+  // Asigna "PARTICIPANTE N" (en orden de primera aparicion) a las etiquetas
+  // sin nombre real resuelto en nameMap; respeta los nombres ya resueltos.
+  assignSecretariaSpeakerDisplayNames(lines, nameMap = {}) {
+    const displayNames = {};
+    let nextParticipant = 1;
+    for (const line of lines) {
+      if (displayNames[line.speaker]) continue;
+      const resolved = nameMap[line.speaker];
+      if (resolved) {
+        displayNames[line.speaker] = resolved.toUpperCase();
+      } else {
+        displayNames[line.speaker] = `PARTICIPANTE ${nextParticipant}`;
+        nextParticipant += 1;
+      }
+    }
+    return displayNames;
+  }
+
+  // Formato estilo Microsoft Teams: "HH:MM:SS  **NOMBRE**  texto", una linea
+  // en blanco entre intervenciones.
+  formatSecretariaTeamsTranscript(lines, nameMap = {}) {
+    if (!lines.length) return '';
+    const displayNames = this.assignSecretariaSpeakerDisplayNames(lines, nameMap);
+    return lines
+      .map((line) => `${this.formatTeamsTimestamp(line.start)}  **${displayNames[line.speaker]}**  ${line.text}`)
+      .join('\n\n');
   }
 
   async resolveSecretariaSpeakerNames(speakerLabeledText) {
@@ -2328,6 +2445,7 @@ class ApplicationController {
     return result;
   }
 
+  // Devuelve { hablantesText, teamsText } o null si no hay diarizacion usable.
   async buildSecretariaSpeakerTranscript(transcriptSegments, diarizationResultPath) {
     let diarizationSegments = [];
     try {
@@ -2346,7 +2464,67 @@ class ApplicationController {
 
     const labeledText = this.formatSecretariaSpeakerLines(lines);
     const nameMap = await this.resolveSecretariaSpeakerNames(labeledText);
-    return this.applySecretariaSpeakerNames(labeledText, nameMap);
+
+    // Formato Teams: turnos con pausas > 5s se separan aunque sea el mismo
+    // hablante, y usa timestamp de inicio real (no estimado).
+    const teamsLines = this.mergeTranscriptSegmentsWithSpeakers(transcriptSegments, diarizationSegments, { maxPauseSec: 5 });
+
+    return {
+      hablantesText: this.applySecretariaSpeakerNames(labeledText, nameMap),
+      teamsText: this.formatSecretariaTeamsTranscript(teamsLines, nameMap)
+    };
+  }
+
+  // Convierte un transcript de texto plano ya existente ("Hablante: texto" por
+  // linea, SIN timestamps) al formato Teams, estimando tiempos acumulados por
+  // cantidad de palabras (~150 wpm). Usado por Ctrl+7 para transcripciones que
+  // no vinieron del pipeline propio de Vysper (por eso no hay tiempos reales).
+  estimateSecretariaTeamsTranscriptFromPlainText(rawText) {
+    const WORDS_PER_MINUTE = 150;
+    const linePattern = /^([^:\n]{1,60}):\s*(.+)$/;
+
+    const rawLines = String(rawText || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const parsedLines = [];
+    for (const line of rawLines) {
+      const match = line.match(linePattern);
+      if (!match) continue;
+      parsedLines.push({ speaker: match[1].trim(), text: match[2].trim() });
+    }
+    if (!parsedLines.length) return '';
+
+    const merged = [];
+    for (const entry of parsedLines) {
+      const last = merged[merged.length - 1];
+      if (last && last.speaker === entry.speaker) {
+        last.text = `${last.text}${/[.?!¡¿…]"?$/.test(last.text) ? '' : '.'} ${entry.text}`.trim();
+      } else {
+        merged.push({ speaker: entry.speaker, text: entry.text });
+      }
+    }
+
+    let elapsedSec = 0;
+    const timedLines = merged.map((entry) => {
+      const start = elapsedSec;
+      const wordCount = entry.text.split(/\s+/).filter(Boolean).length;
+      elapsedSec += (wordCount / WORDS_PER_MINUTE) * 60;
+      return { speaker: entry.speaker, start, text: entry.text };
+    });
+
+    // Etiquetas genericas (SPEAKER_00, "Hablante desconocido", etc.) se
+    // numeran como PARTICIPANTE N; cualquier otra cosa se trata como nombre
+    // real ya identificado y se respeta tal cual (en mayusculas).
+    const genericPattern = /^(speaker[_\s]?\d+|hablante[_\s]?desconocido|hablante\s*\d*)$/i;
+    const nameMap = {};
+    for (const entry of timedLines) {
+      if (nameMap[entry.speaker] !== undefined) continue;
+      nameMap[entry.speaker] = genericPattern.test(entry.speaker) ? null : entry.speaker;
+    }
+
+    return this.formatSecretariaTeamsTranscript(timedLines, nameMap);
   }
 
   // Concatena WAV PCM16 mono generados por nuestro propio pipeline (mismo
