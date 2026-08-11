@@ -1527,18 +1527,36 @@ class ApplicationController {
     session.status = 'stopping';
     this.writeSecretariaMeetingManifest(session);
     signalMeetingStatus('DETENIENDO', 'cerrando captura y ultimo fragmento...');
-    await speechService.stopMeetingRecording();
 
-    session.status = 'processing';
-    this.writeSecretariaMeetingManifest(session);
-    signalMeetingStatus('PROCESANDO', 'esperando transcripciones, hablantes y sintesis pendientes...');
-    await this.secretariaMeetingProcessingQueue;
+    try {
+      await speechService.stopMeetingRecording();
+    } catch (error) {
+      // El sidecar procesa comandos en un solo hilo: si estaba ocupado
+      // transcribiendo un fragmento cuando llego stop_meeting, ese comando
+      // queda esperando y el timeout del lado Node puede vencer antes de
+      // que el sidecar llegue a confirmarlo. Seguimos igual con lo que ya
+      // se proceso, en vez de abortar y perder una reunion larga.
+      logger.error('No se pudo confirmar a tiempo el stop_meeting del sidecar; se finaliza con lo procesado hasta ahora', {
+        error: error.message
+      });
+      signalMeetingStatus('ERROR', `no se confirmo a tiempo el fin de la grabacion (${error.message}); generando minuta con lo que se alcanzo a procesar...`);
+    }
 
-    session.status = 'finalizing';
-    this.writeSecretariaMeetingManifest(session);
-    signalMeetingStatus('FINALIZANDO', 'generando transcript completo y minuta final...');
-    await this.finalizeSecretariaMeetingSession(session);
-    this.secretariaMeetingSession = null;
+    try {
+      session.status = 'processing';
+      this.writeSecretariaMeetingManifest(session);
+      signalMeetingStatus('PROCESANDO', 'esperando transcripciones, hablantes y sintesis pendientes...');
+      await this.secretariaMeetingProcessingQueue;
+
+      session.status = 'finalizing';
+      this.writeSecretariaMeetingManifest(session);
+      signalMeetingStatus('FINALIZANDO', 'generando transcript completo y minuta final...');
+      await this.finalizeSecretariaMeetingSession(session);
+    } finally {
+      // Pase lo que pase (exito o fallo en cualquiera de los pasos de
+      // arriba), Alt+S tiene que quedar disponible de nuevo.
+      this.secretariaMeetingSession = null;
+    }
   }
 
   enqueueSecretariaMeetingSegment(session, data) {

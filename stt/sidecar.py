@@ -37,9 +37,17 @@ from collections import deque
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
+_emit_lock = threading.Lock()
+
 def emit(obj: dict) -> None:
-    sys.stdout.write(json.dumps(obj) + "\n")
-    sys.stdout.flush()
+    # Con transcribe_file corriendo en su propio hilo (ver _handle_transcribe_file),
+    # emit() se llama desde varios hilos a la vez (vad, meeting writer, ahora
+    # tambien transcripciones de archivo). El lock evita que dos escrituras se
+    # entrelacen y corrompan el protocolo de una linea JSON por mensaje.
+    line = json.dumps(obj) + "\n"
+    with _emit_lock:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 def log(*args) -> None:
     print("[sidecar]", *args, file=sys.stderr, flush=True)
@@ -294,6 +302,31 @@ def _transcribe_file_with_segments(path: str) -> dict:
         })
         text_parts.append(text)
     return {"text": " ".join(text_parts).strip(), "segments": seg_list}
+
+def _handle_transcribe_file(request_id, audio_path: str) -> None:
+    # Corre en su propio hilo (ver cmd == "transcribe_file" en _main): la
+    # transcripcion de un archivo puede tardar bastante con audio real, y si
+    # corriera inline en el loop principal de stdin bloquearia la lectura de
+    # cualquier otro comando (start/stop/stop_meeting/quit) hasta terminar.
+    # Eso causaba que stop_meeting quedara sin leerse detras de una
+    # transcripcion de fragmento en curso, venciendo el timeout del lado Node.
+    try:
+        log(f"Transcribing audio file: {audio_path}")
+        result = _transcribe_file_with_segments(audio_path)
+        emit({
+            "type": "transcription",
+            "source": "file",
+            "request_id": request_id,
+            "text": result["text"],
+            "segments": result["segments"],
+        })
+    except Exception as exc:
+        emit({
+            "type": "error",
+            "source": "file",
+            "request_id": request_id,
+            "message": f"File transcription error: {exc}",
+        })
 
 # ── VAD processing loop ────────────────────────────────────────────────────
 
@@ -650,23 +683,12 @@ def _main() -> None:
                 })
                 continue
 
-            try:
-                log(f"Transcribing audio file: {audio_path}")
-                result = _transcribe_file_with_segments(audio_path)
-                emit({
-                    "type": "transcription",
-                    "source": "file",
-                    "request_id": request_id,
-                    "text": result["text"],
-                    "segments": result["segments"],
-                })
-            except Exception as exc:
-                emit({
-                    "type": "error",
-                    "source": "file",
-                    "request_id": request_id,
-                    "message": f"File transcription error: {exc}",
-                })
+            threading.Thread(
+                target=_handle_transcribe_file,
+                args=(request_id, audio_path),
+                daemon=True,
+                name=f"transcribe-file-{request_id}",
+            ).start()
 
     log("Sidecar exiting.")
 
