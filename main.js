@@ -48,6 +48,13 @@ const MEETING_SEGMENT_SUMMARY = process.env.VYSPER_MEETING_SEGMENT_SUMMARY !== '
 const MEETING_FINAL_TRANSCRIPT_CHARS = Number(process.env.VYSPER_MEETING_FINAL_TRANSCRIPT_CHARS || 60000);
 const DIARIZE_HELPER_PATH = path.join(__dirname, 'stt', 'diarize.py');
 
+// Modo Optimizacion (Alt+O): entrevista dirigida en paralelo a una sesion Alt+S.
+// Arma el modo ANTES de Alt+S: la sesion arranca con fragmentos cortos
+// (en vez de MEETING_SEGMENT_SEC) para poder detectar pausas casi en vivo.
+const OPTIMIZACION_SEGMENT_SEC = Number(process.env.VYSPER_OPTIMIZACION_SEGMENT_SEC || 15);
+const OPTIMIZACION_SILENCE_SEC = Number(process.env.VYSPER_OPTIMIZACION_SILENCE_SEC || 6);
+const OPTIMIZACION_CONTEXT_CHARS = Number(process.env.VYSPER_OPTIMIZACION_CONTEXT_CHARS || 8000);
+
 function signalShortcut(message, meta = {}) {
   console.log(`[Vysper shortcut] ${message}`);
   logger.info(message, meta);
@@ -456,6 +463,15 @@ class ApplicationController {
     this.pendingSelectionCaptureMode = 'ocr';
     this.pendingSelectionCaptureOptions = {};
 
+    // Modo Optimizacion (Alt+O): ver handleOptimizacionToggleShortcut.
+    this.optimizacionArmed = false;
+    this.optimizacionActive = false;
+    this.optimizacionPendingText = [];
+    this.optimizacionSilentSeconds = 0;
+    this.optimizacionRunningTranscript = '';
+    this.optimizacionSuggestions = [];
+    this.optimizacionQueue = Promise.resolve();
+
     // Window configurations for reference
     this.windowConfigs = {
       main: { title: "Vysper" },
@@ -703,6 +719,7 @@ class ApplicationController {
       "Alt+A": () => windowManager.toggleInteraction(),
       "Alt+R": () => this.toggleSpeechRecognition(),
       "Alt+S": () => this.handleSecretariaMeetingShortcut(),
+      "Alt+O": () => this.handleOptimizacionToggleShortcut(),
       "CommandOrControl+Shift+T": () => windowManager.forceAlwaysOnTopForAllWindows(),
       "CommandOrControl+Shift+Alt+T": () => {
         const results = windowManager.testAlwaysOnTopForAllWindows();
@@ -1410,7 +1427,46 @@ class ApplicationController {
     });
   }
 
-  createSecretariaMeetingSessionState() {
+  // Alt+O: arma/desarma el modo optimizacion. Tiene que activarse ANTES de
+  // Alt+S porque cambia el tamano de fragmento de la sesion (ver
+  // startSecretariaMeetingSession) para poder detectar pausas casi en vivo;
+  // una vez que Alt+S ya esta grabando, el tamano de fragmento no se puede
+  // cambiar en caliente sin cortar la captura.
+  handleOptimizacionToggleShortcut() {
+    if (!this.isSecretariaMode()) {
+      signalShortcut('Alt+O solo aplica en modo secretaria');
+      return;
+    }
+
+    const session = this.secretariaMeetingSession;
+    if (session?.status === 'recording') {
+      if (this.optimizacionActive) {
+        this.optimizacionActive = false;
+        this.optimizacionArmed = false;
+        session.optimizacionActive = false;
+        this.resetOptimizacionRuntimeState();
+        signalShortcut('Alt+O: optimizacion desactivada para la sesion en curso (deja de sugerir preguntas, la minuta de Alt+S sigue igual) y desarmada para la proxima sesion');
+      } else {
+        signalShortcut(`Alt+O: esta sesion ya esta grabando con fragmentos de ${session.segmentSec}s; arma optimizacion ANTES de Alt+S para activarla con fragmentos cortos (${OPTIMIZACION_SEGMENT_SEC}s)`);
+      }
+      return;
+    }
+
+    this.optimizacionArmed = !this.optimizacionArmed;
+    signalShortcut(this.optimizacionArmed
+      ? `Alt+O: optimizacion armada. La proxima sesion Alt+S usara fragmentos de ${OPTIMIZACION_SEGMENT_SEC}s y sugerira preguntas tras ${OPTIMIZACION_SILENCE_SEC}s de silencio`
+      : 'Alt+O: optimizacion desarmada. La proxima sesion Alt+S usara el fragmento normal');
+  }
+
+  resetOptimizacionRuntimeState() {
+    this.optimizacionPendingText = [];
+    this.optimizacionSilentSeconds = 0;
+    this.optimizacionRunningTranscript = '';
+    this.optimizacionSuggestions = [];
+    this.optimizacionQueue = Promise.resolve();
+  }
+
+  createSecretariaMeetingSessionState(sourceType = null, segmentSec = MEETING_SEGMENT_SEC) {
     const sessionDir = this.createSecretariaMeetingSessionDir();
     ['audio', 'transcripts', 'speakers', 'summaries', 'final'].forEach((name) => {
       fs.mkdirSync(path.join(sessionDir, name), { recursive: true });
@@ -1421,8 +1477,9 @@ class ApplicationController {
       sessionDir,
       startedAt: new Date().toISOString(),
       segments: [],
-      segmentSec: MEETING_SEGMENT_SEC,
-      overlapSec: MEETING_OVERLAP_SEC
+      segmentSec,
+      overlapSec: MEETING_OVERLAP_SEC,
+      sourceType
     };
     this.secretariaMeetingSession = session;
     this.secretariaMeetingProcessingQueue = Promise.resolve();
@@ -1488,6 +1545,7 @@ class ApplicationController {
       segmentSec: manifest.segmentSec || MEETING_SEGMENT_SEC,
       overlapSec: manifest.overlapSec || MEETING_OVERLAP_SEC,
       sourceFilePath: manifest.sourceFilePath,
+      sourceType: manifest.sourceType,
       stage: manifest.stage,
       lastError: manifest.lastError,
       originalTranscriptPath: manifest.originalTranscriptPath,
@@ -1495,7 +1553,8 @@ class ApplicationController {
       speakerTranscriptPath: manifest.speakerTranscriptPath,
       teamsTranscriptPath: manifest.teamsTranscriptPath,
       minutesPath: manifest.minutesPath,
-      minutaGenerated: Boolean(manifest.minutaGenerated)
+      minutaGenerated: Boolean(manifest.minutaGenerated),
+      optimizacionActive: Boolean(manifest.optimizacionActive)
     };
     this.secretariaMeetingSession = session;
     this.secretariaMeetingProcessingQueue = Promise.resolve();
@@ -1503,11 +1562,18 @@ class ApplicationController {
   }
 
   async startSecretariaMeetingSession() {
-    const session = this.createSecretariaMeetingSessionState();
+    this.optimizacionActive = this.optimizacionArmed;
+    if (this.optimizacionActive) {
+      this.resetOptimizacionRuntimeState();
+    }
+    const segmentSec = this.optimizacionActive ? OPTIMIZACION_SEGMENT_SEC : MEETING_SEGMENT_SEC;
+    const session = this.createSecretariaMeetingSessionState('liveRecording', segmentSec);
+    session.optimizacionActive = this.optimizacionActive;
+    this.writeSecretariaMeetingManifest(session);
 
-    signalMeetingStatus('INICIANDO', `preparando sesion larga en ${session.sessionDir}`);
+    signalMeetingStatus('INICIANDO', `preparando sesion larga en ${session.sessionDir}${this.optimizacionActive ? ` (optimizacion activa, fragmentos de ${segmentSec}s)` : ''}`);
     speechService.startMeetingRecording(session.sessionDir, {
-      segmentSec: MEETING_SEGMENT_SEC,
+      segmentSec,
       overlapSec: MEETING_OVERLAP_SEC
     });
     windowManager.showChatWindow();
@@ -1604,6 +1670,12 @@ class ApplicationController {
       textLength: segment.textLength
     });
 
+    if (this.optimizacionActive) {
+      // No se espera (no await): las sugerencias de optimizacion no deben
+      // demorar la diarizacion/minuta de Alt+S, que sigue su propia cola.
+      this.enqueueOptimizacionSegment(session, segment, transcript);
+    }
+
     try {
       await this.runSecretariaDiarization(segment.audioPath, segment.speakersPath);
       logger.info(`Alt+S hablantes del fragmento ${segment.index} guardados`, {
@@ -1665,6 +1737,117 @@ class ApplicationController {
     }
   }
 
+  // Cola propia (independiente de secretariaMeetingProcessingQueue) para que
+  // una llamada lenta al LLM de optimizacion nunca bloquee la transcripcion/
+  // diarizacion/minuta de Alt+S. Se serializa igual para no disparar dos
+  // sugerencias en paralelo si llegan fragmentos rapido.
+  enqueueOptimizacionSegment(session, segment, transcript) {
+    this.optimizacionQueue = this.optimizacionQueue
+      .then(() => this.processOptimizacionSegment(session, segment, transcript))
+      .catch((error) => {
+        logger.warn('No se pudo procesar fragmento para optimizacion', {
+          error: error.message,
+          index: segment.index
+        });
+      });
+    return this.optimizacionQueue;
+  }
+
+  async processOptimizacionSegment(session, segment, transcript) {
+    if (!this.optimizacionActive || this.secretariaMeetingSession !== session) return;
+
+    const text = transcript.trim();
+    const chunkDuration = segment.duration || session.segmentSec || OPTIMIZACION_SEGMENT_SEC;
+
+    if (text) {
+      this.optimizacionSilentSeconds = 0;
+      this.optimizacionPendingText.push(text);
+      this.optimizacionRunningTranscript = `${this.optimizacionRunningTranscript} ${text}`.trim();
+      if (this.optimizacionRunningTranscript.length > OPTIMIZACION_CONTEXT_CHARS) {
+        this.optimizacionRunningTranscript = this.optimizacionRunningTranscript.slice(-OPTIMIZACION_CONTEXT_CHARS);
+      }
+    } else {
+      this.optimizacionSilentSeconds += chunkDuration;
+    }
+
+    if (!this.optimizacionPendingText.length) return;
+    if (this.optimizacionSilentSeconds < OPTIMIZACION_SILENCE_SEC) return;
+
+    const newText = this.optimizacionPendingText.join(' ');
+    this.optimizacionPendingText = [];
+    this.optimizacionSilentSeconds = 0;
+
+    await this.suggestOptimizacionQuestion(session, newText);
+  }
+
+  buildOptimizacionSuggestionPrompt(newText) {
+    const stage = this.optimizacionSuggestions.length < 3 ? 'rapport (todavia suavizando la relacion)' : 'exploracion';
+    const previousQuestions = this.optimizacionSuggestions.length
+      ? this.optimizacionSuggestions.map((s, i) => `${i + 1}. ${s.question}`).join('\n')
+      : '[Ninguna sugerida todavia]';
+
+    return [
+      `Etapa actual de la entrevista: ${stage}.`,
+      '',
+      'Preguntas que ya se sugirieron (no las repitas ni parafrasees):',
+      previousQuestions,
+      '',
+      'Transcripcion completa acumulada hasta ahora (puede incluir texto ya usado en sugerencias previas, es solo contexto):',
+      '"""',
+      this.optimizacionRunningTranscript || '[Sin transcripcion previa]',
+      '"""',
+      '',
+      'Texto nuevo desde la ultima sugerencia (esto es lo que acaba de pasar en la conversacion, justo antes del silencio actual):',
+      '"""',
+      newText,
+      '"""',
+      '',
+      'Sugiere la siguiente pregunta que deberia hacer quien entrevista, siguiendo las reglas del modo. Si no aplica ninguna, responde SIN_SUGERENCIA.'
+    ].join('\n');
+  }
+
+  async suggestOptimizacionQuestion(session, newText) {
+    const prompt = this.buildOptimizacionSuggestionPrompt(newText);
+
+    let llmResult;
+    try {
+      llmResult = await llmService.processTextWithSkill(prompt, 'optimizacion', [], null);
+    } catch (error) {
+      logger.warn('No se pudo generar sugerencia de optimizacion', { error: error.message });
+      return;
+    }
+
+    if (this.secretariaMeetingSession !== session || !this.optimizacionActive) return;
+
+    const question = (llmResult.response || '').trim();
+    if (!question || /^SIN_SUGERENCIA$/i.test(question)) {
+      logger.info('Optimizacion: sin sugerencia para este tramo de silencio');
+      return;
+    }
+
+    this.optimizacionSuggestions.push({ question, at: new Date().toISOString(), sourceText: newText });
+    this.writeOptimizacionSuggestionsFile(session);
+
+    signalShortcut(`Optimizacion sugiere: ${question}`);
+    windowManager.showLLMResponse(`### Pregunta de apoyo sugerida\n\n${question}`, {
+      skill: 'optimizacion',
+      isOptimizacionSuggestion: true
+    });
+  }
+
+  writeOptimizacionSuggestionsFile(session) {
+    try {
+      const optimizacionDir = path.join(session.sessionDir, 'optimizacion');
+      fs.mkdirSync(optimizacionDir, { recursive: true });
+      const lines = this.optimizacionSuggestions.map((s, i) =>
+        `${i + 1}. [${s.at}] ${s.question}`
+      );
+      fs.writeFileSync(path.join(optimizacionDir, 'sugerencias.md'), `${lines.join('\n')}\n`, 'utf8');
+    } catch (error) {
+      logger.warn('No se pudo guardar sugerencias de optimizacion en disco', { error: error.message });
+    }
+  }
+
   runSecretariaDiarization(audioPath, outputPath) {
     return new Promise((resolve, reject) => {
       const python = this.resolveSttPython();
@@ -1705,6 +1888,7 @@ class ApplicationController {
       stage: session.stage,
       lastError: session.lastError,
       sourceFilePath: session.sourceFilePath,
+      sourceType: session.sourceType,
       recordingStartedAt: session.recordingStartedAt,
       finalizedAt: session.finalizedAt,
       segmentSec: session.segmentSec,
@@ -1743,26 +1927,66 @@ class ApplicationController {
     // SPEAKER_00 en el fragmento 2, porque cada fragmento se diariza aparte.
     // Para el transcript con hablantes, se concatena el audio de toda la
     // reunion y se transcribe/diariza UNA sola vez sobre el timeline completo.
-    let speakerTranscriptPath = null;
-    let teamsTranscriptPath = null;
+    //
+    // Cada paso pesado de aca abajo (concatenar+transcribir el audio
+    // completo, diarizar) se cachea en disco y se saltea si ya corrio con
+    // exito en un intento anterior de esta misma sesion: si el proceso
+    // muere a mitad de camino (p.ej. se apaga la maquina mientras diariza
+    // una reunion larga), un resume posterior no repite el trabajo ya
+    // hecho. Ver ensureSecretariaDiarization, que ya implementa este mismo
+    // patron para el flujo Ctrl+5.
+    let speakerTranscriptPath = session.speakerTranscriptPath && fs.existsSync(session.speakerTranscriptPath)
+      ? session.speakerTranscriptPath
+      : null;
+    let teamsTranscriptPath = session.teamsTranscriptPath && fs.existsSync(session.teamsTranscriptPath)
+      ? session.teamsTranscriptPath
+      : null;
+    let speakerResult = (speakerTranscriptPath || teamsTranscriptPath)
+      ? {
+          hablantesText: speakerTranscriptPath ? fs.readFileSync(speakerTranscriptPath, 'utf8') : '',
+          teamsText: teamsTranscriptPath ? fs.readFileSync(teamsTranscriptPath, 'utf8') : ''
+        }
+      : null;
+
     const audioSegments = processedSegments.filter((segment) => segment.audioPath && fs.existsSync(segment.audioPath));
-    if (audioSegments.length) {
+    if (!speakerResult && audioSegments.length) {
       try {
         const fullAudioPath = path.join(finalDir, 'full-audio.wav');
-        this.concatenateWavFiles(audioSegments.map((segment) => segment.audioPath), fullAudioPath);
-
-        const { segments: transcriptSegments } = await speechService.transcribeFileWithSegments(fullAudioPath);
-        const speakersFullPath = path.join(finalDir, 'speakers-full.json');
-        await this.runSecretariaDiarization(fullAudioPath, speakersFullPath);
-
-        const speakerResult = await this.buildSecretariaSpeakerTranscript(transcriptSegments, speakersFullPath);
-        if (speakerResult?.hablantesText?.trim()) {
-          speakerTranscriptPath = path.join(finalDir, 'transcript-hablantes.txt');
-          fs.writeFileSync(speakerTranscriptPath, `${speakerResult.hablantesText.trim()}\n`, 'utf8');
+        if (!fs.existsSync(fullAudioPath)) {
+          this.concatenateWavFiles(audioSegments.map((segment) => segment.audioPath), fullAudioPath);
         }
-        if (speakerResult?.teamsText?.trim()) {
-          teamsTranscriptPath = path.join(finalDir, 'transcript-teams.txt');
-          fs.writeFileSync(teamsTranscriptPath, `${speakerResult.teamsText.trim()}\n`, 'utf8');
+        // Se persiste apenas el audio completo queda escrito: si el
+        // proceso muere despues de este punto, el usuario puede retomar la
+        // sesion con Ctrl+5 seleccionando este mismo archivo (ver
+        // handleSecretariaAudioMeetingUploadShortcut).
+        session.sourceFilePath = fullAudioPath;
+        this.writeSecretariaMeetingManifest(session);
+
+        const segmentsCachePath = path.join(finalDir, 'full-transcript-segments.json');
+        let transcriptSegments;
+        if (fs.existsSync(segmentsCachePath)) {
+          transcriptSegments = JSON.parse(fs.readFileSync(segmentsCachePath, 'utf8'));
+          logger.info('Alt+S: retomando sesion, reutilizando transcripcion completa ya generada', { segmentsCachePath });
+        } else {
+          ({ segments: transcriptSegments } = await speechService.transcribeFileWithSegments(fullAudioPath));
+          fs.writeFileSync(segmentsCachePath, JSON.stringify(transcriptSegments, null, 2) + '\n', 'utf8');
+        }
+        session.stage = 'transcribed';
+        this.writeSecretariaMeetingManifest(session);
+
+        const speakersFullPath = path.join(finalDir, 'speakers-full.json');
+        const diarizationOk = await this.ensureSecretariaDiarization(session, fullAudioPath, speakersFullPath);
+
+        if (diarizationOk) {
+          speakerResult = await this.buildSecretariaSpeakerTranscript(transcriptSegments, speakersFullPath);
+          if (speakerResult?.hablantesText?.trim()) {
+            speakerTranscriptPath = path.join(finalDir, 'transcript-hablantes.txt');
+            fs.writeFileSync(speakerTranscriptPath, `${speakerResult.hablantesText.trim()}\n`, 'utf8');
+          }
+          if (speakerResult?.teamsText?.trim()) {
+            teamsTranscriptPath = path.join(finalDir, 'transcript-teams.txt');
+            fs.writeFileSync(teamsTranscriptPath, `${speakerResult.teamsText.trim()}\n`, 'utf8');
+          }
         }
       } catch (error) {
         logger.warn('No se pudo generar el transcript con hablantes de la reunion', { error: error.message });
@@ -1777,10 +2001,12 @@ class ApplicationController {
       .filter(Boolean)
       .join('\n\n');
 
-    const transcriptForPrompt = fullTranscript.length <= MEETING_FINAL_TRANSCRIPT_CHARS
-      ? fullTranscript.trim()
+    const sourceTranscript = speakerResult?.hablantesText?.trim() || fullTranscript;
+    const participants = this.extractSecretariaParticipants(speakerResult?.hablantesText);
+    const transcriptForPrompt = sourceTranscript.length <= MEETING_FINAL_TRANSCRIPT_CHARS
+      ? sourceTranscript.trim()
       : [
-          `[Transcripcion completa omitida del prompt final porque mide ${fullTranscript.length} caracteres.`,
+          `[Transcripcion completa omitida del prompt final porque mide ${sourceTranscript.length} caracteres.`,
           `Archivo completo: ${fullTranscriptPath}]`
         ].join(' ');
 
@@ -1788,6 +2014,7 @@ class ApplicationController {
       'Genera una minuta ejecutiva en espanol a partir de esta transcripcion de reunion.',
       '',
       'Incluye estas secciones:',
+      '- Participantes',
       '- Resumen ejecutivo',
       '- Temas tratados',
       '- Decisiones',
@@ -1796,6 +2023,10 @@ class ApplicationController {
       '- Proximos pasos',
       '',
       'No inventes datos que no esten en la transcripcion. Si no hay responsables claros, escribe "No especificado".',
+      '',
+      participants.length
+        ? `Hablantes detectados por diarizacion (usalos como base de "Participantes"; no agregues otros ni asumas nombres que no aparezcan en la transcripcion): ${participants.join(', ')}.`
+        : 'No hay diarizacion disponible: en "Participantes" escribe "No especificado" salvo que la transcripcion mencione nombres explicitamente.',
       '',
       'SINTESIS POR FRAGMENTO:',
       '"""',
@@ -1809,25 +2040,36 @@ class ApplicationController {
     ].join('\n');
 
     const minutesPath = path.join(finalDir, 'minuta.md');
-    try {
-      const llmResult = await llmService.processTextWithSkill(prompt, 'secretaria', [], null);
-      fs.writeFileSync(minutesPath, `${llmResult.response.trim()}\n`, 'utf8');
+    if (session.minutaGenerated && fs.existsSync(minutesPath)) {
+      logger.info('Alt+S: retomando sesion, minuta ya generada', { minutesPath });
       signalMeetingStatus('FINALIZADO', `minuta final lista: ${minutesPath}`);
-      windowManager.showLLMResponse(llmResult.response, {
-        skill: 'secretaria',
-        processingTime: llmResult.metadata?.processingTime || 0,
-        usedFallback: llmResult.metadata?.usedFallback || false
-      });
-    } catch (error) {
-      const fallback = [
-        '# Minuta no generada',
-        '',
-        `Error del LLM: ${error.message}`,
-        '',
-        `Transcripcion completa: ${fullTranscriptPath}`
-      ].join('\n');
-      fs.writeFileSync(minutesPath, `${fallback}\n`, 'utf8');
-      signalMeetingStatus('FINALIZADO CON ERROR', `transcripcion final lista, pero fallo la minuta LLM: ${error.message}`);
+    } else {
+      try {
+        const llmResult = await llmService.processTextWithSkill(prompt, 'secretaria', [], null);
+        fs.writeFileSync(minutesPath, `${llmResult.response.trim()}\n`, 'utf8');
+        session.minutaGenerated = true;
+        signalMeetingStatus('FINALIZADO', `minuta final lista: ${minutesPath}`);
+        windowManager.showLLMResponse(llmResult.response, {
+          skill: 'secretaria',
+          processingTime: llmResult.metadata?.processingTime || 0,
+          usedFallback: llmResult.metadata?.usedFallback || false
+        });
+      } catch (error) {
+        const fallback = [
+          '# Minuta no generada',
+          '',
+          `Error del LLM: ${error.message}`,
+          '',
+          `Transcripcion completa: ${fullTranscriptPath}`
+        ].join('\n');
+        fs.writeFileSync(minutesPath, `${fallback}\n`, 'utf8');
+        session.minutaGenerated = false;
+        signalMeetingStatus('FINALIZADO CON ERROR', `transcripcion final lista, pero fallo la minuta LLM: ${error.message}`);
+      }
+    }
+
+    if (session.optimizacionActive) {
+      await this.finalizeOptimizacionStrategy(session, sourceTranscript, finalDir);
     }
 
     session.finalizedAt = new Date().toISOString();
@@ -1835,7 +2077,59 @@ class ApplicationController {
     session.speakerTranscriptPath = speakerTranscriptPath;
     session.teamsTranscriptPath = teamsTranscriptPath;
     session.minutesPath = minutesPath;
+    session.stage = session.minutaGenerated ? 'done' : 'minuta_failed';
     this.writeSecretariaMeetingManifest(session);
+  }
+
+  // Corre despues de la minuta de Alt+S, sobre el transcript final completo
+  // (mejor que solo el buffer en vivo de suggestOptimizacionQuestion, que se
+  // vacia despues de cada sugerencia y no alcanza a cubrir toda la sesion).
+  async finalizeOptimizacionStrategy(session, sourceTranscript, finalDir) {
+    this.optimizacionActive = false;
+
+    // Espera cualquier sugerencia todavia en vuelo antes de listar las
+    // preguntas ya hechas en el prompt final.
+    await this.optimizacionQueue.catch(() => {});
+
+    const strategyPath = path.join(finalDir, 'optimizacion-estrategia.md');
+    const transcriptText = String(sourceTranscript || '').trim();
+    if (!transcriptText) {
+      fs.writeFileSync(strategyPath, '# Estrategia de optimizacion no generada\n\nNo hubo transcripcion suficiente en la sesion.\n', 'utf8');
+      return;
+    }
+
+    const questionsList = this.optimizacionSuggestions.length
+      ? this.optimizacionSuggestions.map((s, i) => `${i + 1}. ${s.question}`).join('\n')
+      : '[No se sugirieron preguntas durante la sesion]';
+
+    const transcriptForPrompt = transcriptText.length <= MEETING_FINAL_TRANSCRIPT_CHARS
+      ? transcriptText
+      : transcriptText.slice(-MEETING_FINAL_TRANSCRIPT_CHARS);
+
+    const prompt = [
+      'Genera la sintesis final de esta entrevista de optimizacion de procesos.',
+      '',
+      'Preguntas de apoyo que se sugirieron durante la sesion:',
+      questionsList,
+      '',
+      'TRANSCRIPCION COMPLETA DE LA ENTREVISTA:',
+      '"""',
+      transcriptForPrompt,
+      '"""'
+    ].join('\n');
+
+    try {
+      const llmResult = await llmService.processTextWithSkill(prompt, 'optimizacion', [], null);
+      fs.writeFileSync(strategyPath, `${llmResult.response.trim()}\n`, 'utf8');
+      signalUserNotice('Estrategia de optimizacion generada', { strategyPath });
+      windowManager.showLLMResponse(llmResult.response, {
+        skill: 'optimizacion',
+        processingTime: llmResult.metadata?.processingTime || 0
+      });
+    } catch (error) {
+      logger.warn('No se pudo generar la estrategia final de optimizacion', { error: error.message });
+      fs.writeFileSync(strategyPath, `# Estrategia de optimizacion no generada\n\nError del LLM: ${error.message}\n`, 'utf8');
+    }
   }
 
   async handleTranslatorRecordingShortcut() {
@@ -2029,6 +2323,28 @@ class ApplicationController {
         if (choice.response === 0) {
           session = this.restoreSecretariaMeetingSessionState(resumable.sessionDir, resumable.manifest);
         }
+      }
+
+      if (session?.sourceType === 'liveRecording') {
+        // Esta sesion viene de una grabacion en vivo (Alt+S) que quedo a
+        // mitad de la finalizacion (p.ej. la diarizacion no alcanzo a
+        // terminar antes de apagar la maquina). El audio seleccionado es
+        // el final/full-audio.wav que ya escribio esa sesion, asi que se
+        // continua su propio pipeline en vez del generico de Ctrl+5.
+        signalMeetingStatus('RETOMANDO', `continuando sesion de grabacion en vivo en ${session.sessionDir}`);
+        windowManager.showChatWindow();
+        this.secretariaMeetingSession = session;
+        // No hay audio en vivo que reanudar aca (solo se retoma la
+        // finalizacion), asi que optimizacionActive queda en false: no debe
+        // volver a intentar sugerir preguntas, solo generar la estrategia
+        // final si la sesion original la tenia activa (session.optimizacionActive).
+        this.optimizacionActive = false;
+        try {
+          await this.finalizeSecretariaMeetingSession(session);
+        } finally {
+          this.secretariaMeetingSession = null;
+        }
+        return;
       }
 
       await this.processSecretariaAudioFileAsMeeting(filePath, session);
@@ -2241,8 +2557,9 @@ class ApplicationController {
     // != null), reutiliza su resultado en vez de repetir el trabajo. Asi esta
     // misma funcion sirve tanto para una corrida nueva como para retomar una
     // que quedo a mitad de camino (ver findResumableSecretariaMeetingSession).
-    const session = existingSession || this.createSecretariaMeetingSessionState();
+    const session = existingSession || this.createSecretariaMeetingSessionState('uploadedFile');
     session.sourceFilePath = filePath;
+    session.sourceType = session.sourceType || 'uploadedFile';
     this.secretariaMeetingSession = session;
     this.secretariaMeetingProcessingQueue = Promise.resolve();
 
@@ -2323,7 +2640,7 @@ class ApplicationController {
       signalMeetingStatus('FINALIZADO', `minuta final lista: ${minutesPath}`);
     } else {
       try {
-        const llmResult = await this.buildSecretariaMinutaFromText(transcript, transcriptPath);
+        const llmResult = await this.buildSecretariaMinutaFromText(transcript, transcriptPath, speakerResult);
         fs.writeFileSync(minutesPath, `${llmResult.response.trim()}\n`, 'utf8');
         session.minutaGenerated = true;
         signalMeetingStatus('FINALIZADO', `minuta final lista: ${minutesPath}`);
@@ -2356,26 +2673,41 @@ class ApplicationController {
     this.writeSecretariaMeetingManifest(session);
   }
 
-  async buildSecretariaMinutaFromText(transcript, transcriptPath) {
-    const trimmed = String(transcript || '').trim();
-    if (!trimmed) {
+  // Extrae las etiquetas de hablante ("Nombre:" o "SPEAKER_00:") al inicio de
+  // cada linea de un transcript con hablantes, para pasarselas al LLM como
+  // lista de participantes detectados (evita que la minuta omita el
+  // "quien" solo porque el prompt recibia texto plano sin diarizacion).
+  extractSecretariaParticipants(speakerLabeledText) {
+    if (!speakerLabeledText) return [];
+    return [...new Set((speakerLabeledText.match(/^\S+(?=:)/gm) || []))];
+  }
+
+  async buildSecretariaMinutaFromText(transcript, transcriptPath, speakerResult = null) {
+    const sourceText = speakerResult?.hablantesText?.trim() || String(transcript || '').trim();
+    const participants = this.extractSecretariaParticipants(speakerResult?.hablantesText);
+    if (!sourceText) {
       return {
         response: '# Minuta no generada\n\nNo se detecto texto en la transcripcion.',
         metadata: {}
       };
     }
 
-    if (trimmed.length <= MEETING_FINAL_TRANSCRIPT_CHARS) {
-      return llmService.processTextWithSkill(this.buildSecretariaMinutaPrompt(trimmed), 'secretaria', [], null);
+    if (sourceText.length <= MEETING_FINAL_TRANSCRIPT_CHARS) {
+      return llmService.processTextWithSkill(
+        this.buildSecretariaMinutaPrompt(sourceText, null, participants),
+        'secretaria',
+        [],
+        null
+      );
     }
 
     // Transcript demasiado largo para una sola llamada: se resume en cascada
     // por bloques grandes de texto (no de audio), minimizando llamadas al LLM
     // al minimo necesario segun el tamano real del transcript.
-    const chunks = this.splitTextIntoChunks(trimmed, MEETING_FINAL_TRANSCRIPT_CHARS);
+    const chunks = this.splitTextIntoChunks(sourceText, MEETING_FINAL_TRANSCRIPT_CHARS);
     logger.info('Ctrl+5: transcript excede el limite, resumiendo en cascada', {
       transcriptPath,
-      transcriptLength: trimmed.length,
+      transcriptLength: sourceText.length,
       chunkCount: chunks.length,
       chunkCharLimit: MEETING_FINAL_TRANSCRIPT_CHARS
     });
@@ -2389,7 +2721,7 @@ class ApplicationController {
       chunkSummaries.push(previousSummary);
     }
 
-    const consolidationPrompt = this.buildSecretariaMinutaPrompt(null, chunkSummaries);
+    const consolidationPrompt = this.buildSecretariaMinutaPrompt(null, chunkSummaries, participants);
     return llmService.processTextWithSkill(consolidationPrompt, 'secretaria', [], null);
   }
 
@@ -2417,11 +2749,12 @@ class ApplicationController {
     return chunks;
   }
 
-  buildSecretariaMinutaPrompt(transcriptText, chunkSummaries = null) {
+  buildSecretariaMinutaPrompt(transcriptText, chunkSummaries = null, participants = null) {
     const lines = [
       'Genera una minuta ejecutiva en espanol a partir de esta transcripcion de reunion.',
       '',
       'Incluye estas secciones:',
+      '- Participantes',
       '- Resumen ejecutivo',
       '- Temas tratados',
       '- Decisiones',
@@ -2429,9 +2762,22 @@ class ApplicationController {
       '- Riesgos o dudas abiertas',
       '- Proximos pasos',
       '',
-      'No inventes datos que no esten en la transcripcion. Si no hay responsables claros, escribe "No especificado".',
-      ''
+      'No inventes datos que no esten en la transcripcion. Si no hay responsables claros, escribe "No especificado".'
     ];
+
+    if (participants?.length) {
+      lines.push(
+        '',
+        `Hablantes detectados por diarizacion (usalos como base de "Participantes"; no agregues otros ni asumas nombres que no aparezcan en la transcripcion): ${participants.join(', ')}.`
+      );
+    } else {
+      lines.push(
+        '',
+        'No hay diarizacion disponible: en "Participantes" escribe "No especificado" salvo que la transcripcion mencione nombres explicitamente.'
+      );
+    }
+
+    lines.push('');
 
     if (chunkSummaries?.length) {
       lines.push(

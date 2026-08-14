@@ -4,7 +4,11 @@ Modo de dictado y transcripcion. En este modo Vysper acumula texto transcrito de
 
 Atajos principales:
 - Alt+R inicia o detiene la grabacion.
+- Alt+S inicia o detiene una grabacion de reunion en vivo: graba en fragmentos, transcribe y diariza, y al detener genera la minuta final (con seccion de Participantes si hubo diarizacion) en minutas/<sesion>/final/minuta.md.
 - Ctrl+3 prepara el siguiente envio del chat para convertirlo en un archivo MP3, sin enviarlo al LLM. La voz por defecto es Edge es-MX-DaliaNeural; marcadores como |1 o |1.5 cambian el ritmo de los segmentos Edge, y ¬|1 cambia ese segmento a Piper.
-- Ctrl+4 selecciona un archivo de audio para transcribir.
+- Ctrl+4 selecciona un archivo de audio y SOLO lo transcribe, guardando el texto plano en transcripciones/. No genera minuta ni corre diarizacion.
+- Ctrl+5 selecciona un archivo de audio y lo procesa como reunion completa: transcribe con segmentos, diariza (identifica hablantes), y genera minuta.md con seccion de Participantes en minutas/<sesion>/final/. Es la alternativa a usar cuando se quiere una minuta (con quien dijo que) a partir de un audio ya grabado, incluido uno subido antes con Ctrl+4.
+- Ctrl+7 convierte un transcript de texto plano ya existente al formato estilo Teams (con timestamps estimados), sin diarizacion real ni minuta.
 - Ctrl+1 pega toda la transcripcion acumulada en el lugar donde este el cursor sin liberar los fragmentos.
 - Ctrl+6 abre un archivo en la ventana shadow translucida para poder leerlo mientras se ve lo que hay debajo.
+- Alt+O activa o desactiva el modo Optimizacion, una entrevista dirigida que corre en paralelo a Alt+S: hay que presionarlo ANTES de Alt+S (arma la siguiente sesion con fragmentos cortos, configurable con VYSPER_OPTIMIZACION_SEGMENT_SEC, para detectar pausas casi en vivo). Mientras Alt+S graba y genera la minuta como siempre, Optimizacion vigila los silencios (umbral configurable con VYSPER_OPTIMIZACION_SILENCE_SEC) y sugiere en la ventana shadow la siguiente pregunta a hacer, empezando con preguntas de rapport y pasando a preguntas de sondeo cuando detecta senales de friccion en el equipo. Al terminar la sesion (deteniendo con Alt+S) genera ademas minutas/<sesion>/final/optimizacion-estrategia.md con las areas de oportunidad y la estrategia de optimizacion propuesta.
