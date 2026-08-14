@@ -468,7 +468,11 @@ class ApplicationController {
     this.optimizacionActive = false;
     this.optimizacionPendingText = [];
     this.optimizacionSilentSeconds = 0;
-    this.optimizacionRunningTranscript = '';
+    // Memoria sintetizada de la entrevista (no transcripcion cruda: se
+    // actualiza en cada sugerencia via el propio LLM, ver
+    // buildOptimizacionSuggestionPrompt) para no acumular contexto crudo
+    // sin limite ("lost in the middle").
+    this.optimizacionSummary = '';
     this.optimizacionSuggestions = [];
     this.optimizacionQueue = Promise.resolve();
 
@@ -719,7 +723,10 @@ class ApplicationController {
       "Alt+A": () => windowManager.toggleInteraction(),
       "Alt+R": () => this.toggleSpeechRecognition(),
       "Alt+S": () => this.handleSecretariaMeetingShortcut(),
-      "Alt+O": () => this.handleOptimizacionToggleShortcut(),
+      "Alt+O": () => this.handleOptimizacionToggleShortcut().catch((error) => {
+        logger.error('Alt+O fallo', { error: error.message });
+        signalShortcut(`Alt+O fallo: ${error.message}`);
+      }),
       "CommandOrControl+Shift+T": () => windowManager.forceAlwaysOnTopForAllWindows(),
       "CommandOrControl+Shift+Alt+T": () => {
         const results = windowManager.testAlwaysOnTopForAllWindows();
@@ -1432,7 +1439,7 @@ class ApplicationController {
   // startSecretariaMeetingSession) para poder detectar pausas casi en vivo;
   // una vez que Alt+S ya esta grabando, el tamano de fragmento no se puede
   // cambiar en caliente sin cortar la captura.
-  handleOptimizacionToggleShortcut() {
+  async handleOptimizacionToggleShortcut() {
     if (!this.isSecretariaMode()) {
       signalShortcut('Alt+O solo aplica en modo secretaria');
       return;
@@ -1452,18 +1459,98 @@ class ApplicationController {
       return;
     }
 
-    this.optimizacionArmed = !this.optimizacionArmed;
-    signalShortcut(this.optimizacionArmed
-      ? `Alt+O: optimizacion armada. La proxima sesion Alt+S usara fragmentos de ${OPTIMIZACION_SEGMENT_SEC}s y sugerira preguntas tras ${OPTIMIZACION_SILENCE_SEC}s de silencio`
-      : 'Alt+O: optimizacion desarmada. La proxima sesion Alt+S usara el fragmento normal');
+    if (this.optimizacionArmed) {
+      this.optimizacionArmed = false;
+      signalShortcut('Alt+O: optimizacion desarmada. La proxima sesion Alt+S usara el fragmento normal');
+      return;
+    }
+
+    const resumable = this.findResumableOptimizacionSession();
+    if (resumable) {
+      const choice = await dialog.showMessageBox({
+        type: 'question',
+        buttons: ['Retomar esa entrevista', 'Cerrar y generar notas (arranca una nueva ya)', 'Cancelar'],
+        defaultId: 0,
+        cancelId: 2,
+        title: 'Entrevista de optimizacion sin terminar',
+        message: `Hay una sesion de optimizacion sin notas finales en ${resumable.sessionDir}.`,
+        detail: `${resumable.state.suggestions?.length || 0} pregunta(s) sugerida(s), ultima actividad: ${resumable.state.updatedAt || 'desconocida'}.\n\nRetomarla sigue sumando al mismo resumen en la proxima sesion Alt+S. Cerrarla genera sus notas finales en segundo plano y de una vez arma una entrevista nueva.`
+      });
+
+      if (choice.response === 2) {
+        signalShortcut('Alt+O cancelado: la sesion anterior sigue pendiente, vuelve a presionar Alt+O cuando decidas');
+        return;
+      }
+
+      if (choice.response === 0) {
+        this.resetOptimizacionRuntimeState();
+        this.optimizacionSummary = resumable.state.summary || '';
+        this.optimizacionSuggestions = Array.isArray(resumable.state.suggestions) ? resumable.state.suggestions : [];
+        this.optimizacionArmed = true;
+        signalShortcut(`Alt+O: optimizacion armada retomando el resumen de ${resumable.sessionDir}. La proxima sesion Alt+S continua esa entrevista`);
+        return;
+      }
+
+      // choice.response === 1: cerrar en segundo plano y armar una nueva ya.
+      signalUserNotice('Generando notas finales de la sesion de optimizacion anterior en segundo plano...', { sessionDir: resumable.sessionDir });
+      this.finalizeOptimizacionStrategyFromDisk(resumable).catch((error) => {
+        logger.warn('No se pudo generar en segundo plano la estrategia de la sesion anterior', {
+          error: error.message,
+          sessionDir: resumable.sessionDir
+        });
+        signalUserNotice(`No se pudo generar la estrategia de la sesion anterior: ${error.message}`, { sessionDir: resumable.sessionDir });
+      });
+
+      this.resetOptimizacionRuntimeState();
+      this.optimizacionArmed = true;
+      signalShortcut(`Alt+O: optimizacion armada para una entrevista nueva. Fragmentos de ${OPTIMIZACION_SEGMENT_SEC}s, sugerencias tras ${OPTIMIZACION_SILENCE_SEC}s de silencio`);
+      return;
+    }
+
+    this.resetOptimizacionRuntimeState();
+    this.optimizacionArmed = true;
+    signalShortcut(`Alt+O: optimizacion armada. La proxima sesion Alt+S usara fragmentos de ${OPTIMIZACION_SEGMENT_SEC}s y sugerira preguntas tras ${OPTIMIZACION_SILENCE_SEC}s de silencio`);
   }
 
   resetOptimizacionRuntimeState() {
     this.optimizacionPendingText = [];
     this.optimizacionSilentSeconds = 0;
-    this.optimizacionRunningTranscript = '';
+    this.optimizacionSummary = '';
     this.optimizacionSuggestions = [];
     this.optimizacionQueue = Promise.resolve();
+  }
+
+  // Busca en minutas/ la sesion de optimizacion mas reciente que quedo sin
+  // notas finales (optimizacion/estado.json existe y no esta marcado
+  // finalized). Se usa al armar Alt+O para ofrecer continuar o cerrarla.
+  findResumableOptimizacionSession() {
+    const meetingsDir = this.getSecretariaMeetingsDir();
+    if (!fs.existsSync(meetingsDir)) return null;
+
+    const currentSessionDir = this.secretariaMeetingSession?.sessionDir
+      ? path.resolve(this.secretariaMeetingSession.sessionDir)
+      : null;
+
+    const candidates = [];
+    for (const name of fs.readdirSync(meetingsDir)) {
+      const sessionDir = path.join(meetingsDir, name);
+      if (currentSessionDir && path.resolve(sessionDir) === currentSessionDir) continue;
+
+      const statePath = path.join(sessionDir, 'optimizacion', 'estado.json');
+      if (!fs.existsSync(statePath)) continue;
+
+      try {
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+        if (state.finalized) continue;
+        candidates.push({ sessionDir, statePath, finalDir: path.join(sessionDir, 'final'), state });
+      } catch (error) {
+        continue;
+      }
+    }
+
+    if (!candidates.length) return null;
+    candidates.sort((a, b) => new Date(b.state.updatedAt || 0) - new Date(a.state.updatedAt || 0));
+    return candidates[0];
   }
 
   createSecretariaMeetingSessionState(sourceType = null, segmentSec = MEETING_SEGMENT_SEC) {
@@ -1562,10 +1649,10 @@ class ApplicationController {
   }
 
   async startSecretariaMeetingSession() {
+    // No se resetea el estado de optimizacion aca: handleOptimizacionToggleShortcut
+    // ya lo deja listo al armar (limpio para una entrevista nueva, o precargado
+    // con el resumen de una sesion retomada). Resetearlo aca borraria ese resumen.
     this.optimizacionActive = this.optimizacionArmed;
-    if (this.optimizacionActive) {
-      this.resetOptimizacionRuntimeState();
-    }
     const segmentSec = this.optimizacionActive ? OPTIMIZACION_SEGMENT_SEC : MEETING_SEGMENT_SEC;
     const session = this.createSecretariaMeetingSessionState('liveRecording', segmentSec);
     session.optimizacionActive = this.optimizacionActive;
@@ -1762,10 +1849,6 @@ class ApplicationController {
     if (text) {
       this.optimizacionSilentSeconds = 0;
       this.optimizacionPendingText.push(text);
-      this.optimizacionRunningTranscript = `${this.optimizacionRunningTranscript} ${text}`.trim();
-      if (this.optimizacionRunningTranscript.length > OPTIMIZACION_CONTEXT_CHARS) {
-        this.optimizacionRunningTranscript = this.optimizacionRunningTranscript.slice(-OPTIMIZACION_CONTEXT_CHARS);
-      }
     } else {
       this.optimizacionSilentSeconds += chunkDuration;
     }
@@ -1792,9 +1875,9 @@ class ApplicationController {
       'Preguntas que ya se sugirieron (no las repitas ni parafrasees):',
       previousQuestions,
       '',
-      'Transcripcion completa acumulada hasta ahora (puede incluir texto ya usado en sugerencias previas, es solo contexto):',
+      'RESUMEN sintetizado de la entrevista hasta ahora (memoria de largo plazo, no transcripcion cruda):',
       '"""',
-      this.optimizacionRunningTranscript || '[Sin transcripcion previa]',
+      this.optimizacionSummary || '[Sin resumen previo, esta es la primera actualizacion]',
       '"""',
       '',
       'Texto nuevo desde la ultima sugerencia (esto es lo que acaba de pasar en la conversacion, justo antes del silencio actual):',
@@ -1802,8 +1885,38 @@ class ApplicationController {
       newText,
       '"""',
       '',
-      'Sugiere la siguiente pregunta que deberia hacer quien entrevista, siguiendo las reglas del modo. Si no aplica ninguna, responde SIN_SUGERENCIA.'
+      'Actualiza el RESUMEN con lo nuevo y sugiere la siguiente pregunta siguiendo las reglas del modo, en el formato RESUMEN/PREGUNTA/RAZON.'
     ].join('\n');
+  }
+
+  // Parsea el formato de salida obligatorio del modo (ver prompts/optimizacion.md):
+  //   RESUMEN: ...
+  //   PREGUNTA: ... | SIN_SUGERENCIA
+  //   RAZON: ...
+  // Cada etiqueta puede tener valor multilinea hasta la siguiente etiqueta.
+  parseOptimizacionSuggestionResponse(rawResponse) {
+    const text = String(rawResponse || '');
+    const labels = ['RESUMEN', 'PREGUNTA', 'RAZON'];
+    const values = {};
+
+    for (let i = 0; i < labels.length; i++) {
+      const label = labels[i];
+      const startMatch = text.match(new RegExp(`^${label}:\\s*`, 'm'));
+      if (!startMatch) continue;
+      const startIndex = startMatch.index + startMatch[0].length;
+      const restLabels = labels.slice(i + 1);
+      const nextMatch = restLabels.length
+        ? text.slice(startIndex).match(new RegExp(`^(?:${restLabels.join('|')}):`, 'm'))
+        : null;
+      const endIndex = nextMatch ? startIndex + nextMatch.index : text.length;
+      values[label] = text.slice(startIndex, endIndex).trim();
+    }
+
+    return {
+      summary: values.RESUMEN || '',
+      question: values.PREGUNTA || '',
+      reason: values.RAZON || ''
+    };
   }
 
   async suggestOptimizacionQuestion(session, newText) {
@@ -1819,32 +1932,84 @@ class ApplicationController {
 
     if (this.secretariaMeetingSession !== session || !this.optimizacionActive) return;
 
-    const question = (llmResult.response || '').trim();
-    if (!question || /^SIN_SUGERENCIA$/i.test(question)) {
-      logger.info('Optimizacion: sin sugerencia para este tramo de silencio');
-      return;
+    const parsed = this.parseOptimizacionSuggestionResponse(llmResult.response);
+    if (parsed.summary) {
+      this.optimizacionSummary = parsed.summary.length > OPTIMIZACION_CONTEXT_CHARS
+        ? parsed.summary.slice(-OPTIMIZACION_CONTEXT_CHARS)
+        : parsed.summary;
     }
 
-    this.optimizacionSuggestions.push({ question, at: new Date().toISOString(), sourceText: newText });
-    this.writeOptimizacionSuggestionsFile(session);
+    const question = parsed.question.trim();
+    const hasQuestion = question && !/^SIN_SUGERENCIA$/i.test(question);
 
+    if (hasQuestion) {
+      this.optimizacionSuggestions.push({
+        question,
+        reason: parsed.reason.trim(),
+        at: new Date().toISOString(),
+        sourceText: newText
+      });
+    } else {
+      logger.info('Optimizacion: sin sugerencia para este tramo de silencio');
+    }
+
+    this.writeOptimizacionState(session);
+
+    if (!hasQuestion) return;
+
+    const lastSuggestion = this.optimizacionSuggestions[this.optimizacionSuggestions.length - 1];
     signalShortcut(`Optimizacion sugiere: ${question}`);
-    windowManager.showLLMResponse(`### Pregunta de apoyo sugerida\n\n${question}`, {
-      skill: 'optimizacion',
-      isOptimizacionSuggestion: true
-    });
+    windowManager.showLLMResponse(
+      [
+        '### Resumen hasta ahora',
+        '',
+        this.optimizacionSummary || '[Sin resumen]',
+        '',
+        '### Por que esta pregunta',
+        '',
+        lastSuggestion.reason || '[Sin explicacion]',
+        '',
+        '### Pregunta sugerida',
+        '',
+        question
+      ].join('\n'),
+      { skill: 'optimizacion', isOptimizacionSuggestion: true }
+    );
   }
 
-  writeOptimizacionSuggestionsFile(session) {
+  // Persiste el estado recuperable de la entrevista (resumen + sugerencias)
+  // en cada actualizacion, no solo al final: si se corta la conversacion o
+  // internet a mitad de camino, el proximo Alt+O puede ofrecer retomarla
+  // (ver findResumableOptimizacionSession) en vez de perder el contexto.
+  // summary/suggestions son opcionales: por defecto usan el estado en vivo
+  // (this.optimizacionSummary/Suggestions), pero se pueden pasar explicitos
+  // para escribir un snapshot tomado antes de un await largo (ver
+  // finalizeOptimizacionStrategy, que evita que un Alt+O concurrente
+  // reemplace el contenido a mitad de la escritura).
+  writeOptimizacionState(session, extra = {}, summary = this.optimizacionSummary, suggestions = this.optimizacionSuggestions) {
     try {
       const optimizacionDir = path.join(session.sessionDir, 'optimizacion');
       fs.mkdirSync(optimizacionDir, { recursive: true });
-      const lines = this.optimizacionSuggestions.map((s, i) =>
-        `${i + 1}. [${s.at}] ${s.question}`
+
+      const state = {
+        sessionDir: session.sessionDir,
+        summary,
+        suggestions,
+        updatedAt: new Date().toISOString(),
+        finalized: false,
+        ...extra
+      };
+      fs.writeFileSync(path.join(optimizacionDir, 'estado.json'), `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+
+      const lines = suggestions.map((s, i) =>
+        `${i + 1}. [${s.at}] ${s.question}${s.reason ? `\n   Por que: ${s.reason}` : ''}`
       );
       fs.writeFileSync(path.join(optimizacionDir, 'sugerencias.md'), `${lines.join('\n')}\n`, 'utf8');
+
+      return state;
     } catch (error) {
-      logger.warn('No se pudo guardar sugerencias de optimizacion en disco', { error: error.message });
+      logger.warn('No se pudo guardar el estado de optimizacion en disco', { error: error.message });
+      return null;
     }
   }
 
@@ -2081,6 +2246,65 @@ class ApplicationController {
     this.writeSecretariaMeetingManifest(session);
   }
 
+  buildOptimizacionFinalPrompt(transcriptText, summary, suggestions) {
+    const questionsList = suggestions.length
+      ? suggestions.map((s, i) => `${i + 1}. ${s.question}${s.reason ? ` (razon: ${s.reason})` : ''}`).join('\n')
+      : '[No se sugirieron preguntas durante la sesion]';
+
+    const transcriptForPrompt = transcriptText.length <= MEETING_FINAL_TRANSCRIPT_CHARS
+      ? transcriptText
+      : transcriptText.slice(-MEETING_FINAL_TRANSCRIPT_CHARS);
+
+    return [
+      'Genera la sintesis final de esta entrevista de optimizacion de procesos.',
+      '',
+      'RESUMEN sintetizado acumulado durante la entrevista:',
+      '"""',
+      summary?.trim() || '[Sin resumen acumulado]',
+      '"""',
+      '',
+      'Preguntas de apoyo que se sugirieron durante la sesion:',
+      questionsList,
+      '',
+      'TRANSCRIPCION DE LA ENTREVISTA (evidencia textual, puede estar incompleta):',
+      '"""',
+      transcriptForPrompt || '[Sin transcripcion disponible]',
+      '"""'
+    ].join('\n');
+  }
+
+  // Nucleo compartido: arma el prompt final, llama al LLM y escribe
+  // optimizacion-estrategia.md en finalDir. Lo usan tanto el cierre normal
+  // de una sesion Alt+S (finalizeOptimizacionStrategy) como el cierre en
+  // segundo plano de una sesion previa retomable (finalizeOptimizacionStrategyFromDisk).
+  async generateOptimizacionStrategyDocument(finalDir, transcriptText, summary, suggestions) {
+    fs.mkdirSync(finalDir, { recursive: true });
+    const strategyPath = path.join(finalDir, 'optimizacion-estrategia.md');
+    const text = String(transcriptText || '').trim();
+
+    if (!text && !summary?.trim()) {
+      fs.writeFileSync(strategyPath, '# Estrategia de optimizacion no generada\n\nNo hubo transcripcion ni resumen suficiente en la sesion.\n', 'utf8');
+      return { ok: false, strategyPath };
+    }
+
+    const prompt = this.buildOptimizacionFinalPrompt(text, summary, suggestions);
+
+    try {
+      const llmResult = await llmService.processTextWithSkill(prompt, 'optimizacion', [], null);
+      fs.writeFileSync(strategyPath, `${llmResult.response.trim()}\n`, 'utf8');
+      signalUserNotice('Estrategia de optimizacion generada', { strategyPath });
+      windowManager.showLLMResponse(llmResult.response, {
+        skill: 'optimizacion',
+        processingTime: llmResult.metadata?.processingTime || 0
+      });
+      return { ok: true, strategyPath };
+    } catch (error) {
+      logger.warn('No se pudo generar la estrategia final de optimizacion', { error: error.message });
+      fs.writeFileSync(strategyPath, `# Estrategia de optimizacion no generada\n\nError del LLM: ${error.message}\n`, 'utf8');
+      return { ok: false, strategyPath, error };
+    }
+  }
+
   // Corre despues de la minuta de Alt+S, sobre el transcript final completo
   // (mejor que solo el buffer en vivo de suggestOptimizacionQuestion, que se
   // vacia despues de cada sugerencia y no alcanza a cubrir toda la sesion).
@@ -2091,44 +2315,51 @@ class ApplicationController {
     // preguntas ya hechas en el prompt final.
     await this.optimizacionQueue.catch(() => {});
 
-    const strategyPath = path.join(finalDir, 'optimizacion-estrategia.md');
-    const transcriptText = String(sourceTranscript || '').trim();
-    if (!transcriptText) {
-      fs.writeFileSync(strategyPath, '# Estrategia de optimizacion no generada\n\nNo hubo transcripcion suficiente en la sesion.\n', 'utf8');
-      return;
+    // Snapshot ANTES del await de generateOptimizacionStrategyDocument (una
+    // llamada al LLM que puede tardar varios segundos): si el usuario arma
+    // Alt+O para una entrevista nueva mientras tanto, this.optimizacionSummary/
+    // Suggestions cambian de duenio y no deben terminar escritos en el
+    // estado.json de ESTA sesion.
+    const summarySnapshot = this.optimizacionSummary;
+    const suggestionsSnapshot = this.optimizacionSuggestions;
+
+    await this.generateOptimizacionStrategyDocument(finalDir, sourceTranscript, summarySnapshot, suggestionsSnapshot);
+
+    this.writeOptimizacionState(session, { finalized: true }, summarySnapshot, suggestionsSnapshot);
+  }
+
+  // Cierre en segundo plano de una sesion de optimizacion retomable (elegida
+  // desde el dialogo de Alt+O, opcion "Cerrar y generar notas"). No toca el
+  // estado en memoria de la sesion nueva que el usuario ya esta armando en
+  // paralelo -- todo sale de resumable.state, leido de disco.
+  async finalizeOptimizacionStrategyFromDisk(resumable) {
+    const finalDir = resumable.finalDir;
+    const candidatePaths = [
+      path.join(finalDir, 'transcript-hablantes.txt'),
+      path.join(finalDir, 'transcript-full.txt')
+    ];
+    let transcriptText = '';
+    for (const candidate of candidatePaths) {
+      if (fs.existsSync(candidate)) {
+        transcriptText = fs.readFileSync(candidate, 'utf8');
+        break;
+      }
     }
 
-    const questionsList = this.optimizacionSuggestions.length
-      ? this.optimizacionSuggestions.map((s, i) => `${i + 1}. ${s.question}`).join('\n')
-      : '[No se sugirieron preguntas durante la sesion]';
-
-    const transcriptForPrompt = transcriptText.length <= MEETING_FINAL_TRANSCRIPT_CHARS
-      ? transcriptText
-      : transcriptText.slice(-MEETING_FINAL_TRANSCRIPT_CHARS);
-
-    const prompt = [
-      'Genera la sintesis final de esta entrevista de optimizacion de procesos.',
-      '',
-      'Preguntas de apoyo que se sugirieron durante la sesion:',
-      questionsList,
-      '',
-      'TRANSCRIPCION COMPLETA DE LA ENTREVISTA:',
-      '"""',
-      transcriptForPrompt,
-      '"""'
-    ].join('\n');
+    await this.generateOptimizacionStrategyDocument(
+      finalDir,
+      transcriptText,
+      resumable.state.summary,
+      Array.isArray(resumable.state.suggestions) ? resumable.state.suggestions : []
+    );
 
     try {
-      const llmResult = await llmService.processTextWithSkill(prompt, 'optimizacion', [], null);
-      fs.writeFileSync(strategyPath, `${llmResult.response.trim()}\n`, 'utf8');
-      signalUserNotice('Estrategia de optimizacion generada', { strategyPath });
-      windowManager.showLLMResponse(llmResult.response, {
-        skill: 'optimizacion',
-        processingTime: llmResult.metadata?.processingTime || 0
-      });
+      const optimizacionDir = path.join(resumable.sessionDir, 'optimizacion');
+      fs.mkdirSync(optimizacionDir, { recursive: true });
+      const finalizedState = { ...resumable.state, finalized: true, updatedAt: new Date().toISOString() };
+      fs.writeFileSync(resumable.statePath, `${JSON.stringify(finalizedState, null, 2)}\n`, 'utf8');
     } catch (error) {
-      logger.warn('No se pudo generar la estrategia final de optimizacion', { error: error.message });
-      fs.writeFileSync(strategyPath, `# Estrategia de optimizacion no generada\n\nError del LLM: ${error.message}\n`, 'utf8');
+      logger.warn('No se pudo marcar como finalizado el estado de optimizacion en disco', { error: error.message });
     }
   }
 
