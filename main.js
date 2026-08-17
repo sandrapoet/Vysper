@@ -727,6 +727,10 @@ class ApplicationController {
         logger.error('Alt+O fallo', { error: error.message });
         signalShortcut(`Alt+O fallo: ${error.message}`);
       }),
+      "Alt+9": () => this.handleOptimizacionRetroactiveShortcut().catch((error) => {
+        logger.error('Alt+9 fallo', { error: error.message });
+        signalShortcut(`Alt+9 fallo: ${error.message}`);
+      }),
       "CommandOrControl+Shift+T": () => windowManager.forceAlwaysOnTopForAllWindows(),
       "CommandOrControl+Shift+Alt+T": () => {
         const results = windowManager.testAlwaysOnTopForAllWindows();
@@ -1551,6 +1555,60 @@ class ApplicationController {
     if (!candidates.length) return null;
     candidates.sort((a, b) => new Date(b.state.updatedAt || 0) - new Date(a.state.updatedAt || 0));
     return candidates[0];
+  }
+
+  // Alt+9: corre la sintesis de optimizacion sobre una sesion de Alt+S ya
+  // terminada que NO tuvo optimizacion activa (p.ej. Alt+O se armo despues
+  // de Alt+S, o a mitad de la ventana starting->recording -- ver
+  // troubleshooting). Usa el transcript final que Alt+S ya genero; si esa
+  // carpeta ademas tiene un estado.json parcial (sesion que si alcanzo a
+  // tener alguna sugerencia antes de perderse), lo suma como contexto.
+  async handleOptimizacionRetroactiveShortcut() {
+    if (!this.isSecretariaMode()) {
+      signalShortcut('Alt+9 solo aplica en modo secretaria');
+      return;
+    }
+
+    const result = await dialog.showOpenDialog({
+      title: 'Selecciona la carpeta de la sesion (minutas/reunion-...)',
+      defaultPath: this.getSecretariaMeetingsDir(),
+      properties: ['openDirectory']
+    });
+
+    if (result.canceled || !result.filePaths?.[0]) {
+      signalShortcut('Alt+9 cancelado: no se selecciono ninguna carpeta');
+      return;
+    }
+
+    const sessionDir = result.filePaths[0];
+    const finalDir = path.join(sessionDir, 'final');
+    const candidatePaths = [
+      path.join(finalDir, 'transcript-hablantes.txt'),
+      path.join(finalDir, 'transcript-full.txt')
+    ];
+    const transcriptPath = candidatePaths.find((candidate) => fs.existsSync(candidate));
+    if (!transcriptPath) {
+      signalUserNotice(`Alt+9: no se encontro transcript en ${finalDir} (la sesion debe estar terminada con Alt+S)`, { sessionDir });
+      return;
+    }
+    const transcriptText = fs.readFileSync(transcriptPath, 'utf8');
+
+    const statePath = path.join(sessionDir, 'optimizacion', 'estado.json');
+    let summary = '';
+    let suggestions = [];
+    if (fs.existsSync(statePath)) {
+      try {
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+        summary = state.summary || '';
+        suggestions = Array.isArray(state.suggestions) ? state.suggestions : [];
+      } catch (error) {
+        logger.warn('Alt+9: no se pudo leer estado.json previo, se genera solo con el transcript', { error: error.message });
+      }
+    }
+
+    signalUserNotice('Alt+9: generando estrategia de optimizacion sobre sesion ya terminada...', { sessionDir, transcriptPath });
+    await this.generateOptimizacionStrategyDocument(finalDir, transcriptText, summary, suggestions);
+    this.writeOptimizacionState({ sessionDir }, { finalized: true }, summary, suggestions);
   }
 
   createSecretariaMeetingSessionState(sourceType = null, segmentSec = MEETING_SEGMENT_SEC) {

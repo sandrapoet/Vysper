@@ -243,6 +243,12 @@ class SessionManager {
         event.skill === targetSkill
       );
       skillPrompt = skillPromptEvent?.content || null;
+      
+      // If not found in session memory, try loading directly from promptLoader
+      // (handles race conditions where initialization hasn't completed yet)
+      if (!skillPrompt) {
+        skillPrompt = promptLoader.getSkillPrompt(targetSkill);
+      }
     }
     
     // Get recent events for this skill
