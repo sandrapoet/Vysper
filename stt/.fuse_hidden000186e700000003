@@ -88,7 +88,7 @@ install_system_dependencies() {
     trap 'kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true' EXIT
 
     echo
-    echo "[0/9] Installing Ubuntu system dependencies..."
+    echo "[0/7] Installing Ubuntu system dependencies..."
     sudo apt-get update
     if [ $? -ne 0 ]; then
         echo "[ERROR] apt-get update failed."
@@ -143,7 +143,7 @@ echo "[OK] Python $PY_VER found."
 
 if [ ! -d "venv" ]; then
     echo
-    echo "[1/9] Creating virtual environment..."
+    echo "[1/7] Creating virtual environment..."
 
     $PYTHON_BIN -m venv venv
 
@@ -174,7 +174,7 @@ echo "[OK] Virtual environment activated."
 # ── 4. Upgrade pip silently ─────────────────────────────────
 
 echo
-echo "[2/9] Upgrading pip..."
+echo "[2/7] Upgrading pip..."
 
 python -m pip install --upgrade pip --quiet
 
@@ -186,7 +186,7 @@ fi
 # ── 5. Install CPU-only PyTorch audio stack ─────────────────
 
 echo
-echo "[3/9] Installing PyTorch CPU-only audio stack..."
+echo "[3/7] Installing PyTorch CPU-only audio stack..."
 echo "      This may take several minutes on first run."
 
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu --quiet
@@ -201,7 +201,7 @@ echo "[OK] PyTorch audio stack installed."
 # ── 6. Install remaining dependencies ───────────────────────
 
 echo
-echo "[4/9] Installing Python dependencies from requirements.txt..."
+echo "[4/7] Installing Python dependencies from requirements.txt..."
 echo "      This includes pyannote.audio for optional speaker diarization."
 
 pip install -r requirements.txt
@@ -234,7 +234,7 @@ echo "[OK] pyannote.audio ${PYANNOTE_VERSION} installed."
 # ── 7. Pre-download models ──────────────────────────────────
 
 echo
-echo "[5/9] Pre-downloading models, cached for future use..."
+echo "[5/7] Pre-downloading models, cached for future use..."
 echo "      Silero VAD model, approximately 2 MB..."
 
 python -c "import torch; torch.hub.load('snakers4/silero-vad', 'silero_vad', force_reload=True, verbose=True, trust_repo=True)"
@@ -265,7 +265,7 @@ echo "        VYSPER_PYANNOTE_MODEL=pyannote/speaker-diarization-community-1"
 # ── 8. Install Node dependencies and optionally launch app ──
 
 echo
-echo "[6/9] Installing Node dependencies..."
+echo "[6/7] Installing Node dependencies..."
 
 cd "$PROJECT_ROOT" || exit 1
 
@@ -312,7 +312,7 @@ fi
 # ── 9. Start LightRAG via Docker Compose ────────────────────
 
 echo
-echo "[7/9] Starting LightRAG service..."
+echo "[7/7] Starting LightRAG service..."
 
 MIRAG_LIGHTRAG_DIR="/media/san/Miscosas6/Desarrollo/MiRag/LightRAG"
 
@@ -346,126 +346,6 @@ else
             else
                 echo "[WARN] LightRAG did not respond within 30 seconds."
                 echo "       Check container logs with: docker logs lightrag"
-            fi
-        fi
-    fi
-fi
-
-# ── 10. Set up Cerebro (Silia mode backend) ─────────────────
-
-echo
-echo "[8/9] Setting up Cerebro (used by Vysper's Silia mode)..."
-
-CEREBRO_DIR="${CEREBRO_PATH:-/media/san/Miscosas6/Desarrollo/Cerebro}"
-
-if [ ! -d "$CEREBRO_DIR" ]; then
-    echo "[WARN] Cerebro not found at $CEREBRO_DIR; skipping."
-    echo "       Silia mode will not work until Cerebro is available there,"
-    echo "       or CEREBRO_PATH in .env points to the right location."
-else
-    (
-        cd "$CEREBRO_DIR" || exit 1
-
-        if [ ! -d ".venv" ]; then
-            echo "[INFO] Creating Cerebro virtual environment..."
-            "$PYTHON_BIN" -m venv .venv || { echo "[WARN] Failed to create Cerebro venv."; exit 1; }
-        fi
-
-        # shellcheck disable=SC1091
-        source .venv/bin/activate || { echo "[WARN] Failed to activate Cerebro venv."; exit 1; }
-
-        echo "[INFO] Installing Cerebro Python dependencies..."
-        pip install --upgrade pip --quiet
-        pip install -r requirements.txt --quiet
-
-        if [ $? -ne 0 ]; then
-            echo "[WARN] Failed to install Cerebro dependencies. Silia mode may not work."
-        else
-            echo "[OK] Cerebro dependencies installed."
-        fi
-
-        deactivate
-
-        if [ ! -f ".env" ] && [ -f ".env.example" ]; then
-            cp .env.example .env
-            echo "[WARN] Created Cerebro/.env from .env.example - fill in Jira/Notion/GitHub/Sandra RAG credentials before using Silia mode."
-        fi
-    )
-fi
-
-echo
-echo "      Vysper talks to Cerebro as a subprocess (python -m cerebro.cli)."
-echo "      Configure CEREBRO_PATH / CEREBRO_PYTHON / VYSPER_SILIA_ASSIGNEE in"
-echo "      Vysper's .env if Cerebro lives somewhere other than the default path."
-
-# ── 11. Verify Ollama and the Sandra RAG stack are up ───────
-
-echo
-echo "[9/9] Checking Ollama and Sandra RAG (Cerebro dependencies)..."
-
-if ! command -v ollama >/dev/null 2>&1; then
-    echo "[WARN] ollama not found; Cerebro/Silia mode needs it (ollama pull nemotron)."
-else
-    if curl -s --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
-        echo "[OK] Ollama already running on port 11434."
-    else
-        echo "[INFO] Starting Ollama server..."
-        nohup ollama serve >/tmp/ollama-vysper.log 2>&1 &
-        disown
-
-        OLLAMA_READY=0
-        for i in $(seq 1 10); do
-            if curl -s --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
-                OLLAMA_READY=1
-                break
-            fi
-            sleep 1
-        done
-
-        if [ "$OLLAMA_READY" -eq 1 ]; then
-            echo "[OK] Ollama is up on port 11434."
-        else
-            echo "[WARN] Ollama did not respond within 10 seconds."
-            echo "       Start it manually with: ollama serve"
-        fi
-    fi
-fi
-
-SANDRA_RAG_DIR="${SANDRA_RAG_DIR:-/media/san/Miscosas6/Desarrollo/SandraRagCreAI}"
-SANDRA_RAG_PORT="${SANDRA_RAG_PORT:-8000}"
-
-if ! command -v docker >/dev/null 2>&1; then
-    echo "[WARN] docker not found; skipping Sandra RAG startup."
-    echo "       Cerebro's sandra_kb_search tool needs it running on port $SANDRA_RAG_PORT."
-elif [ ! -f "$SANDRA_RAG_DIR/docker-compose.yml" ]; then
-    echo "[WARN] Sandra RAG docker-compose.yml not found at $SANDRA_RAG_DIR; skipping."
-    echo "       Set SANDRA_RAG_DIR if it lives somewhere else."
-else
-    if curl -s --max-time 2 "http://localhost:$SANDRA_RAG_PORT/health" >/dev/null 2>&1; then
-        echo "[OK] Sandra RAG already running on port $SANDRA_RAG_PORT."
-    else
-        docker compose -f "$SANDRA_RAG_DIR/docker-compose.yml" up -d
-
-        if [ $? -ne 0 ]; then
-            echo "[WARN] docker compose failed to start Sandra RAG."
-            echo "       Start it manually with:"
-            echo "       docker compose -f \"$SANDRA_RAG_DIR/docker-compose.yml\" up -d"
-        else
-            echo "[INFO] Waiting for Sandra RAG to become ready (up to 60s; it depends on its own LightRAG container)..."
-            SANDRA_READY=0
-            for i in $(seq 1 30); do
-                if curl -s --max-time 2 "http://localhost:$SANDRA_RAG_PORT/health" >/dev/null 2>&1; then
-                    SANDRA_READY=1
-                    break
-                fi
-                sleep 2
-            done
-
-            if [ "$SANDRA_READY" -eq 1 ]; then
-                echo "[OK] Sandra RAG is up on port $SANDRA_RAG_PORT."
-            else
-                echo "[WARN] Sandra RAG did not respond within 60 seconds."
-                echo "       Check container logs with: docker compose -f \"$SANDRA_RAG_DIR/docker-compose.yml\" logs"
             fi
         fi
     fi

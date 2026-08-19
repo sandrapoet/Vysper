@@ -12,6 +12,9 @@ const llmService = require("./src/services/llm.service");
 // Managers
 const windowManager = require("./src/managers/window.manager");
 const sessionManager = require("./src/managers/session.manager");
+const { CerebroService, CerebroError } = require("./src/services/cerebro.service");
+const { parseSiliaDailyCommand, parseIncidenteCommand } = require("./src/core/silia-commands");
+const { formatCerebroFinalAnswer, buildIncidenteLogEntry } = require("./src/core/silia-response");
 
 const { execFile, execSync, spawnSync, spawn } = require('child_process');
 const fs = require('fs');
@@ -450,6 +453,12 @@ class ApplicationController {
     this.isReady = false;
     this.codingLanguage = "python";
     this.activeSkill = "programming";
+    this.cerebroService = new CerebroService({
+      cerebroPath: config.get('cerebro.path'),
+      pythonPath: config.get('cerebro.python'),
+      timeoutMs: config.get('cerebro.timeoutMs'),
+      logger: logger
+    });
     this.accumulatedOCRImages = [];
     this.behavioralPendingFragments = [];
     this.behavioralRecordingActive = false;
@@ -1414,17 +1423,23 @@ class ApplicationController {
   }
 
   handleSecretariaMeetingShortcut() {
-    if (!this.isSecretariaMode()) {
-      signalMeetingStatus('IGNORADO', 'vuelve a modo secretaria para iniciar o detener la sesion larga.');
-      return;
-    }
-
+    // Detener una grabacion en curso funciona desde cualquier modo (p.ej.
+    // Silia): una vez que Alt+S arranco la sesion en modo secretaria, el
+    // sidecar de audio la mantiene viva independientemente del skill activo
+    // (ver _is_meeting_recording en stt/sidecar.py), asi que no hay razon
+    // para exigir volver a secretaria solo para poder cerrarla. Iniciar una
+    // sesion nueva si sigue requiriendo modo secretaria.
     const session = this.secretariaMeetingSession;
     if (session?.status === 'recording') {
       this.stopSecretariaMeetingSession().catch((error) => {
         logger.error('No se pudo detener la sesion larga de secretaria', { error: error.message });
         signalMeetingStatus('ERROR', `no se pudo detener la sesion larga: ${error.message}`);
       });
+      return;
+    }
+
+    if (!this.isSecretariaMode()) {
+      signalMeetingStatus('IGNORADO', 'vuelve a modo secretaria para iniciar la sesion larga.');
       return;
     }
 
@@ -3774,6 +3789,10 @@ class ApplicationController {
     return this.getNormalizedSkill(skill) === 'traductor';
   }
 
+  isSiliaMode(skill = this.activeSkill) {
+    return this.getNormalizedSkill(skill) === 'silia';
+  }
+
   isCodingAccumulationSkill(skill = this.activeSkill) {
     return ['programming', 'dsa', 'labelling', 'system-design'].includes(this.getNormalizedSkill(skill));
   }
@@ -4930,6 +4949,11 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
 
   async processTranscriptionWithLLM(text, sessionHistory) {
     try {
+      if (this.isSiliaMode()) {
+        await this.processTextWithSilia(text);
+        return;
+      }
+
       if (this.isSecretariaMode()) {
         logger.info("Skipping LLM transcription processing in secretaria mode", {
           textLength: typeof text === 'string' ? text.length : 0
@@ -5102,6 +5126,77 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     });
 
     windowManager.broadcastToAllWindows("transcription-llm-response", broadcastData);
+  }
+
+  emitSiliaResult(responseText, extraMetadata = {}) {
+    const llmResult = {
+      response: responseText,
+      metadata: {
+        skill: 'silia',
+        processingTime: 0,
+        usedFallback: false,
+        ...extraMetadata
+      }
+    };
+
+    sessionManager.addModelResponse(llmResult.response, {
+      skill: 'silia',
+      isTranscriptionResponse: true,
+      ...extraMetadata
+    });
+
+    this.broadcastTranscriptionLLMResponse(llmResult);
+  }
+
+  logIncidente(descripcion, prompt) {
+    try {
+      const logPath = path.join(config.appDataDir, 'incidentes.log');
+      fs.mkdirSync(config.appDataDir, { recursive: true });
+      const line = JSON.stringify(buildIncidenteLogEntry(descripcion, prompt));
+      fs.appendFileSync(logPath, line + '\n', 'utf8');
+    } catch (error) {
+      logger.error('No se pudo escribir en incidentes.log', { error: error.message });
+    }
+  }
+
+  async processTextWithSilia(text) {
+    const incidenteDescripcion = parseIncidenteCommand(text);
+
+    try {
+      if (parseSiliaDailyCommand(text)) {
+        logger.info('Comando /silia daily recibido');
+        const assignee = config.get('cerebro.siliaAssignee');
+        const result = await this.cerebroService.runDailyCheckpoint(assignee);
+        this.emitSiliaResult(formatCerebroFinalAnswer(result), { siliaCommand: 'daily' });
+        return;
+      }
+
+      if (incidenteDescripcion) {
+        logger.info('Comando /incidente recibido', { descripcion: incidenteDescripcion.substring(0, 100) });
+        const result = await this.cerebroService.runIncident(incidenteDescripcion);
+        const prompt = result.incident_prompt || formatCerebroFinalAnswer(result);
+
+        clipboard.writeText(prompt);
+        this.logIncidente(incidenteDescripcion, prompt);
+        this.emitSiliaResult(prompt, { siliaCommand: 'incidente', copiedToClipboard: true });
+        return;
+      }
+
+      const result = await this.cerebroService.runDiagnose(text);
+      this.emitSiliaResult(formatCerebroFinalAnswer(result));
+    } catch (error) {
+      const friendlyMessage = error instanceof CerebroError
+        ? error.message
+        : `No se pudo consultar a Cerebro: ${error.message}`;
+
+      logger.error('Fallo al procesar consulta en modo Silia', {
+        error: error.message,
+        text: typeof text === 'string' ? text.substring(0, 100) : ''
+      });
+
+      this.broadcastLLMError(friendlyMessage);
+      this.emitSiliaResult(friendlyMessage, { usedFallback: true, error: true });
+    }
   }
 
   onWindowAllClosed() {

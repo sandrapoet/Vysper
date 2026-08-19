@@ -271,7 +271,7 @@ The app remembers your interview context across multiple questions:
 ### Meeting Recording & Auto-Summary (`secretaria` mode)
 Long-form recording with automatic transcription and a final summary ("minuta"), independent from the normal `Alt+R` voice-command flow. Useful for recording a full meeting/call and getting a written summary afterward instead of a live AI answer per question.
 
-**1. Switch to the `secretaria` skill first.** Cycle skills with `Ctrl/Cmd + Up/Down` while Interactive Mode is on, or pick it from Settings. `Alt+S` only works in `secretaria` mode — in any other skill it's ignored (you'll see an "IGNORADO" notice).
+**1. Switch to the `secretaria` skill first.** Cycle skills with `Ctrl/Cmd + Up/Down` while Interactive Mode is on, or pick it from Settings. `Alt+S` only *starts* a new session in `secretaria` mode — in any other skill, starting one is ignored (you'll see an "IGNORADO" notice). *Stopping* an already-running session with `Alt+S` works from any skill (including `silia`) — you don't need to switch back to `secretaria` first, though you still can if you prefer.
 
 **2. Press `Alt+S` to start.** This creates `minutas/reunion-<YYYY-MM-DD-HH-MM-SS>/` (with subfolders `audio/`, `transcripts/`, `speakers/`, `summaries/`, `final/`) and starts recording from the microphone in the background.
 - Recording keeps going even if you switch to another skill or use `Alt+R` for a normal voice command at the same time — the microphone stream is shared, so the meeting capture is never interrupted by anything else you do.
@@ -310,6 +310,60 @@ The same "OCUPADO" busy-guard applies: if a meeting session (live via `Alt+S`, o
 **Resuming after a failure.** If a `Ctrl+5` run gets interrupted (app closed, diarization dependency missing, etc.), the transcription and diarization stages are checkpointed to disk (`transcripts/0001.txt` + `0001.segments.json`, `speakers/0001.json`) so they don't need to be redone. Pick the same audio file again with `Ctrl+5` and, if an unfinished session for that exact file is found under `minutas/`, you'll get a prompt to resume it instead of starting over — transcription and diarization are reused if they already succeeded (diarization is always retried if it was the one that failed, since it's cheap compared to re-transcribing), and the minuta is only regenerated if it wasn't produced yet.
 
 **Already have a plain-text transcript from somewhere else?** `Ctrl/Cmd + 7` (secretaria mode only) opens a file picker for an existing `.txt` transcript in `Hablante: texto` format (one line per turn, no timestamps — e.g. one you already had lying around, not necessarily produced by Vysper) and converts it to the same Microsoft-Teams-style format as `transcript-teams.txt`, saved next to the original as `<archivo>-teams.txt`. Since there's no real audio to time against, timestamps are **estimated** from a ~150-words-per-minute reading pace, accumulated turn by turn from `00:00:00` — treat them as approximate, not exact. Consecutive same-speaker lines are merged into one turn (adding a period between sentences if one is missing); any label that isn't a generic `SPEAKER_NN`/`Hablante desconocido` pattern is treated as an already-identified real name and kept as-is (uppercased).
+
+## Modo Silia (líder de proyecto interino)
+
+El modo **Silia** delega el razonamiento a [Cerebro](/media/san/Miscosas6/Desarrollo/Cerebro),
+un orquestador Python que combina Ollama/Nemotron con Jira, Notion, GitHub y
+un RAG de transcripciones (LightRAG + Sandra RAG). A diferencia de los demás
+modos, no llama a Gemini/Anthropic directamente: cada mensaje se pasa a
+`python -m cerebro.cli` como subproceso (`src/services/cerebro.service.js`) y
+la respuesta JSON (`summary`, `citations`, `action_items`) se muestra en el
+chat.
+
+**Activación:** Settings → Active Skill → `Silia (Lider de Proyecto)`.
+
+**Uso normal (preguntas libres):** cualquier duda de un stakeholder o del
+equipo — "¿cómo va el sprint?", "¿por qué se decidió usar X en el módulo Y?" —
+se responde consultando Jira/GitHub (estado, cronograma) o Notion/RAG
+(decisiones, contexto histórico), con riesgos de cronograma señalados
+proactivamente cuando aplica.
+
+**`/silia daily`** — checkpoint diario: consulta tickets asignados en
+progreso/pendientes (Jira), PRs abiertos (GitHub) y menciones recientes
+(RAG) para el usuario configurado en `VYSPER_SILIA_ASSIGNEE`, y devuelve un
+resumen ejecutivo con tickets vencidos, PRs bloqueados y riesgos.
+
+**`/incidente <descripción>`** — pipeline de diagnóstico de incidentes,
+más agresivo recolectando contexto (5 pasos forzados en Cerebro: GitHub →
+Jira → RAG → Notion → síntesis). Genera un prompt en markdown listo para
+pegar en Claude Code (contexto del error, hipótesis, archivos sospechosos,
+pasos para reproducir, prácticas CI/CD, runbooks, acción inmediata), lo
+copia automáticamente al portapapeles y registra `{timestamp, descripcion,
+prompt}` en `~/.Vysper/incidentes.log`.
+
+**Ejemplo:**
+```
+/incidente el servicio de pagos devuelve 500 intermitentemente desde el deploy de ayer
+```
+
+**Configuración** (`.env`, ver `env.example`): `CEREBRO_PATH`,
+`CEREBRO_PYTHON`, `CEREBRO_TIMEOUT_MS`, `VYSPER_SILIA_ASSIGNEE`. Cerebro debe
+estar configurado por separado (Ollama, MCP, credenciales de Jira/Notion/
+GitHub) — ver su propio `README.md`. `stt/setup_vysper_stt.sh` prepara el
+venv de Cerebro (`.venv` + `requirements.txt`) y verifica/levanta Ollama y el
+stack de Sandra RAG (`SandraRagCreAI`, puerto 8000 por defecto) al arrancar,
+igual que ya hace con LightRAG.
+
+Si Cerebro no responde (timeout, proceso caído, token inválido), Silia
+muestra un mensaje de error claro en el chat en vez de fallar silenciosamente.
+
+**Grabaciones de `secretaria` (Alt+S) y modo Silia:** cambiar a `silia` no
+interrumpe una grabación larga en curso — el sidecar de audio la mantiene
+viva independientemente del skill activo. Podés terminarla presionando
+`Alt+S` directamente desde `silia` (no hace falta volver a `secretaria`), o
+volver a `secretaria` y presionar `Alt+S` ahí — ambas opciones cierran la
+misma sesión y generan la minuta igual.
 
 ## 🤝 Contributing
 
