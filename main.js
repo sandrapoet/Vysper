@@ -1782,6 +1782,19 @@ class ApplicationController {
       // Pase lo que pase (exito o fallo en cualquiera de los pasos de
       // arriba), Alt+S tiene que quedar disponible de nuevo.
       this.secretariaMeetingSession = null;
+
+      // Si esta sesion tuvo optimizacion activa, no dejar el resumen/texto
+      // pendiente en memoria para la proxima Alt+S: startSecretariaMeetingSession
+      // asume que optimizacionArmed/optimizacionSummary siempre se dejaron
+      // "listos" por un Alt+O reciente (arma en limpio, o retoma explicitamente
+      // via el dialogo de sesion sin terminar). Sin este reset, una sesion
+      // nueva iniciada con un simple Alt+S (sin volver a tocar Alt+O) hereda
+      // en silencio el resumen/texto pendiente de ESTA sesion ya cerrada.
+      if (session.optimizacionActive) {
+        this.optimizacionActive = false;
+        this.optimizacionArmed = false;
+        this.resetOptimizacionRuntimeState();
+      }
     }
   }
 
