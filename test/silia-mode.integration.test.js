@@ -1,7 +1,12 @@
 const { EventEmitter } = require('events');
 const { CerebroService } = require('../src/services/cerebro.service');
-const { formatCerebroFinalAnswer } = require('../src/core/silia-response');
-const { parseSiliaDailyCommand, parseIncidenteCommand } = require('../src/core/silia-commands');
+const { formatCerebroFinalAnswer, formatOptimizacionesList } = require('../src/core/silia-response');
+const {
+  parseSiliaDailyCommand,
+  parseIncidenteCommand,
+  parseOptimizacionesCommand,
+  parsePropuestaDecidirCommand
+} = require('../src/core/silia-commands');
 
 function makeFakeChild() {
   const child = new EventEmitter();
@@ -24,6 +29,15 @@ async function routeSiliaText(cerebroService, text) {
   if (parseSiliaDailyCommand(text)) {
     const result = await cerebroService.runDailyCheckpoint('lider@equipo.com');
     return formatCerebroFinalAnswer(result);
+  }
+  if (parseOptimizacionesCommand(text)) {
+    const result = await cerebroService.runOptimizaciones();
+    return formatOptimizacionesList(result);
+  }
+  const propuestaDecision = parsePropuestaDecidirCommand(text);
+  if (propuestaDecision) {
+    await cerebroService.runDecidirPropuesta(propuestaDecision.id, propuestaDecision.estado, propuestaDecision.motivo);
+    return `Propuesta #${propuestaDecision.id} marcada como "${propuestaDecision.estado}".`;
   }
   const incidente = parseIncidenteCommand(text);
   if (incidente) {
@@ -87,6 +101,48 @@ describe('Silia mode activates and routes correctly', () => {
     expect(text).toContain('checkpoint diario');
     expect(spawnFn.mock.calls[0][1]).toEqual(
       expect.arrayContaining(['daily-checkpoint', 'lider@equipo.com'])
+    );
+  });
+
+  test('/optimizaciones routes to runOptimizaciones and formats the proposal list', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = routeSiliaText(service, '/optimizaciones');
+    child.stdout.emit('data', Buffer.from(JSON.stringify([
+      {
+        id: 1,
+        title: "Reducir timeouts de Ollama",
+        problem: "4 incidentes por timeout en Ollama",
+        proposal: "Aumentar timeout y agregar retries",
+        impact_estimate: "Ahorro de 2-3h/semana",
+        priority: "Alta",
+        status: "propuesta"
+      }
+    ])));
+    child.emit('close', 0);
+
+    const text = await promise;
+    expect(text).toContain('#1 — Reducir timeouts de Ollama');
+    expect(text).toContain('Aumentar timeout y agregar retries');
+    expect(spawnFn.mock.calls[0][1]).toEqual(expect.arrayContaining(['optimizaciones']));
+  });
+
+  test('/propuesta 1 aceptar routes to runDecidirPropuesta', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = routeSiliaText(service, '/propuesta 1 aceptar');
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ ok: true, id: 1, status: 'aceptada' })));
+    child.emit('close', 0);
+
+    const text = await promise;
+    expect(text).toContain('Propuesta #1');
+    expect(text).toContain('aceptada');
+    expect(spawnFn.mock.calls[0][1]).toEqual(
+      expect.arrayContaining(['propuesta-decidir', '1', 'aceptada'])
     );
   });
 });

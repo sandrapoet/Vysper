@@ -13,9 +13,22 @@ const llmService = require("./src/services/llm.service");
 const windowManager = require("./src/managers/window.manager");
 const sessionManager = require("./src/managers/session.manager");
 const { CerebroService, CerebroError } = require("./src/services/cerebro.service");
-const { parseSiliaDailyCommand, parseIncidenteCommand } = require("./src/core/silia-commands");
+const {
+  parseSiliaDailyCommand,
+  parseIncidenteCommand,
+  parseOptimizacionesCommand,
+  parsePropuestaDecidirCommand,
+  parseSiliaRetroCommand,
+  parseSiliaRetroCompararCommand
+} = require("./src/core/silia-commands");
 const { parseActualizaRagCommand } = require("./src/core/secretaria-commands");
-const { formatCerebroFinalAnswer, buildIncidenteLogEntry } = require("./src/core/silia-response");
+const {
+  formatCerebroFinalAnswer,
+  formatOptimizacionesList,
+  formatSprintRetro,
+  buildIncidenteLogEntry
+} = require("./src/core/silia-response");
+const { classifyOperationalQuery, isExplicitCerebroCommand } = require("./src/core/cerebro-query-router");
 
 const { execFile, execSync, spawnSync, spawn } = require('child_process');
 const fs = require('fs');
@@ -1264,8 +1277,17 @@ class ApplicationController {
     });
 
     ipcMain.handle("update-active-skill", (event, skill) => {
-      this.setActiveSkill(skill, 'ipc-update-active-skill');
+      const previousSkill = this.getNormalizedSkill();
+      const normalizedSkill = this.setActiveSkill(skill, 'ipc-update-active-skill');
       windowManager.broadcastToAllWindows("skill-changed", { skill });
+
+      if (normalizedSkill === 'system-design' && previousSkill !== 'system-design') {
+        this.emitSiliaResult(
+          'Modo system-design activo. ¿En qué puedo ayudarte? Puedo consultar Cerebro para incidentes, pipelines, estado de despliegues, tareas asignadas, propuestas de optimización (/optimizaciones, /propuesta <id> aceptar|rechazar|posponer) y más.',
+          { skill: 'system-design', source: 'greeting' }
+        );
+      }
+
       return { success: true };
     });
 
@@ -4225,7 +4247,9 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         clearTimeout(timeout);
 
         if (code !== 0) {
-          reject(new Error(`${options.label || bin} fallo con codigo ${code}: ${(stderr || stdout || '').trim()}`));
+          const combined = [stdout, stderr].filter(Boolean).join('\n').trim();
+          const tail = combined.length > 4000 ? combined.slice(-4000) : combined;
+          reject(new Error(`${options.label || bin} fallo con codigo ${code}: ${tail}`));
           return;
         }
 
@@ -4987,6 +5011,14 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         return;
       }
 
+      if (normalizedSkill === 'system-design') {
+        const classification = classifyOperationalQuery(text);
+        if (classification.isOperational || isExplicitCerebroCommand(text)) {
+          await this.processTextWithSystemDesignCerebro(text, classification);
+          return;
+        }
+      }
+
       // Validate input text
       if (!text || typeof text !== 'string' || text.trim().length === 0) {
         logger.warn("Skipping LLM processing for empty or invalid transcription", {
@@ -5228,28 +5260,92 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     }
   }
 
-  async processTextWithSilia(text) {
+  /**
+   * Recognizes and executes the explicit Cerebro/Silia slash commands
+   * (/silia daily, /optimizaciones, /propuesta <id> ..., /incidente ...)
+   * shared by both "silia" mode and the Cerebro branch of "system-design"
+   * mode. Returns true if `text` matched and was handled (a chat response
+   * was already emitted), false if the caller should fall back to a
+   * free-form `runDiagnose` query.
+   */
+  async tryHandleCerebroSlashCommand(text, baseMetadata = {}) {
+    if (parseSiliaDailyCommand(text)) {
+      logger.info('Comando /silia daily recibido');
+      const assignee = config.get('cerebro.siliaAssignee');
+      const result = await this.cerebroService.runDailyCheckpoint(assignee);
+      this.emitSiliaResult(formatCerebroFinalAnswer(result), { ...baseMetadata, siliaCommand: 'daily' });
+      return true;
+    }
+
+    if (parseOptimizacionesCommand(text)) {
+      logger.info('Comando /optimizaciones recibido');
+      const result = await this.cerebroService.runOptimizaciones();
+      this.emitSiliaResult(formatOptimizacionesList(result), { ...baseMetadata, siliaCommand: 'optimizaciones' });
+      return true;
+    }
+
+    const propuestaDecision = parsePropuestaDecidirCommand(text);
+    if (propuestaDecision) {
+      logger.info('Comando /propuesta decidir recibido', propuestaDecision);
+      const decisionResult = await this.cerebroService.runDecidirPropuesta(
+        propuestaDecision.id,
+        propuestaDecision.estado,
+        propuestaDecision.motivo
+      );
+      const message = decisionResult && decisionResult.ok === false
+        ? `No se pudo actualizar la propuesta #${propuestaDecision.id}.`
+        : `Propuesta #${propuestaDecision.id} marcada como "${propuestaDecision.estado}".`;
+      this.emitSiliaResult(message, { ...baseMetadata, siliaCommand: 'propuesta-decidir' });
+      return true;
+    }
+
+    const retroComparar = parseSiliaRetroCompararCommand(text);
+    if (retroComparar) {
+      logger.info('Comando /silia retro comparar recibido', retroComparar);
+      const projectKey = config.get('cerebro.siliaDefaultProject');
+      const result = await this.cerebroService.runCompararRetro(
+        projectKey,
+        retroComparar.sprintA,
+        retroComparar.sprintB
+      );
+      const message = result && result.error
+        ? result.error
+        : `**Comparacion ${result.sprint_a.name} vs ${result.sprint_b.name}:**\n\n` +
+          Object.entries(result.diff_b_menos_a)
+            .map(([key, delta]) => `- ${key}: ${delta >= 0 ? '+' : ''}${delta}`)
+            .join('\n');
+      this.emitSiliaResult(message, { ...baseMetadata, siliaCommand: 'retro-comparar' });
+      return true;
+    }
+
+    const retroCommand = parseSiliaRetroCommand(text);
+    if (retroCommand) {
+      logger.info('Comando /silia retro recibido', retroCommand);
+      const projectKey = config.get('cerebro.siliaDefaultProject');
+      const result = await this.cerebroService.runSprintRetro(projectKey, { sprint: retroCommand.sprintRef });
+      this.emitSiliaResult(formatSprintRetro(result.retro), { ...baseMetadata, siliaCommand: 'retro' });
+      return true;
+    }
+
     const incidenteDescripcion = parseIncidenteCommand(text);
+    if (incidenteDescripcion) {
+      logger.info('Comando /incidente recibido', { descripcion: incidenteDescripcion.substring(0, 100) });
+      const result = await this.cerebroService.runIncident(incidenteDescripcion);
+      const prompt = result.incident_prompt || formatCerebroFinalAnswer(result);
 
+      clipboard.writeText(prompt);
+      this.logIncidente(incidenteDescripcion, prompt);
+      this.emitSiliaResult(prompt, { ...baseMetadata, siliaCommand: 'incidente', copiedToClipboard: true });
+      return true;
+    }
+
+    return false;
+  }
+
+  async processTextWithSilia(text) {
     try {
-      if (parseSiliaDailyCommand(text)) {
-        logger.info('Comando /silia daily recibido');
-        const assignee = config.get('cerebro.siliaAssignee');
-        const result = await this.cerebroService.runDailyCheckpoint(assignee);
-        this.emitSiliaResult(formatCerebroFinalAnswer(result), { siliaCommand: 'daily' });
-        return;
-      }
-
-      if (incidenteDescripcion) {
-        logger.info('Comando /incidente recibido', { descripcion: incidenteDescripcion.substring(0, 100) });
-        const result = await this.cerebroService.runIncident(incidenteDescripcion);
-        const prompt = result.incident_prompt || formatCerebroFinalAnswer(result);
-
-        clipboard.writeText(prompt);
-        this.logIncidente(incidenteDescripcion, prompt);
-        this.emitSiliaResult(prompt, { siliaCommand: 'incidente', copiedToClipboard: true });
-        return;
-      }
+      const handled = await this.tryHandleCerebroSlashCommand(text);
+      if (handled) return;
 
       const result = await this.cerebroService.runDiagnose(text);
       this.emitSiliaResult(formatCerebroFinalAnswer(result));
@@ -5265,6 +5361,65 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
 
       this.broadcastLLMError(friendlyMessage);
       this.emitSiliaResult(friendlyMessage, { usedFallback: true, error: true });
+    }
+  }
+
+  async processTextWithSystemDesignCerebro(text, classification = {}) {
+    const cerebroMetadata = { skill: 'system-design', source: 'cerebro' };
+
+    try {
+      const handled = await this.tryHandleCerebroSlashCommand(text, cerebroMetadata);
+      if (handled) return;
+    } catch (error) {
+      const friendlyMessage = error instanceof CerebroError
+        ? error.message
+        : `No se pudo consultar a Cerebro: ${error.message}`;
+
+      logger.error('Fallo al ejecutar comando de Cerebro desde modo system-design', {
+        error: error.message,
+        text: typeof text === 'string' ? text.substring(0, 100) : ''
+      });
+
+      this.broadcastLLMError(friendlyMessage);
+      this.emitSiliaResult(friendlyMessage, { ...cerebroMetadata, usedFallback: true, error: true });
+      return;
+    }
+
+    if (classification.isAction) {
+      const choice = await dialog.showMessageBox({
+        type: 'question',
+        buttons: ['Consultar', 'Cancelar'],
+        defaultId: 0,
+        cancelId: 1,
+        title: 'Consulta a Cerebro',
+        message: 'Voy a consultar a Cerebro (Jira/GitHub/RAG) para responder esto:',
+        detail: text
+      });
+
+      if (choice.response === 1) {
+        this.emitSiliaResult('Consulta a Cerebro cancelada.', {
+          ...cerebroMetadata,
+          cancelled: true
+        });
+        return;
+      }
+    }
+
+    try {
+      const result = await this.cerebroService.runDiagnose(text);
+      this.emitSiliaResult(formatCerebroFinalAnswer(result), cerebroMetadata);
+    } catch (error) {
+      const friendlyMessage = error instanceof CerebroError
+        ? error.message
+        : `No se pudo consultar a Cerebro: ${error.message}`;
+
+      logger.error('Fallo al consultar Cerebro desde modo system-design', {
+        error: error.message,
+        text: typeof text === 'string' ? text.substring(0, 100) : ''
+      });
+
+      this.broadcastLLMError(friendlyMessage);
+      this.emitSiliaResult(friendlyMessage, { ...cerebroMetadata, usedFallback: true, error: true });
     }
   }
 

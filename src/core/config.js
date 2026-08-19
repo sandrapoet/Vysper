@@ -86,7 +86,8 @@ class ConfigManager {
         path: process.env.CEREBRO_PATH || '/media/san/Miscosas6/Desarrollo/Cerebro',
         python: process.env.CEREBRO_PYTHON || null,
         timeoutMs: Number(process.env.CEREBRO_TIMEOUT_MS || 90000),
-        siliaAssignee: process.env.VYSPER_SILIA_ASSIGNEE || ''
+        siliaAssignee: process.env.VYSPER_SILIA_ASSIGNEE || '',
+        siliaDefaultProject: process.env.VYSPER_SILIA_DEFAULT_PROJECT || ''
       },
 
       sandraRag: {

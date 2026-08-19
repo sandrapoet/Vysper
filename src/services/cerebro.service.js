@@ -54,6 +54,65 @@ class CerebroService {
     return this._runCli(['incident', description, '--persona', persona]);
   }
 
+  /**
+   * Sistema de Mejora Continua (SMC): lista las propuestas de optimizacion
+   * generadas por el analisis diario (Fase 3/4). `estado` filtra por
+   * propuesta/aceptada/rechazada/pospuesta/implementada/medida.
+   */
+  runOptimizaciones({ estado = null, dias = null } = {}) {
+    const args = ['optimizaciones'];
+    if (estado) args.push('--estado', estado);
+    if (dias) args.push('--dias', String(dias));
+    return this._runCli(args);
+  }
+
+  /** Dispara el analisis (Fase 2/3) bajo demanda en vez de esperar al cron diario. */
+  runAnalizarOptimizaciones({ dias = null } = {}) {
+    const args = ['analizar'];
+    if (dias) args.push('--dias', String(dias));
+    return this._runCli(args);
+  }
+
+  /** Fase 4: registra la decision del equipo sobre una propuesta puntual. */
+  runDecidirPropuesta(optimizationId, estado, motivo = '') {
+    const args = ['propuesta-decidir', String(optimizationId), estado];
+    if (motivo) args.push('--motivo', motivo);
+    return this._runCli(args);
+  }
+
+  /** Fase 6/7: reporte de efectividad del SMC (propuestas vs aceptadas, impacto medido). */
+  runReporteMejora({ periodo = 'semanal' } = {}) {
+    return this._runCli(['reporte-mejora', '--periodo', periodo]);
+  }
+
+  /**
+   * Retrospectiva de sprint (pipeline forzado /silia retro): JQL seguro via
+   * la Agile API de Jira (nunca texto libre), metricas calculadas en
+   * codigo, Notion/RAG para notas de reunion, e incidentes/optimizaciones
+   * del SMC correlacionados por fecha.
+   */
+  runSprintRetro(projectKey, { sprint = null, persona = 'silia' } = {}) {
+    if (!projectKey) {
+      return Promise.reject(new CerebroError('Falta el proyecto para la retrospectiva (VYSPER_SILIA_DEFAULT_PROJECT).'));
+    }
+    const args = ['sprint-retro', projectKey];
+    if (sprint) args.push('--sprint', sprint);
+    args.push('--persona', persona);
+    return this._runCli(args);
+  }
+
+  /** Lista las retrospectivas ya generadas para un proyecto. */
+  runRetros(projectKey, { limite = null } = {}) {
+    const args = ['retros', projectKey];
+    if (limite) args.push('--limite', String(limite));
+    return this._runCli(args);
+  }
+
+  /** Compara dos retrospectivas ya generadas del mismo proyecto (diff aritmetico, sin LLM). */
+  runCompararRetro(projectKey, sprintA, sprintB) {
+    return this._runCli(['comparar-retro', projectKey, String(sprintA), String(sprintB)]);
+  }
+
   _runCli(args) {
     const startedAt = Date.now();
     const command = `${this.pythonPath} -m cerebro.cli ${args.join(' ')}`;

@@ -87,4 +87,77 @@ describe('CerebroService', () => {
       expect.any(Object)
     );
   });
+
+  test('runOptimizaciones passes estado/dias filters through to the CLI', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runOptimizaciones({ estado: 'propuesta', dias: 7 });
+    child.stdout.emit('data', Buffer.from('[]'));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'optimizaciones', '--estado', 'propuesta', '--dias', '7'],
+      expect.any(Object)
+    );
+  });
+
+  test('runDecidirPropuesta passes id/estado/motivo through to the CLI', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runDecidirPropuesta(3, 'aceptada', 'buena idea');
+    child.stdout.emit('data', Buffer.from('{"ok": true}'));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'propuesta-decidir', '3', 'aceptada', '--motivo', 'buena idea'],
+      expect.any(Object)
+    );
+  });
+
+  test('runSprintRetro rejects when no project is configured', async () => {
+    const service = new CerebroService({ spawnFn: jest.fn(), logger: silentLogger() });
+    await expect(service.runSprintRetro('')).rejects.toBeInstanceOf(CerebroError);
+  });
+
+  test('runSprintRetro passes project and sprint ref through to the CLI', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runSprintRetro('AGE', { sprint: '5' });
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ summary: 'ok', retro: null })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'sprint-retro', 'AGE', '--sprint', '5', '--persona', 'silia'],
+      expect.any(Object)
+    );
+  });
+
+  test('runCompararRetro passes both sprint refs through to the CLI', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runCompararRetro('AGE', 5, 6);
+    child.stdout.emit('data', Buffer.from('{}'));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'comparar-retro', 'AGE', '5', '6'],
+      expect.any(Object)
+    );
+  });
 });

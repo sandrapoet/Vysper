@@ -348,6 +348,31 @@ prompt}` en `~/.Vysper/incidentes.log`.
 /incidente el servicio de pagos devuelve 500 intermitentemente desde el deploy de ayer
 ```
 
+**`/optimizaciones`** (alias **`/propuestas`**) — lista las propuestas de
+optimización generadas por el Sistema de Mejora Continua (SMC) de Cerebro
+(`cerebro/smc/`), que analiza automáticamente incidentes recurrentes,
+bloqueos repetidos y pasos lentos del pipeline. Cada propuesta se muestra
+con su id, prioridad, problema detectado, propuesta y el impacto estimado.
+
+**`/propuesta <id> aceptar|rechazar|posponer [motivo]`** — registra la
+decisión del equipo sobre una propuesta puntual (`<id>` es el número que
+muestra `/optimizaciones`). El motivo es opcional salvo que quieras dejar
+constancia de por qué se rechazó o pospuso.
+
+**Ejemplos:**
+```
+/optimizaciones
+```
+```
+/propuesta 3 aceptar
+```
+```
+/propuesta 5 rechazar no aplica a nuestro stack actual
+```
+```
+/propuesta 2 posponer revisar despues del sprint
+```
+
 **Configuración** (`.env`, ver `env.example`): `CEREBRO_PATH`,
 `CEREBRO_PYTHON`, `CEREBRO_TIMEOUT_MS`, `VYSPER_SILIA_ASSIGNEE`. Cerebro debe
 estar configurado por separado (Ollama, MCP, credenciales de Jira/Notion/
@@ -359,18 +384,23 @@ igual que ya hace con LightRAG.
 Si Cerebro no responde (timeout, proceso caído, token inválido), Silia
 muestra un mensaje de error claro en el chat en vez de fallar silenciosamente.
 
-### ¿`/incidente` o `/silia daily` no responden?
+### ¿`/incidente`, `/silia daily`, `/optimizaciones` o `/propuesta` no responden?
 
 Antes de sospechar de Cerebro, revisá esto en orden — cubre el motivo más
 común de "nunca recibí respuesta":
 
-1. **Confirmá que el skill activo es `silia`.** `/incidente` y `/silia daily`
-   solo se reconocen dentro del modo `silia` (`processTextWithSilia` en
-   `main.js`); en cualquier otro modo el texto se descarta **sin ningún
-   aviso en el chat** — no hay error, no hay respuesta, nada. `silia` se
-   activa desde Settings → Active Skill → `Silia (Lider de Proyecto)`, o
-   ciclando con `Ctrl/Cmd + ↑/↓` en modo interactivo (ya incluido en el
-   ciclo de skills junto al resto).
+1. **Confirmá que el skill activo es `silia` o `system-design`.** Estos
+   comandos se reconocen en el modo `silia` (`processTextWithSilia` en
+   `main.js`) y también en `system-design`, donde una capa adicional
+   (`processTextWithSystemDesignCerebro` + `cerebro-query-router.js`)
+   detecta tanto los comandos explícitos como preguntas operativas en
+   lenguaje natural ("¿qué incidentes hay hoy?", "¿hay propuestas
+   pendientes?") y las enruta a Cerebro sin salir del modo de diseño. En
+   cualquier otro modo el texto se descarta **sin ningún aviso en el
+   chat** — no hay error, no hay respuesta, nada. `silia` se activa desde
+   Settings → Active Skill → `Silia (Lider de Proyecto)`, o ciclando con
+   `Ctrl/Cmd + ↑/↓` en modo interactivo (ya incluido en el ciclo de skills
+   junto al resto).
 2. **Verificá que las dependencias de Cerebro estén corriendo:** Ollama, el
    stack Docker de Sandra RAG (puerto 8000) y las credenciales/MCP de
    Jira/Notion/GitHub. `stt/setup_vysper_stt.sh` levanta Ollama y Sandra RAG
