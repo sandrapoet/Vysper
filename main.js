@@ -14,6 +14,7 @@ const windowManager = require("./src/managers/window.manager");
 const sessionManager = require("./src/managers/session.manager");
 const { CerebroService, CerebroError } = require("./src/services/cerebro.service");
 const { parseSiliaDailyCommand, parseIncidenteCommand } = require("./src/core/silia-commands");
+const { parseActualizaRagCommand } = require("./src/core/secretaria-commands");
 const { formatCerebroFinalAnswer, buildIncidenteLogEntry } = require("./src/core/silia-response");
 
 const { execFile, execSync, spawnSync, spawn } = require('child_process');
@@ -452,7 +453,7 @@ class ApplicationController {
   constructor() {
     this.isReady = false;
     this.codingLanguage = "python";
-    this.activeSkill = "programming";
+    this.activeSkill = "secretaria";
     this.cerebroService = new CerebroService({
       cerebroPath: config.get('cerebro.path'),
       pythonPath: config.get('cerebro.python'),
@@ -3509,6 +3510,7 @@ class ApplicationController {
       "negotiation",
       "devops",
       "secretaria",
+      "silia",
       "labelling",
       "traductor",
     ];
@@ -4187,7 +4189,8 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
   runProcess(bin, args, options = {}) {
     return new Promise((resolve, reject) => {
       const child = spawn(bin, args, {
-        stdio: options.input ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe']
+        stdio: options.input ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
+        ...(options.cwd ? { cwd: options.cwd } : {})
       });
 
       let stderr = '';
@@ -4962,6 +4965,16 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
 
   async processTranscriptionWithLLM(text, sessionHistory) {
     try {
+      const normalizedSkill = this.getNormalizedSkill();
+      const actualizaRagAllowed = this.isSiliaMode(normalizedSkill) ||
+        this.isSecretariaMode(normalizedSkill) ||
+        normalizedSkill === 'system-design';
+
+      if (actualizaRagAllowed && parseActualizaRagCommand(text)) {
+        await this.runActualizaRagCommand();
+        return;
+      }
+
       if (this.isSiliaMode()) {
         await this.processTextWithSilia(text);
         return;
@@ -5159,6 +5172,49 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     });
 
     this.broadcastTranscriptionLLMResponse(llmResult);
+  }
+
+  emitCommandResult(responseText, extraMetadata = {}) {
+    const skill = this.activeSkill;
+    const llmResult = {
+      response: responseText,
+      metadata: {
+        skill,
+        processingTime: 0,
+        usedFallback: false,
+        ...extraMetadata
+      }
+    };
+
+    sessionManager.addModelResponse(llmResult.response, {
+      skill,
+      isTranscriptionResponse: true,
+      ...extraMetadata
+    });
+
+    this.broadcastTranscriptionLLMResponse(llmResult);
+  }
+
+  async runActualizaRagCommand() {
+    logger.info('Comando /actualizaRag recibido', { skill: this.activeSkill });
+
+    try {
+      const ragDir = config.get('sandraRag.path');
+      const timeout = config.get('sandraRag.actualizaTimeoutMs');
+      const result = await this.runProcess('bash', ['./build.sh', '--actualiza'], {
+        cwd: ragDir,
+        timeout,
+        label: 'actualizaRag'
+      });
+
+      const summary = result.stdout || 'RAG actualizado correctamente.';
+      this.emitCommandResult(summary, { actualizaRagCommand: true });
+    } catch (error) {
+      const friendlyMessage = `No se pudo actualizar el RAG: ${error.message}`;
+      logger.error('Fallo al ejecutar /actualizaRag', { error: error.message });
+      this.broadcastLLMError(friendlyMessage);
+      this.emitCommandResult(friendlyMessage, { actualizaRagCommand: true, error: true });
+    }
   }
 
   logIncidente(descripcion, prompt) {

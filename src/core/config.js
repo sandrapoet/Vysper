@@ -87,6 +87,11 @@ class ConfigManager {
         python: process.env.CEREBRO_PYTHON || null,
         timeoutMs: Number(process.env.CEREBRO_TIMEOUT_MS || 90000),
         siliaAssignee: process.env.VYSPER_SILIA_ASSIGNEE || ''
+      },
+
+      sandraRag: {
+        path: process.env.VYSPER_SANDRA_RAG_DIR || '/media/san/Miscosas6/Desarrollo/SandraRagCreAI',
+        actualizaTimeoutMs: Number(process.env.VYSPER_SANDRA_RAG_ACTUALIZA_TIMEOUT_MS || 900000)
       }
     };
   }

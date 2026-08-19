@@ -38,6 +38,7 @@ Comandos de texto (en el chat o por voz):
 - !!!  Consolida el contexto acumulado y genera la respuesta final
 - |||  Reintento / fallback de la consolidación
 - °°°  Reinicia el contexto acumulado
+- /actualizaRag  Ejecuta `./build.sh --actualiza` sobre SandraRagCreAI (solo en secretaria, silia y system-design — ver sección "Modo Silia")
 ###
 
 <p align="center">
@@ -357,6 +358,47 @@ igual que ya hace con LightRAG.
 
 Si Cerebro no responde (timeout, proceso caído, token inválido), Silia
 muestra un mensaje de error claro en el chat en vez de fallar silenciosamente.
+
+### ¿`/incidente` o `/silia daily` no responden?
+
+Antes de sospechar de Cerebro, revisá esto en orden — cubre el motivo más
+común de "nunca recibí respuesta":
+
+1. **Confirmá que el skill activo es `silia`.** `/incidente` y `/silia daily`
+   solo se reconocen dentro del modo `silia` (`processTextWithSilia` en
+   `main.js`); en cualquier otro modo el texto se descarta **sin ningún
+   aviso en el chat** — no hay error, no hay respuesta, nada. `silia` se
+   activa desde Settings → Active Skill → `Silia (Lider de Proyecto)`, o
+   ciclando con `Ctrl/Cmd + ↑/↓` en modo interactivo (ya incluido en el
+   ciclo de skills junto al resto).
+2. **Verificá que las dependencias de Cerebro estén corriendo:** Ollama, el
+   stack Docker de Sandra RAG (puerto 8000) y las credenciales/MCP de
+   Jira/Notion/GitHub. `stt/setup_vysper_stt.sh` levanta Ollama y Sandra RAG
+   automáticamente; si algo de eso está caído, la consulta a Cerebro puede
+   demorar mucho o fallar.
+3. **Esperá hasta 90 segundos** (`CEREBRO_TIMEOUT_MS`, default `90000`): si
+   Cerebro está vivo pero una llamada externa (Jira/GitHub/RAG) se cuelga,
+   Vysper espera ese tiempo antes de mostrar el error — no hay indicador de
+   progreso intermedio en el chat.
+
+### `/actualizaRag` (secretaria, silia, system-design)
+
+Ejecuta `./build.sh --actualiza` en el proyecto `SandraRagCreAI` (reindexa
+el contenido del RAG) como subproceso, y muestra el resultado (o el error)
+en el chat — no requiere describir nada, es un comando sin argumentos.
+Disponible en los modos `secretaria`, `silia` y `system-design`; en
+cualquier otro modo se ignora igual que el resto del texto libre en esos
+modos que no lo soportan.
+
+**Ejemplo:**
+```
+/actualizaRag
+```
+
+**Configuración** (`.env`): `VYSPER_SANDRA_RAG_DIR` (default
+`/media/san/Miscosas6/Desarrollo/SandraRagCreAI`) y
+`VYSPER_SANDRA_RAG_ACTUALIZA_TIMEOUT_MS` (default `900000`, 15 minutos —
+el build puede tardar).
 
 **Grabaciones de `secretaria` (Alt+S) y modo Silia:** cambiar a `silia` no
 interrumpe una grabación larga en curso — el sidecar de audio la mantiene
