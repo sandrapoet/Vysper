@@ -1,0 +1,15 @@
+node_modules
+node_modules_linux
+node_modules_windows
+.env
+eng.traineddata
+dist/
+.DS_Store
+stt/venv/
+stt/venv_windows/
+Vysper.code-workspace
+/apoyos
+evaluaciones/
+transcripciones/
+.claude/settings.local.json
+minutas/
