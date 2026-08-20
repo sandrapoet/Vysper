@@ -190,6 +190,28 @@ describe('CerebroService', () => {
     await expect(service.runHoy('')).rejects.toBeInstanceOf(CerebroError);
   });
 
+  test('runDiagnoseVisual rejects when no image path is given', async () => {
+    const service = new CerebroService({ spawnFn: jest.fn(), logger: silentLogger() });
+    await expect(service.runDiagnoseVisual('', 'explica')).rejects.toBeInstanceOf(CerebroError);
+  });
+
+  test('runDiagnoseVisual passes the image path and prompt through to the CLI', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runDiagnoseVisual('/tmp/slide.png', 'explica esta lamina');
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ summary: 'ok', citations: [] })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'diagnose', 'explica esta lamina', '--imagen', '/tmp/slide.png', '--persona', 'silia'],
+      expect.any(Object)
+    );
+  });
+
   test('runHoy passes the dominio through to the CLI', async () => {
     const child = makeFakeChild();
     const spawnFn = jest.fn(() => child);

@@ -55,6 +55,21 @@ class CerebroService {
   }
 
   /**
+   * Consulta con una imagen adjunta (lamina/diagrama/captura): la imagen
+   * viaja como un archivo local (el CLI solo acepta argumentos de texto),
+   * Cerebro la envia como bloque nativo de la Messages API de Anthropic
+   * junto con `problem`. Sin loop de tools ni RAG/MCP (ver
+   * Orchestrator.run_visual) -- un unico turno.
+   */
+  runDiagnoseVisual(imagePath, problem, { persona = 'silia' } = {}) {
+    if (!imagePath) {
+      return Promise.reject(new CerebroError('Falta la imagen para la consulta visual.'));
+    }
+    const args = ['diagnose', problem, '--imagen', imagePath, '--persona', persona];
+    return this._runCli(args);
+  }
+
+  /**
    * Sistema de Mejora Continua (SMC): lista las propuestas de optimizacion
    * generadas por el analisis diario (Fase 3/4). `estado` filtra por
    * propuesta/aceptada/rechazada/pospuesta/implementada/medida.

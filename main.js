@@ -35,6 +35,7 @@ const { classifyOperationalQuery, isExplicitCerebroCommand } = require("./src/co
 
 const { execFile, execSync, spawnSync, spawn } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { pathToFileURL } = require('url');
 
@@ -3718,35 +3719,31 @@ class ApplicationController {
         return;
       }
 
-      const sessionHistory = sessionManager.getOptimizedHistory();
-      const skillsRequiringProgrammingLanguage = ['programming', 'dsa', 'devops', 'system-design', 'data-science'];
-      const normalizedActiveSkill = this.getNormalizedSkill(this.activeSkill);
-      const needsProgrammingLanguage = skillsRequiringProgrammingLanguage.includes(normalizedActiveSkill);
-
+      // Alt+B envia la imagen a Cerebro (Silia) en cualquier modo -- no
+      // depende de this.activeSkill. La imagen viaja como archivo temporal
+      // porque el CLI de Cerebro solo acepta argumentos de texto (ver
+      // CerebroService.runDiagnoseVisual / Orchestrator.run_visual).
       windowManager.showLLMLoading();
 
-      const llmResult = await llmService.processImageWithSkill(
-        imageBuffer,
-        this.activeSkill,
-        sessionHistory.recent,
-        needsProgrammingLanguage ? this.codingLanguage : null,
-        'Analiza la imagen adjunta y responde en el modo activo con base en su contenido.'
-      );
+      const tempImagePath = path.join(os.tmpdir(), `vysper-cerebro-image-${Date.now()}.png`);
+      fs.writeFileSync(tempImagePath, imageBuffer);
 
-      sessionManager.addModelResponse(llmResult.response, {
-        skill: this.activeSkill,
-        processingTime: llmResult.metadata.processingTime,
-        usedFallback: llmResult.metadata.usedFallback,
-        isImageResponse: true
-      });
+      let cerebroResult;
+      try {
+        cerebroResult = await this.cerebroService.runDiagnoseVisual(
+          tempImagePath,
+          options?.promptOverride || 'Analiza la imagen adjunta y responde con base en su contenido real.'
+        );
+      } finally {
+        fs.unlink(tempImagePath, () => {});
+      }
 
-      windowManager.showLLMResponse(llmResult.response, {
-        skill: this.activeSkill,
-        processingTime: llmResult.metadata.processingTime,
-        usedFallback: llmResult.metadata.usedFallback,
-      });
+      const responseText = formatCerebroFinalAnswer(cerebroResult);
+      const responseMetadata = { skill: this.activeSkill, processingTime: Date.now() - startTime, usedFallback: false };
 
-      this.broadcastLLMSuccess(llmResult);
+      sessionManager.addModelResponse(responseText, { ...responseMetadata, isImageResponse: true });
+      windowManager.showLLMResponse(responseText, responseMetadata);
+      this.broadcastLLMSuccess({ response: responseText, metadata: responseMetadata });
     } catch (error) {
       windowManager.restoreWindowsAfterScreenshotCapture();
       logger.error("Regional image capture process failed", {
