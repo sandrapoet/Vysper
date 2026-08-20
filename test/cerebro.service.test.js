@@ -42,6 +42,19 @@ describe('CerebroService', () => {
     await expect(promise).rejects.toBeInstanceOf(CerebroError);
   });
 
+  test('rejects using the tail of stderr, not the head, so init noise does not bury the real error', async () => {
+    const child = makeFakeChild();
+    const service = new CerebroService({ spawnFn: () => child, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runDiagnose('algo');
+    const initNoise = 'INFO: Creating working directory ./rag_storage/abc\n'.repeat(20);
+    const realError = 'Traceback (most recent call last):\n  ...\nValueError: jira_api_token no configurado';
+    child.stderr.emit('data', Buffer.from(initNoise + realError));
+    child.emit('close', 1);
+
+    await expect(promise).rejects.toThrow(/ValueError: jira_api_token no configurado/);
+  });
+
   test('rejects using the structured {"error"} message from stdout when present', async () => {
     const child = makeFakeChild();
     const service = new CerebroService({ spawnFn: () => child, logger: silentLogger(), timeoutMs: 5000 });

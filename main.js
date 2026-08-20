@@ -1448,22 +1448,18 @@ class ApplicationController {
 
   handleSecretariaMeetingShortcut() {
     // Detener una grabacion en curso funciona desde cualquier modo (p.ej.
-    // Silia): una vez que Alt+S arranco la sesion en modo secretaria, el
-    // sidecar de audio la mantiene viva independientemente del skill activo
-    // (ver _is_meeting_recording en stt/sidecar.py), asi que no hay razon
-    // para exigir volver a secretaria solo para poder cerrarla. Iniciar una
-    // sesion nueva si sigue requiriendo modo secretaria.
+    // Silia): una vez que Alt+S arranco la sesion, el sidecar de audio la
+    // mantiene viva independientemente del skill activo (ver
+    // _is_meeting_recording en stt/sidecar.py). Iniciar una sesion nueva
+    // tambien funciona desde cualquier modo: el pipeline de grabacion,
+    // transcripcion y minuta no depende del skill activo en ningun punto
+    // (solo este atajo lo gateaba).
     const session = this.secretariaMeetingSession;
     if (session?.status === 'recording') {
       this.stopSecretariaMeetingSession().catch((error) => {
         logger.error('No se pudo detener la sesion larga de secretaria', { error: error.message });
         signalMeetingStatus('ERROR', `no se pudo detener la sesion larga: ${error.message}`);
       });
-      return;
-    }
-
-    if (!this.isSecretariaMode()) {
-      signalMeetingStatus('IGNORADO', 'vuelve a modo secretaria para iniciar la sesion larga.');
       return;
     }
 
@@ -1481,13 +1477,9 @@ class ApplicationController {
   // Alt+S porque cambia el tamano de fragmento de la sesion (ver
   // startSecretariaMeetingSession) para poder detectar pausas casi en vivo;
   // una vez que Alt+S ya esta grabando, el tamano de fragmento no se puede
-  // cambiar en caliente sin cortar la captura.
+  // cambiar en caliente sin cortar la captura. Funciona desde cualquier
+  // modulo, igual que Alt+S.
   async handleOptimizacionToggleShortcut() {
-    if (!this.isSecretariaMode()) {
-      signalShortcut('Alt+O solo aplica en modo secretaria');
-      return;
-    }
-
     const session = this.secretariaMeetingSession;
     if (session?.status === 'recording') {
       if (this.optimizacionActive) {
@@ -3832,7 +3824,8 @@ class ApplicationController {
   }
 
   isCodingAccumulationSkill(skill = this.activeSkill) {
-    return ['programming', 'dsa', 'labelling', 'system-design'].includes(this.getNormalizedSkill(skill));
+    return ['programming', 'dsa', 'labelling', 'system-design', 'silia', 'secretaria']
+      .includes(this.getNormalizedSkill(skill));
   }
 
   isUsefulOCRText(text) {
@@ -4088,6 +4081,15 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
 
   async handleSaveAndFinalize() {
     if (this.isSecretariaMode()) {
+      // Ctrl+1 is overloaded in secretaria: with accumulated Ctrl+Shift+S/
+      // Alt+B images pending, it flushes them through the LLM like the
+      // other accumulation skills; otherwise it keeps its original,
+      // unrelated meaning of pasting the transcript at the cursor.
+      if (this.accumulatedOCRImages.length > 0) {
+        this.saveAccumulatedImages();
+        await this.processFinalizationCommandWithLLM('shortcut');
+        return;
+      }
       await this.pasteSecretariaTranscriptAtCursor();
       return;
     }
@@ -4098,7 +4100,7 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     }
 
     if (!this.isCodingAccumulationSkill()) {
-      logger.warn('Ctrl+1 solo disponible en modos de acumulacion (programming, dsa, labelling, system-design)');
+      logger.warn('Ctrl+1 solo disponible en modos de acumulacion (programming, dsa, labelling, system-design, silia, secretaria)');
       return;
     }
     this.saveAccumulatedImages();
@@ -4107,7 +4109,7 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
 
   async handleSecondaryCodingFallbackShortcut() {
     if (!this.isCodingAccumulationSkill()) {
-      logger.warn('Ctrl+| solo disponible en modos de acumulacion (programming, dsa, labelling, system-design)');
+      logger.warn('Ctrl+| solo disponible en modos de acumulacion (programming, dsa, labelling, system-design, silia, secretaria)');
       return;
     }
     await this.processSecondaryCodingFallbackCommandWithLLM('shortcut');

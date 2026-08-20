@@ -173,8 +173,17 @@ class CerebroService {
             // stdout wasn't structured JSON; fall back to stderr below.
           }
 
-          this.logger.error?.('Cerebro termino con error', { command, code, durationMs, stderr: stderr.slice(0, 2000) });
-          reject(new CerebroError(structuredError || `Cerebro fallo (codigo ${code}). ${stderr.trim().slice(0, 500) || 'Sin detalle adicional.'}`));
+          // Full capture (not just the head) so the actual traceback -
+          // which prints after any INFO-level init/audit logging - always
+          // ends up in the log file even when the rejected error message
+          // below only carries the tail.
+          this.logger.error?.('Cerebro termino con error', { command, code, durationMs, stderr });
+          // The actual Python exception/traceback is always at the END of
+          // stderr, after any INFO-level init logging (e.g. LightRAG's
+          // "Creating working directory..." noise on every run) — take the
+          // tail, not the head, or the real error never surfaces here.
+          const stderrTail = stderr.trim().slice(-800);
+          reject(new CerebroError(structuredError || `Cerebro fallo (codigo ${code}). ${stderrTail || 'Sin detalle adicional.'}`));
           return;
         }
 

@@ -2,14 +2,15 @@
 Mapa de atajos actualizado:
 
 Shortcut	Acción
-Ctrl+Shift+S	Captura OCR de una región (acumula en programming/dsa/labelling; en otros modos la envía al LLM)
-Alt+B	Captura imagen sin OCR (acumula en programming/dsa/labelling y espera !!! / ||| / °°°; en otros modos la envía al LLM)
-Ctrl+1	En programming/dsa/labelling: guarda imágenes acumuladas (OCR + sin OCR) y consolida (!!!). En secretaria: pega la transcripción acumulada sin liberarla
-Ctrl+|	Fallback de consolidación ||| (programming/dsa/labelling)
+Ctrl+Shift+S	Captura OCR de una región (acumula en programming/dsa/labelling/system-design/silia/secretaria; en otros modos la envía al LLM)
+Alt+B	Captura imagen sin OCR (acumula en programming/dsa/labelling/system-design/silia/secretaria y espera !!! / ||| / °°°; en otros modos la envía al LLM)
+Ctrl+1	En programming/dsa/labelling/system-design/silia: guarda imágenes acumuladas (OCR + sin OCR) y consolida (!!!). En secretaria: si hay imágenes acumuladas las consolida igual que los demás modos; si no hay ninguna, pega la transcripción acumulada sin liberarla (comportamiento original)
+Ctrl+|	Fallback de consolidación ||| (programming/dsa/labelling/system-design/silia/secretaria)
 Ctrl+3	Secretaria: arma el siguiente envío del chat para convertirlo a MP3 (Edge por defecto; usa ¬|1 para Piper y |1.5 para el ritmo)
 Ctrl+4	Secretaria: subir archivo de audio para transcribir
 Alt+R	Iniciar / detener grabación; en secretaria graba audio crudo pendiente de transcripción
-Alt+S	Secretaria: inicia / detiene una sesión de grabación larga (reunión) en segundo plano; al detenerla genera transcripción completa + minuta (resumen) en minutas/
+Alt+S	Inicia / detiene una sesión de grabación larga (reunión) en segundo plano, desde cualquier modo; al detenerla genera transcripción completa + minuta (resumen) en minutas/
+Alt+O	Arma / desarma el modo optimización para la próxima sesión de Alt+S (fragmentos cortos + preguntas sugeridas), desde cualquier modo
 Ctrl+5	Secretaria: sube un archivo de audio existente, lo transcribe completo en una sola pasada (como Ctrl+4, guardando en transcripciones/) y genera la minuta final a partir del texto, minimizando llamadas al LLM
 Ctrl+6	Secretaria: abrir un archivo en la ventana shadow translúcida para ver lo que hay debajo
 Ctrl+7	Secretaria: convierte una transcripción de texto existente ("Hablante: texto" por línea, sin timestamps) al formato Microsoft Teams, estimando tiempos por cantidad de palabras
@@ -188,7 +189,7 @@ VYSPER_STT_WARM_PREROLL_MS=1500
 | `Ctrl/Cmd + Shift + S` | Select Screen Region + OCR Analysis |
 | `Alt/Option + B` | Capture image region without OCR |
 | `Alt/Option + R` | Voice Recording Toggle |
-| `Alt/Option + S` | Meeting Recording Toggle (secretaria mode only) — starts/stops a long background recording and generates a final summary. See [Meeting Recording & Auto-Summary](#meeting-recording--auto-summary-secretaria-mode) |
+| `Alt/Option + S` | Meeting Recording Toggle (any skill) — starts/stops a long background recording and generates a final summary. See [Meeting Recording & Auto-Summary](#meeting-recording--auto-summary-any-skill) |
 | `Ctrl/Cmd + 5` | Upload an existing audio file (secretaria mode only): single-pass transcription + diarization, then generate the final minuta from the text, minimizing LLM calls |
 | `Ctrl/Cmd + 7` | Convert an existing plain-text transcript (secretaria mode only, `Hablante: texto` per line) to Microsoft-Teams-style format with estimated timestamps |
 | `Ctrl/Cmd + 6` | Open a file in the translucent shadow window (secretaria mode only) |
@@ -269,10 +270,10 @@ VYSPER_STT_WARM_PREROLL_MS=1500
 ### Session Memory
 The app remembers your interview context across multiple questions:
 
-### Meeting Recording & Auto-Summary (`secretaria` mode)
+### Meeting Recording & Auto-Summary (any skill)
 Long-form recording with automatic transcription and a final summary ("minuta"), independent from the normal `Alt+R` voice-command flow. Useful for recording a full meeting/call and getting a written summary afterward instead of a live AI answer per question.
 
-**1. Switch to the `secretaria` skill first.** Cycle skills with `Ctrl/Cmd + Up/Down` while Interactive Mode is on, or pick it from Settings. `Alt+S` only *starts* a new session in `secretaria` mode — in any other skill, starting one is ignored (you'll see an "IGNORADO" notice). *Stopping* an already-running session with `Alt+S` works from any skill (including `silia`) — you don't need to switch back to `secretaria` first, though you still can if you prefer.
+**1. Press `Alt+S` from any skill.** Both *starting* and *stopping* a session work from any active skill — you don't need to switch to `secretaria` first. The recording/transcription/minuta pipeline never checks the active skill once it's running, so switching skills mid-recording (or using `Alt+R` for a normal voice command at the same time) doesn't interrupt it.
 
 **2. Press `Alt+S` to start.** This creates `minutas/reunion-<YYYY-MM-DD-HH-MM-SS>/` (with subfolders `audio/`, `transcripts/`, `speakers/`, `summaries/`, `final/`) and starts recording from the microphone in the background.
 - Recording keeps going even if you switch to another skill or use `Alt+R` for a normal voice command at the same time — the microphone stream is shared, so the meeting capture is never interrupted by anything else you do.
@@ -337,20 +338,32 @@ bloqueados y riesgos. `[identificador]` es opcional; Cerebro
 (`identifier_resolver.py`) decide qué es:
 
 - **Sin argumento** → usa `VYSPER_SILIA_ASSIGNEE`.
+- **Un alias de equipo/célula** configurado en `equiv.yaml` (raíz de
+  Cerebro) → se expande a la lista de emails de todos los miembros, y el
+  checkpoint consulta a los tickets de *todo el equipo* (`assignee in
+  (...)` en Jira). Ver `equiv.yaml` para el formato — cada clave es un
+  alias (p. ej. `agentes`) y su valor la lista de identificadores.
 - **Un email** → se usa tal cual como assignee.
 - **Una clave de Jira** (p. ej. `LAGE-143`) → se resuelve consultando ese
   ticket y usando su assignee.
 - **Un PR de GitHub** (URL completa o `owner/repo#123`; un número
   desnudo también funciona si está configurado `GITHUB_DEFAULT_REPO` en
   Cerebro) → se busca una clave de Jira mencionada en el título/descripción
-  del PR y se usa el assignee de ese ticket. Si el PR no menciona ningún
-  ticket, Silia responde con un error claro en vez de adivinar.
+  del PR y se usa el assignee de ese ticket.
+- **Un commit de GitHub** (URL completa o `owner/repo@sha`) → mismo
+  mecanismo, buscando la clave de Jira en el mensaje del commit
+  (convención "smart commit": `LAGE-143 arregla timeout`).
+- Si un PR/commit no menciona ningún ticket, o un ticket de Jira no tiene
+  assignee, Silia responde con un error claro en vez de adivinar.
 - **Cualquier otro texto** (un nombre, un username) se pasa literal, igual
   que antes de que existiera esta resolución.
 
 **Ejemplos:**
 ```
 /silia daily
+```
+```
+/silia daily agentes
 ```
 ```
 /silia daily sandrareyes@slia.com
@@ -453,18 +466,28 @@ modos que no lo soportan.
 ```
 /actualizaRag
 ```
+Para esta consulta específica te conviene silia, no system-design.
+
+Motivo concreto: en modo silia, todo texto libre pasa sin condición por cerebroService.runDiagnose(text) (processTextWithSilia en main.js), que dispara el ReAct loop de Cerebro con acceso real a Jira/GitHub/RAG — así que "¿AGE-212 va en agent o silia-mx/skills?" se respondería consultando el ticket AGE-212 real en Jira, buscando module.manifest.yaml en los repos, y trayendo contexto de decisiones pasadas del RAG. Es literalmente el caso de uso que describe el README para silia: "¿por qué se decidió usar X en el módulo Y?".
+
+En system-design, en cambio, tu pregunta solo se enruta a Cerebro si classifyOperationalQuery() la detecta como operativa (palabras como "incidente", "pipeline", "sprint", "propuesta"...) o si usás un comando explícito (/silia daily, /optimizaciones, /propuesta, /incidente). Tu pregunta no contiene ninguna de esas — así que hoy caería en el asistente de arquitectura genérico, sin grounding real en el ticket ni en los repos, y probablemente te daría una opinión razonada pero no verificada contra el AC real de AGE-212.
+
+Recomendación: pegá el mensaje tal cual en silia.
 
 **Configuración** (`.env`): `VYSPER_SANDRA_RAG_DIR` (default
 `/media/san/Miscosas6/Desarrollo/SandraRagCreAI`) y
 `VYSPER_SANDRA_RAG_ACTUALIZA_TIMEOUT_MS` (default `900000`, 15 minutos —
 el build puede tardar).
 
-**Grabaciones de `secretaria` (Alt+S) y modo Silia:** cambiar a `silia` no
-interrumpe una grabación larga en curso — el sidecar de audio la mantiene
-viva independientemente del skill activo. Podés terminarla presionando
-`Alt+S` directamente desde `silia` (no hace falta volver a `secretaria`), o
-volver a `secretaria` y presionar `Alt+S` ahí — ambas opciones cierran la
-misma sesión y generan la minuta igual.
+**Grabaciones (`Alt+S`) y modo optimización (`Alt+O`) en cualquier módulo:**
+tanto iniciar como detener una grabación larga con `Alt+S`, y armar/desarmar
+el modo optimización con `Alt+O`, funcionan sin importar el skill activo —
+`handleSecretariaMeetingShortcut()` y `handleOptimizacionToggleShortcut()`
+(`main.js`) ya no exigen modo `secretaria` para arrancar. Cambiar de skill
+(a `silia`, `programming`, cualquiera) tampoco interrumpe una grabación en
+curso — el sidecar de audio la mantiene viva independientemente del skill
+activo, y el pipeline de transcripción/diarización/minuta no vuelve a
+consultar el skill una vez que la sesión arrancó.
 
 ## 🤝 Contributing
 
