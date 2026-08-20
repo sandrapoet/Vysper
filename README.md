@@ -3,8 +3,8 @@ Mapa de atajos actualizado:
 
 Shortcut	Acción
 Ctrl+Shift+S	Captura OCR de una región (acumula en programming/dsa/labelling/system-design/silia/secretaria; en otros modos la envía al LLM)
-Alt+B	Captura imagen sin OCR (acumula en programming/dsa/labelling/system-design/silia/secretaria y espera !!! / ||| / °°°; en otros modos la envía al LLM)
-Ctrl+1	En programming/dsa/labelling/system-design/silia: guarda imágenes acumuladas (OCR + sin OCR) y consolida (!!!). En secretaria: si hay imágenes acumuladas las consolida igual que los demás modos; si no hay ninguna, pega la transcripción acumulada sin liberarla (comportamiento original)
+Alt+B	Captura imagen sin OCR (acumula en programming/dsa/labelling y espera !!! / ||| / °°°; en system-design/secretaria/silia pide una instrucción y la envía junto con la imagen a Cerebro en un solo turno; en otros modos la envía al LLM con un prompt genérico)
+Ctrl+1	En programming/dsa/labelling: guarda imágenes acumuladas (OCR + sin OCR) y consolida (!!!). En system-design/silia: guarda solo el OCR acumulado (Alt+B ya no acumula en estos modos, ver arriba) y consolida. En secretaria: si hay contexto OCR acumulado lo consolida igual que los demás modos; si no hay ninguno, pega la transcripción acumulada sin liberarla (comportamiento original)
 Ctrl+|	Fallback de consolidación ||| (programming/dsa/labelling/system-design/silia/secretaria)
 Ctrl+3	Secretaria: arma el siguiente envío del chat para convertirlo a MP3 (Edge por defecto; usa ¬|1 para Piper y |1.5 para el ritmo)
 Ctrl+4	Secretaria: subir archivo de audio para transcribir
@@ -26,7 +26,7 @@ Ctrl+Shift+C	Ir a la ventana de chat
 Ctrl+Shift+H	Mostrar / ocultar la guía de referencia
 Ctrl+Shift+T	Forzar "always-on-top" en todas las ventanas
 Ctrl+Shift+I / Alt+A	Toggle modo interactivo
-Ctrl+↑ / Ctrl+↓	Interactivo: cambiar de skill (anterior/siguiente). No interactivo: mover las ventanas
+Ctrl+↑ / Ctrl+↓	Interactivo: cambiar de skill (anterior/siguiente) entre programming/dsa/system-design/behavioral/secretaria/silia/labelling/traductor. No interactivo: mover las ventanas. Sales, Presentation, Negotiation, DevOps y Data Science ya no están en este ciclo; se activan solo desde el diálogo de Ctrl+Shift+X
 Ctrl+← / Ctrl+→	No interactivo: mover las ventanas
 
 Indicador "foco" del encabezado (ícono del micrófono):
@@ -75,6 +75,8 @@ https://github.com/user-attachments/assets/c5616482-3652-4686-b87b-e04d06572d2f
 - **Data Science** - Analytics, ML approaches, and statistical methods
 - **Secretaria** - Long dictation/audio-file transcription, then paste the accumulated text at the active cursor
 - **Labelling** - Evaluate two model transcripts (Response A vs B) against a user prompt; accumulate the parts (mark them A:/B:) and consolidate with `Ctrl+1` / `!!!` to get strengths, weaknesses (taxonomy), a 0–7 preference, and a rationale
+
+> Sales, Negotiation, Presentation, DevOps, and Data Science are no longer reachable via `Ctrl+↑`/`Ctrl+↓` — activate them from the settings dialog (`Ctrl+Shift+X`).
 
 ## 🚀 Quick Start
 
@@ -187,7 +189,7 @@ VYSPER_STT_WARM_PREROLL_MS=1500
 | Shortcut | Action |
 |----------|--------|
 | `Ctrl/Cmd + Shift + S` | Select Screen Region + OCR Analysis |
-| `Alt/Option + B` | Capture image region without OCR |
+| `Alt/Option + B` | Capture image region without OCR. In programming/dsa/labelling it accumulates for later consolidation (`!!!`); in system-design/secretaria/silia it prompts for a typed/dictated instruction and sends both to Cerebro in one turn; other skills send the image with a generic prompt |
 | `Alt/Option + R` | Voice Recording Toggle |
 | `Alt/Option + S` | Meeting Recording Toggle (any skill) — starts/stops a long background recording and generates a final summary. See [Meeting Recording & Auto-Summary](#meeting-recording--auto-summary-any-skill) |
 | `Ctrl/Cmd + 5` | Upload an existing audio file (secretaria mode only): single-pass transcription + diarization, then generate the final minuta from the text, minimizing LLM calls |
@@ -200,7 +202,7 @@ VYSPER_STT_WARM_PREROLL_MS=1500
 | Shortcut | Action |
 |----------|--------|
 | `Ctrl/Cmd + Shift + C` | Chat Window |
-| `Ctrl/Cmd + Arrow Up/Down` | Skills Selection (only if Interactive mode is on) |
+| `Ctrl/Cmd + Arrow Up/Down` | Skills Selection (only if Interactive mode is on). Cycles through programming/dsa/system-design/behavioral/secretaria/silia/labelling/traductor only — Sales, Negotiation, Presentation, DevOps, and Data Science are activated from Settings (`Ctrl+Shift+X`) instead |
 | `Ctrl/Cmd + ,` | Settings |
 
 ### Clipboard (stealth, no Ctrl+C/Ctrl+V keystrokes)
