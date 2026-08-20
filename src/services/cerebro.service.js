@@ -113,6 +113,19 @@ class CerebroService {
     return this._runCli(['comparar-retro', projectKey, String(sprintA), String(sprintB)]);
   }
 
+  /**
+   * Analisis de riesgo de dominio (pipeline forzado /hoy): mapea el
+   * dominio a un proyecto Jira via equiv.yaml, trae issues de sprints
+   * activos/proximos con detalle completo (Agile API, sin JQL de input
+   * libre), y devuelve el markdown ya renderizado listo para mostrar.
+   */
+  runHoy(dominio, { persona = 'silia' } = {}) {
+    if (!dominio) {
+      return Promise.reject(new CerebroError('Falta el dominio para el analisis de riesgo (/hoy <dominio>).'));
+    }
+    return this._runCli(['hoy', dominio, '--persona', persona]);
+  }
+
   _runCli(args) {
     const startedAt = Date.now();
     const command = `${this.pythonPath} -m cerebro.cli ${args.join(' ')}`;

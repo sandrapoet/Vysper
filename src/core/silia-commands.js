@@ -101,6 +101,19 @@ function parseSiliaRetroCompararCommand(text) {
   return { sprintA: match[1], sprintB: match[2] };
 }
 
+/**
+ * Returns {dominio} if text is "/hoy <dominio>" — the domain risk-review
+ * pipeline (analisis de riesgo de actividades de Jira en los sprints
+ * vigentes de un dominio) — otherwise null.
+ */
+function parseHoyCommand(text) {
+  const normalized = normalize(text);
+  const match = normalized.match(/^\/hoy\s+([\s\S]+)$/i);
+  if (!match) return null;
+  const dominio = match[1].trim();
+  return dominio.length > 0 ? { dominio } : null;
+}
+
 module.exports = {
   parseSiliaDailyCommand,
   parseSiliaDailyArgument,
@@ -109,4 +122,5 @@ module.exports = {
   parsePropuestaDecidirCommand,
   parseSiliaRetroCommand,
   parseSiliaRetroCompararCommand,
+  parseHoyCommand,
 };

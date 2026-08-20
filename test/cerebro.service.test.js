@@ -184,4 +184,26 @@ describe('CerebroService', () => {
       expect.any(Object)
     );
   });
+
+  test('runHoy rejects when no dominio is given', async () => {
+    const service = new CerebroService({ spawnFn: jest.fn(), logger: silentLogger() });
+    await expect(service.runHoy('')).rejects.toBeInstanceOf(CerebroError);
+  });
+
+  test('runHoy passes the dominio through to the CLI', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runHoy('agentes');
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ summary: 'ok', domain_risk_review: null })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'hoy', 'agentes', '--persona', 'silia'],
+      expect.any(Object)
+    );
+  });
 });

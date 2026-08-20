@@ -123,6 +123,18 @@ function formatSprintRetro(retro) {
   return lines.join('\n');
 }
 
+/**
+ * Formats a /hoy <dominio> final_answer.domain_risk_review payload for
+ * chat display. The Cerebro pipeline already renders the exact
+ * per-activity template (ordering, tables, emoji headers) in Python — this
+ * is a thin passthrough, not a re-templater, so the markdown contract
+ * lives in one place (cerebro/orchestrator/domain_risk.py).
+ */
+function formatDomainRiskReview(review) {
+  if (!review || !review.markdown) return 'No se pudo generar el analisis de riesgo.';
+  return review.markdown;
+}
+
 function buildIncidenteLogEntry(descripcion, prompt, now = new Date()) {
   return {
     timestamp: now.toISOString(),

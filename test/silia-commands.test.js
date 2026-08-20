@@ -5,7 +5,8 @@ const {
   parseOptimizacionesCommand,
   parsePropuestaDecidirCommand,
   parseSiliaRetroCommand,
-  parseSiliaRetroCompararCommand
+  parseSiliaRetroCompararCommand,
+  parseHoyCommand
 } = require('../src/core/silia-commands');
 
 describe('parseSiliaDailyCommand', () => {
@@ -176,5 +177,30 @@ describe('parseSiliaRetroCompararCommand', () => {
     expect(parseSiliaRetroCompararCommand('/silia retro comparar 11')).toBeNull();
     expect(parseSiliaRetroCompararCommand('/silia retro')).toBeNull();
     expect(parseSiliaRetroCompararCommand('')).toBeNull();
+  });
+});
+
+describe('parseHoyCommand', () => {
+  test('extracts the dominio', () => {
+    expect(parseHoyCommand('/hoy agentes')).toEqual({ dominio: 'agentes' });
+  });
+
+  test('is case-insensitive and tolerates surrounding whitespace', () => {
+    expect(parseHoyCommand('  /HOY agentes  ')).toEqual({ dominio: 'agentes' });
+  });
+
+  test('allows multi-word dominios', () => {
+    expect(parseHoyCommand('/hoy motor de agentes')).toEqual({ dominio: 'motor de agentes' });
+  });
+
+  test('returns null when there is no dominio', () => {
+    expect(parseHoyCommand('/hoy')).toBeNull();
+    expect(parseHoyCommand('/hoy   ')).toBeNull();
+  });
+
+  test('returns null for unrelated text', () => {
+    expect(parseHoyCommand('hoy agentes')).toBeNull();
+    expect(parseHoyCommand('')).toBeNull();
+    expect(parseHoyCommand(undefined)).toBeNull();
   });
 });
