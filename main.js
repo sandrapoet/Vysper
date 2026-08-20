@@ -15,6 +15,7 @@ const sessionManager = require("./src/managers/session.manager");
 const { CerebroService, CerebroError } = require("./src/services/cerebro.service");
 const {
   parseSiliaDailyCommand,
+  parseSiliaDailyArgument,
   parseIncidenteCommand,
   parseOptimizacionesCommand,
   parsePropuestaDecidirCommand,
@@ -5270,8 +5271,13 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
    */
   async tryHandleCerebroSlashCommand(text, baseMetadata = {}) {
     if (parseSiliaDailyCommand(text)) {
-      logger.info('Comando /silia daily recibido');
-      const assignee = config.get('cerebro.siliaAssignee');
+      const argument = parseSiliaDailyArgument(text);
+      const assignee = argument || config.get('cerebro.siliaAssignee');
+      logger.info('Comando /silia daily recibido', { argument: argument || null });
+      // Cerebro (identifier_resolver.py) decides what `assignee` actually
+      // is: email as-is, a Jira key resolved to its assignee, or a GitHub
+      // PR resolved via the Jira ticket it mentions. Vysper never
+      // interprets it itself.
       const result = await this.cerebroService.runDailyCheckpoint(assignee);
       this.emitSiliaResult(formatCerebroFinalAnswer(result), { ...baseMetadata, siliaCommand: 'daily' });
       return true;

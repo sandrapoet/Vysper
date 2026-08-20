@@ -8,11 +8,25 @@ function normalize(text) {
 }
 
 /**
- * Returns true if the text is the "/silia daily" checkpoint command.
+ * Returns true if the text is the "/silia daily" checkpoint command,
+ * with or without a trailing assignee argument (see
+ * `parseSiliaDailyArgument`).
  */
 function parseSiliaDailyCommand(text) {
   const normalized = normalize(text);
-  return /^\/silia\s+daily$/i.test(normalized);
+  return /^\/silia\s+daily(?:\s+\S[\s\S]*)?$/i.test(normalized);
+}
+
+/**
+ * Returns the raw text typed after "/silia daily" (e.g. an email, a Jira
+ * issue key, a GitHub PR reference), or null if none was given. Does not
+ * interpret what kind of identifier it is — see
+ * `resolveDailyCheckpointAssignee` for that.
+ */
+function parseSiliaDailyArgument(text) {
+  const normalized = normalize(text);
+  const match = normalized.match(/^\/silia\s+daily\s+([\s\S]+)$/i);
+  return match ? match[1].trim() : null;
 }
 
 /**
@@ -89,6 +103,7 @@ function parseSiliaRetroCompararCommand(text) {
 
 module.exports = {
   parseSiliaDailyCommand,
+  parseSiliaDailyArgument,
   parseIncidenteCommand,
   parseOptimizacionesCommand,
   parsePropuestaDecidirCommand,

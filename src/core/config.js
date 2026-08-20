@@ -86,7 +86,10 @@ class ConfigManager {
         path: process.env.CEREBRO_PATH || '/media/san/Miscosas6/Desarrollo/Cerebro',
         python: process.env.CEREBRO_PYTHON || null,
         timeoutMs: Number(process.env.CEREBRO_TIMEOUT_MS || 90000),
-        siliaAssignee: process.env.VYSPER_SILIA_ASSIGNEE || '',
+        // TODO: quitar este fallback hardcodeado una vez que VYSPER_SILIA_ASSIGNEE
+        // este seteado en el .env de cada entorno (pedido explicito para no
+        // bloquear "/silia daily" mientras tanto).
+        siliaAssignee: process.env.VYSPER_SILIA_ASSIGNEE || 'davidaleman@slia.com',
         siliaDefaultProject: process.env.VYSPER_SILIA_DEFAULT_PROJECT || ''
       },
 

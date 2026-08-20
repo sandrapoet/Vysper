@@ -159,8 +159,22 @@ class CerebroService {
         const durationMs = Date.now() - startedAt;
 
         if (code !== 0) {
+          // Some CLI commands (e.g. daily-checkpoint's assignee resolution,
+          // propuesta-decidir's estado validation) print a structured
+          // `{"error": "..."}` to stdout before exiting non-zero. Prefer
+          // that human-readable message over the raw stderr traceback.
+          let structuredError = null;
+          try {
+            const parsedStdout = JSON.parse(stdout);
+            if (parsedStdout && typeof parsedStdout.error === 'string') {
+              structuredError = parsedStdout.error;
+            }
+          } catch (_) {
+            // stdout wasn't structured JSON; fall back to stderr below.
+          }
+
           this.logger.error?.('Cerebro termino con error', { command, code, durationMs, stderr: stderr.slice(0, 2000) });
-          reject(new CerebroError(`Cerebro fallo (codigo ${code}). ${stderr.trim().slice(0, 500) || 'Sin detalle adicional.'}`));
+          reject(new CerebroError(structuredError || `Cerebro fallo (codigo ${code}). ${stderr.trim().slice(0, 500) || 'Sin detalle adicional.'}`));
           return;
         }
 

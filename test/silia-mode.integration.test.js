@@ -3,6 +3,7 @@ const { CerebroService } = require('../src/services/cerebro.service');
 const { formatCerebroFinalAnswer, formatOptimizacionesList } = require('../src/core/silia-response');
 const {
   parseSiliaDailyCommand,
+  parseSiliaDailyArgument,
   parseIncidenteCommand,
   parseOptimizacionesCommand,
   parsePropuestaDecidirCommand
@@ -27,7 +28,8 @@ function silentLogger() {
  */
 async function routeSiliaText(cerebroService, text) {
   if (parseSiliaDailyCommand(text)) {
-    const result = await cerebroService.runDailyCheckpoint('lider@equipo.com');
+    const assignee = parseSiliaDailyArgument(text) || 'lider@equipo.com';
+    const result = await cerebroService.runDailyCheckpoint(assignee);
     return formatCerebroFinalAnswer(result);
   }
   if (parseOptimizacionesCommand(text)) {
@@ -101,6 +103,21 @@ describe('Silia mode activates and routes correctly', () => {
     expect(text).toContain('checkpoint diario');
     expect(spawnFn.mock.calls[0][1]).toEqual(
       expect.arrayContaining(['daily-checkpoint', 'lider@equipo.com'])
+    );
+  });
+
+  test('/silia daily <argumento> passes the argument through instead of the default assignee', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = routeSiliaText(service, '/silia daily LAGE-143');
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ summary: 'checkpoint diario', citations: [] })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn.mock.calls[0][1]).toEqual(
+      expect.arrayContaining(['daily-checkpoint', 'LAGE-143'])
     );
   });
 

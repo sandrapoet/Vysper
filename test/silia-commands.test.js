@@ -1,5 +1,6 @@
 const {
   parseSiliaDailyCommand,
+  parseSiliaDailyArgument,
   parseIncidenteCommand,
   parseOptimizacionesCommand,
   parsePropuestaDecidirCommand,
@@ -22,6 +23,33 @@ describe('parseSiliaDailyCommand', () => {
     expect(parseSiliaDailyCommand('daily standup')).toBe(false);
     expect(parseSiliaDailyCommand('')).toBe(false);
     expect(parseSiliaDailyCommand(undefined)).toBe(false);
+  });
+
+  test('also matches with a trailing argument', () => {
+    expect(parseSiliaDailyCommand('/silia daily sandrareyes@slia.com')).toBe(true);
+    expect(parseSiliaDailyCommand('/silia daily LAGE-143')).toBe(true);
+    expect(parseSiliaDailyCommand('/silia daily https://github.com/org/repo/pull/123')).toBe(true);
+  });
+});
+
+describe('parseSiliaDailyArgument', () => {
+  test('returns null when no argument was given', () => {
+    expect(parseSiliaDailyArgument('/silia daily')).toBeNull();
+    expect(parseSiliaDailyArgument('  /SILIA Daily  ')).toBeNull();
+  });
+
+  test('extracts the raw trailing text, whatever it looks like', () => {
+    expect(parseSiliaDailyArgument('/silia daily sandrareyes@slia.com')).toBe('sandrareyes@slia.com');
+    expect(parseSiliaDailyArgument('/silia daily LAGE-143')).toBe('LAGE-143');
+    expect(parseSiliaDailyArgument('/silia daily https://github.com/org/repo/pull/123'))
+      .toBe('https://github.com/org/repo/pull/123');
+    expect(parseSiliaDailyArgument('/silia daily org/repo#123')).toBe('org/repo#123');
+  });
+
+  test('returns null for unrelated text', () => {
+    expect(parseSiliaDailyArgument('/silia')).toBeNull();
+    expect(parseSiliaDailyArgument('')).toBeNull();
+    expect(parseSiliaDailyArgument(undefined)).toBeNull();
   });
 });
 

@@ -42,6 +42,17 @@ describe('CerebroService', () => {
     await expect(promise).rejects.toBeInstanceOf(CerebroError);
   });
 
+  test('rejects using the structured {"error"} message from stdout when present', async () => {
+    const child = makeFakeChild();
+    const service = new CerebroService({ spawnFn: () => child, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runDailyCheckpoint('LAGE-999');
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ error: 'El ticket LAGE-999 no tiene assignee en Jira.' })));
+    child.emit('close', 1);
+
+    await expect(promise).rejects.toThrow('El ticket LAGE-999 no tiene assignee en Jira.');
+  });
+
   test('rejects with a friendly CerebroError on invalid JSON output', async () => {
     const child = makeFakeChild();
     const service = new CerebroService({ spawnFn: () => child, logger: silentLogger(), timeoutMs: 5000 });

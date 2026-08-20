@@ -330,10 +330,37 @@ se responde consultando Jira/GitHub (estado, cronograma) o Notion/RAG
 (decisiones, contexto histórico), con riesgos de cronograma señalados
 proactivamente cuando aplica.
 
-**`/silia daily`** — checkpoint diario: consulta tickets asignados en
-progreso/pendientes (Jira), PRs abiertos (GitHub) y menciones recientes
-(RAG) para el usuario configurado en `VYSPER_SILIA_ASSIGNEE`, y devuelve un
-resumen ejecutivo con tickets vencidos, PRs bloqueados y riesgos.
+**`/silia daily [identificador]`** — checkpoint diario: consulta tickets
+asignados en progreso/pendientes (Jira), PRs abiertos (GitHub) y menciones
+recientes (RAG), y devuelve un resumen ejecutivo con tickets vencidos, PRs
+bloqueados y riesgos. `[identificador]` es opcional; Cerebro
+(`identifier_resolver.py`) decide qué es:
+
+- **Sin argumento** → usa `VYSPER_SILIA_ASSIGNEE`.
+- **Un email** → se usa tal cual como assignee.
+- **Una clave de Jira** (p. ej. `LAGE-143`) → se resuelve consultando ese
+  ticket y usando su assignee.
+- **Un PR de GitHub** (URL completa o `owner/repo#123`; un número
+  desnudo también funciona si está configurado `GITHUB_DEFAULT_REPO` en
+  Cerebro) → se busca una clave de Jira mencionada en el título/descripción
+  del PR y se usa el assignee de ese ticket. Si el PR no menciona ningún
+  ticket, Silia responde con un error claro en vez de adivinar.
+- **Cualquier otro texto** (un nombre, un username) se pasa literal, igual
+  que antes de que existiera esta resolución.
+
+**Ejemplos:**
+```
+/silia daily
+```
+```
+/silia daily sandrareyes@slia.com
+```
+```
+/silia daily LAGE-143
+```
+```
+/silia daily https://github.com/org/repo/pull/123
+```
 
 **`/incidente <descripción>`** — pipeline de diagnóstico de incidentes,
 más agresivo recolectando contexto (5 pasos forzados en Cerebro: GitHub →
@@ -376,7 +403,9 @@ constancia de por qué se rechazó o pospuso.
 **Configuración** (`.env`, ver `env.example`): `CEREBRO_PATH`,
 `CEREBRO_PYTHON`, `CEREBRO_TIMEOUT_MS`, `VYSPER_SILIA_ASSIGNEE`. Cerebro debe
 estar configurado por separado (Ollama, MCP, credenciales de Jira/Notion/
-GitHub) — ver su propio `README.md`. `stt/setup_vysper_stt.sh` prepara el
+GitHub, y opcionalmente `GITHUB_DEFAULT_REPO` para que `/silia daily
+<numero de PR>` sin URL funcione — ver su `.env.example`) — ver su propio
+`README.md`. `stt/setup_vysper_stt.sh` prepara el
 venv de Cerebro (`.venv` + `requirements.txt`) y verifica/levanta Ollama y el
 stack de Sandra RAG (`SandraRagCreAI`, puerto 8000 por defecto) al arrancar,
 igual que ya hace con LightRAG.
