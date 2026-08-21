@@ -143,10 +143,113 @@ function buildIncidenteLogEntry(descripcion, prompt, now = new Date()) {
   };
 }
 
+function _stripAnsi(text) {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+/**
+ * build.sh marks each stage with a blank line + ">> Titulo" (see log() in
+ * build.sh) — splits the already-ansi-stripped output into
+ * [{title, body: [lines]}] on that marker, everything before the first
+ * marker discarded.
+ */
+function _splitBuildShSections(cleanText) {
+  const sections = [];
+  let current = null;
+  for (const line of cleanText.split('\n')) {
+    const match = line.match(/^>>\s*(.+)$/);
+    if (match) {
+      current = { title: match[1].trim(), body: [] };
+      sections.push(current);
+    } else if (current) {
+      current.body.push(line);
+    }
+  }
+  return sections;
+}
+
+/**
+ * Formats the raw (ansi-colored, very verbose) stdout of
+ * `./build.sh --actualiza` into a short synthesized summary — showing that
+ * log as-is in chat (as it was before this) reads as a wall of noise
+ * (docker compose ps tables, health JSON, per-file "sin cambios" lines for
+ * every already-ingested document) instead of an answer to "se actualizo el
+ * RAG o no". Degrades gracefully: if a stage isn't found (script changed,
+ * ran with different flags, etc.) it's just omitted, never crashes.
+ */
+function formatActualizaRagResult(stdout) {
+  const clean = _stripAnsi(stdout || '');
+  const sections = _splitBuildShSections(clean);
+  const findSection = (predicate) => sections.find((s) => predicate(s.title));
+  const lines = [];
+
+  const testsSection = findSection((t) => t.startsWith('Corriendo suite de tests') || t.startsWith('Tests SALTEADOS'));
+  if (testsSection) {
+    if (testsSection.title.startsWith('Tests SALTEADOS')) {
+      lines.push('- Tests: salteados (--skip-tests)');
+    } else {
+      const body = testsSection.body.join('\n');
+      const passed = body.match(/(\d+) passed/);
+      const failed = body.match(/(\d+) failed/);
+      if (passed) lines.push(`- Tests: ${passed[1]} passed${failed ? `, ${failed[1]} failed` : ''}`);
+    }
+  }
+
+  const rebuildSection = findSection((t) => /Rebuild forzado|Cambios detectados en backend|Sin cambios en backend/.test(t));
+  if (rebuildSection) {
+    lines.push(
+      rebuildSection.title.includes('Sin cambios')
+        ? '- Backend: sin cambios, stack ya estaba arriba'
+        : '- Backend: reconstruido (cambios detectados en el codigo, o --force)'
+    );
+  }
+
+  const healthSection = findSection((t) => t.startsWith('Health del backend'));
+  if (healthSection) {
+    const body = healthSection.body.join('\n').trim();
+    const jsonLine = body.split('\n').find((l) => l.trim().startsWith('{'));
+    try {
+      const parsed = JSON.parse(jsonLine || body);
+      lines.push(`- Salud del backend: ${parsed.status === 'ok' ? 'OK' : JSON.stringify(parsed)} (lightrag: ${parsed.lightrag})`);
+    } catch {
+      lines.push(`- Salud del backend: ${body || 'sin datos'}`);
+    }
+  }
+
+  const ingestSection = findSection((t) => t.includes('ingest.ingest'));
+  if (ingestSection) {
+    const ingested = [];
+    let skippedCount = 0;
+    for (const line of ingestSection.body) {
+      const ingestedMatch = line.match(/✓\s+(.+?):\s+\d+ chunk/);
+      if (ingestedMatch) ingested.push(ingestedMatch[1]);
+      if (/sin cambios, se omite/.test(line)) skippedCount += 1;
+    }
+    if (ingested.length) {
+      lines.push(`- Archivos nuevos ingeridos al RAG (${ingested.length}): ${ingested.join(', ')}`);
+    } else {
+      lines.push('- Archivos nuevos ingeridos al RAG: ninguno (todo lo existente ya estaba al dia)');
+    }
+    if (skippedCount) lines.push(`- Archivos sin cambios (omitidos): ${skippedCount}`);
+  }
+
+  const finishedOk = sections.some((s) => s.title.toLowerCase().startsWith('listo'));
+  const header = finishedOk
+    ? '✅ RAG actualizado correctamente.'
+    : '⚠️ El script de actualizacion no llego a la etapa final ("Listo.") — revisa el detalle.';
+
+  if (!lines.length) {
+    return `${header}\n\n(No se pudo extraer un resumen detallado del log de esta corrida.)`;
+  }
+  return `${header}\n\n${lines.join('\n')}`;
+}
+
 module.exports = {
   formatCerebroFinalAnswer,
   formatOptimizacionesList,
   formatSprintRetro,
   formatDomainRiskReview,
+  formatActualizaRagResult,
   buildIncidenteLogEntry,
 };

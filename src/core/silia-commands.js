@@ -114,6 +114,20 @@ function parseHoyCommand(text) {
   return dominio.length > 0 ? { dominio } : null;
 }
 
+/**
+ * Returns {dominio} if text is "/detalle [dominio]" — dumps the /hoy
+ * domain-risk-review already persisted in SQLite to a .md file (never
+ * re-runs Jira/LLM). `dominio` is optional: null means "the most recent
+ * review across any domain" (see CerebroService.runDetalle).
+ */
+function parseDetalleCommand(text) {
+  const normalized = normalize(text);
+  const match = normalized.match(/^\/detalle(?:\s+([\s\S]+))?$/i);
+  if (!match) return null;
+  const dominio = (match[1] || '').trim();
+  return { dominio: dominio.length > 0 ? dominio : null };
+}
+
 module.exports = {
   parseSiliaDailyCommand,
   parseSiliaDailyArgument,
@@ -123,4 +137,5 @@ module.exports = {
   parseSiliaRetroCommand,
   parseSiliaRetroCompararCommand,
   parseHoyCommand,
+  parseDetalleCommand,
 };

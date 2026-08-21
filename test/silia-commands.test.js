@@ -6,7 +6,8 @@ const {
   parsePropuestaDecidirCommand,
   parseSiliaRetroCommand,
   parseSiliaRetroCompararCommand,
-  parseHoyCommand
+  parseHoyCommand,
+  parseDetalleCommand
 } = require('../src/core/silia-commands');
 
 describe('parseSiliaDailyCommand', () => {
@@ -202,5 +203,26 @@ describe('parseHoyCommand', () => {
     expect(parseHoyCommand('hoy agentes')).toBeNull();
     expect(parseHoyCommand('')).toBeNull();
     expect(parseHoyCommand(undefined)).toBeNull();
+  });
+});
+
+describe('parseDetalleCommand', () => {
+  test('extracts the dominio when given', () => {
+    expect(parseDetalleCommand('/detalle agentes')).toEqual({ dominio: 'agentes' });
+  });
+
+  test('is case-insensitive and tolerates surrounding whitespace', () => {
+    expect(parseDetalleCommand('  /DETALLE agentes  ')).toEqual({ dominio: 'agentes' });
+  });
+
+  test('returns dominio: null when no dominio is given (most recent across any domain)', () => {
+    expect(parseDetalleCommand('/detalle')).toEqual({ dominio: null });
+    expect(parseDetalleCommand('/detalle   ')).toEqual({ dominio: null });
+  });
+
+  test('returns null for unrelated text', () => {
+    expect(parseDetalleCommand('detalle agentes')).toBeNull();
+    expect(parseDetalleCommand('')).toBeNull();
+    expect(parseDetalleCommand(undefined)).toBeNull();
   });
 });

@@ -141,6 +141,17 @@ class CerebroService {
     return this._runCli(['hoy', dominio, '--persona', persona]);
   }
 
+  /**
+   * Vacia a un .md en SandraRagCreAI/documentos el analisis de /hoy ya
+   * persistido en SQLite (nunca vuelve a llamar a Jira/LLM). `dominio` es
+   * opcional: sin el, usa el ultimo /hoy corrido en cualquier dominio.
+   */
+  runDetalle(dominio = null) {
+    const args = ['detalle'];
+    if (dominio) args.push(dominio);
+    return this._runCli(args);
+  }
+
   _runCli(args) {
     const startedAt = Date.now();
     const command = `${this.pythonPath} -m cerebro.cli ${args.join(' ')}`;

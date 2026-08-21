@@ -228,4 +228,38 @@ describe('CerebroService', () => {
       expect.any(Object)
     );
   });
+
+  test('runDetalle passes the dominio through to the CLI when given', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runDetalle('agentes');
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ path: '/tmp/detalle-agentes.md', domain: 'agentes' })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'detalle', 'agentes'],
+      expect.any(Object)
+    );
+  });
+
+  test('runDetalle omits the dominio arg when none is given (most recent across any domain)', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runDetalle();
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ path: '/tmp/detalle-agentes.md', domain: 'agentes' })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'detalle'],
+      expect.any(Object)
+    );
+  });
 });
