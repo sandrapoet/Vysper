@@ -7,7 +7,8 @@ const {
   parseSiliaRetroCommand,
   parseSiliaRetroCompararCommand,
   parseHoyCommand,
-  parseDetalleCommand
+  parseDetalleCommand,
+  parseToolScopedCommand
 } = require('../src/core/silia-commands');
 
 describe('parseSiliaDailyCommand', () => {
@@ -224,5 +225,43 @@ describe('parseDetalleCommand', () => {
     expect(parseDetalleCommand('detalle agentes')).toBeNull();
     expect(parseDetalleCommand('')).toBeNull();
     expect(parseDetalleCommand(undefined)).toBeNull();
+  });
+});
+
+describe('parseToolScopedCommand', () => {
+  test('extracts tool and query for /jira, /notion, /github', () => {
+    expect(parseToolScopedCommand('/jira que capacidades faltan')).toEqual({
+      tool: 'jira',
+      query: 'que capacidades faltan'
+    });
+    expect(parseToolScopedCommand('/notion busca la runbook de pagos')).toEqual({
+      tool: 'notion',
+      query: 'busca la runbook de pagos'
+    });
+    expect(parseToolScopedCommand('/github pull requests abiertos de auth')).toEqual({
+      tool: 'github',
+      query: 'pull requests abiertos de auth'
+    });
+  });
+
+  test('is case-insensitive and tolerates surrounding whitespace', () => {
+    expect(parseToolScopedCommand('  /JIRA algo  ')).toEqual({ tool: 'jira', query: 'algo' });
+  });
+
+  test('returns null when no query is given', () => {
+    expect(parseToolScopedCommand('/jira')).toBeNull();
+    expect(parseToolScopedCommand('/jira   ')).toBeNull();
+  });
+
+  test('returns null for unsupported tool names', () => {
+    expect(parseToolScopedCommand('/confluence algo')).toBeNull();
+    expect(parseToolScopedCommand('/hoy agentes')).toBeNull();
+    expect(parseToolScopedCommand('/detalle')).toBeNull();
+  });
+
+  test('returns null for unrelated text', () => {
+    expect(parseToolScopedCommand('jira algo')).toBeNull();
+    expect(parseToolScopedCommand('')).toBeNull();
+    expect(parseToolScopedCommand(undefined)).toBeNull();
   });
 });

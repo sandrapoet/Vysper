@@ -31,6 +31,23 @@ describe('CerebroService', () => {
     );
   });
 
+  test('runDiagnose passes --tool through when a scope is given', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runDiagnose('que capacidades faltan', { tool: 'jira' });
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ summary: 'ok', citations: [] })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'diagnose', 'que capacidades faltan', '--persona', 'silia', '--tool', 'jira'],
+      expect.objectContaining({ cwd: expect.any(String) })
+    );
+  });
+
   test('rejects with a friendly CerebroError on non-zero exit code', async () => {
     const child = makeFakeChild();
     const service = new CerebroService({ spawnFn: () => child, logger: silentLogger(), timeoutMs: 5000 });

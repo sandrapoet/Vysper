@@ -128,6 +128,30 @@ function parseDetalleCommand(text) {
   return { dominio: dominio.length > 0 ? dominio : null };
 }
 
+// Tools Cerebro can scope a free-form query to (see
+// TOOL_DESCRIPTIONS in cerebro/prompts/system_prompt.py — the prefix
+// before "_" for every LLM-facing tool). Keeping this list explicit (not
+// derived) means an unsupported name like "/confluence" falls through to
+// the normal free-form dispatch instead of silently matching nothing.
+const SCOPED_TOOLS = ['jira', 'notion', 'github'];
+
+/**
+ * Returns {tool, query} if text is "/jira <query>", "/notion <query>" or
+ * "/github <query>" — a user-chosen scope that restricts Cerebro's tool
+ * loop to only that source (see Orchestrator.run's tool_filter), instead
+ * of letting the LLM pick which tool/scope to use on its own. Otherwise
+ * null. Case-insensitive on the command name; the query is used as-is.
+ */
+function parseToolScopedCommand(text) {
+  const normalized = normalize(text);
+  const match = normalized.match(/^\/(\w+)\s+([\s\S]+)$/i);
+  if (!match) return null;
+  const tool = match[1].toLowerCase();
+  if (!SCOPED_TOOLS.includes(tool)) return null;
+  const query = match[2].trim();
+  return query.length > 0 ? { tool, query } : null;
+}
+
 module.exports = {
   parseSiliaDailyCommand,
   parseSiliaDailyArgument,
@@ -138,4 +162,6 @@ module.exports = {
   parseSiliaRetroCompararCommand,
   parseHoyCommand,
   parseDetalleCommand,
+  parseToolScopedCommand,
+  SCOPED_TOOLS,
 };

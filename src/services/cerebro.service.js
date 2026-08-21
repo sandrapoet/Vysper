@@ -37,9 +37,17 @@ class CerebroService {
     this.logger = logger;
   }
 
-  runDiagnose(problem, { persona = 'silia' } = {}) {
+  /**
+   * `tool` (e.g. "jira", "notion", "github") restricts Cerebro's tool loop
+   * to only that source's tools (Orchestrator.run's tool_filter) — used by
+   * Vysper's /jira, /notion, /github commands so the user picks the scope
+   * instead of the LLM guessing which source/breadth to search, which is
+   * what produced false "no encontrado" reports when left unscoped.
+   */
+  runDiagnose(problem, { persona = 'silia', tool = null } = {}) {
     const args = ['diagnose', problem];
     if (persona) args.push('--persona', persona);
+    if (tool) args.push('--tool', tool);
     return this._runCli(args);
   }
 

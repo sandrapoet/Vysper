@@ -22,7 +22,8 @@ const {
   parseSiliaRetroCommand,
   parseSiliaRetroCompararCommand,
   parseHoyCommand,
-  parseDetalleCommand
+  parseDetalleCommand,
+  parseToolScopedCommand
 } = require("./src/core/silia-commands");
 const { parseActualizaRagCommand } = require("./src/core/secretaria-commands");
 const {
@@ -5105,6 +5106,22 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         return;
       }
 
+      // /jira, /notion, /github: lets the user pick the scope explicitly
+      // instead of leaving it to the LLM to guess which source/breadth to
+      // search — see Orchestrator.run's tool_filter. Same three modes as
+      // /hoy and /detalle above.
+      const toolScopedAllowed = this.isSiliaMode(normalizedSkill) ||
+        this.isSecretariaMode(normalizedSkill) ||
+        normalizedSkill === 'system-design';
+      const toolScopedCommand = toolScopedAllowed ? parseToolScopedCommand(text) : null;
+      if (toolScopedCommand) {
+        await this.runToolScopedCommand(toolScopedCommand.tool, toolScopedCommand.query, {
+          skill: normalizedSkill,
+          source: 'cerebro'
+        });
+        return;
+      }
+
       if (this.isSiliaMode()) {
         await this.processTextWithSilia(text);
         return;
@@ -5363,6 +5380,22 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
       logger.error('Fallo al ejecutar /detalle', { error: error.message });
       this.broadcastLLMError(friendlyMessage);
       this.emitSiliaResult(friendlyMessage, { ...metadata, siliaCommand: 'detalle', usedFallback: true, error: true });
+    }
+  }
+
+  async runToolScopedCommand(tool, query, metadata = {}) {
+    logger.info(`Comando /${tool} recibido`, { queryLength: query.length });
+
+    try {
+      const result = await this.cerebroService.runDiagnose(query, { tool });
+      this.emitSiliaResult(formatCerebroFinalAnswer(result), { ...metadata, siliaCommand: tool });
+    } catch (error) {
+      const friendlyMessage = error instanceof CerebroError
+        ? error.message
+        : `No se pudo ejecutar /${tool}: ${error.message}`;
+      logger.error(`Fallo al ejecutar /${tool}`, { error: error.message });
+      this.broadcastLLMError(friendlyMessage);
+      this.emitSiliaResult(friendlyMessage, { ...metadata, siliaCommand: tool, usedFallback: true, error: true });
     }
   }
 
