@@ -464,6 +464,11 @@ Disponible en los modos `secretaria`, `silia` y `system-design`; en
 cualquier otro modo se ignora igual que el resto del texto libre en esos
 modos que no lo soportan.
 
+El pipeline corre tres pasos en orden: `ingest.sync_from_minutas` (copia
+transcripts nuevos desde `SYNC_SOURCE_DIR`), `ingest.normalize_transcripts`
+(dedupe de tartamudeo y corrección de glosario sobre copias espejo, sin
+tocar el original) e `ingest.ingest` (sube lo nuevo a LightRAG).
+
 **Ejemplo:**
 ```
 /actualizaRag

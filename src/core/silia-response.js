@@ -217,6 +217,18 @@ function formatActualizaRagResult(stdout) {
     }
   }
 
+  const normalizeSection = findSection((t) => t.includes('normalize_transcripts'));
+  if (normalizeSection) {
+    const body = normalizeSection.body;
+    const normalized = body.filter((l) => /→\s+.+?:\s+normalizando/.test(l)).length;
+    const unchanged = body.filter((l) => /sin cambios, se omite/.test(l)).length;
+    const pendingReview = body.reduce((acc, l) => {
+      const m = l.match(/⚠\s+(\d+)\s+término/);
+      return acc + (m ? parseInt(m[1], 10) : 0);
+    }, 0);
+    lines.push(`- Normalización de transcripciones: ${normalized} normalizadas, ${unchanged} sin cambios${pendingReview ? `, ${pendingReview} término(s) pendientes de revisión` : ''}`);
+  }
+
   const ingestSection = findSection((t) => t.includes('ingest.ingest'));
   if (ingestSection) {
     const ingested = [];
