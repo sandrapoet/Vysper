@@ -147,5 +147,6 @@ module.exports = {
   formatCerebroFinalAnswer,
   formatOptimizacionesList,
   formatSprintRetro,
+  formatDomainRiskReview,
   buildIncidenteLogEntry,
 };
