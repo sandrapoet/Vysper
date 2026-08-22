@@ -5127,13 +5127,6 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         return;
       }
 
-      if (this.isSecretariaMode()) {
-        logger.info("Skipping LLM transcription processing in secretaria mode", {
-          textLength: typeof text === 'string' ? text.length : 0
-        });
-        return;
-      }
-
       if (normalizedSkill === 'system-design') {
         const classification = classifyOperationalQuery(text);
         if (classification.isOperational || isExplicitCerebroCommand(text)) {
