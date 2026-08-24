@@ -32,6 +32,17 @@ import queue
 import time
 import os
 import wave
+
+# Silero VAD (torch) y faster-whisper corren en el mismo proceso que numpy/BLAS
+# usan hilos por su cuenta; sin este tope, torch/OpenMP/MKL lanzan un hilo por
+# core disponible (32 en la maquina de referencia) apenas se importan, y eso
+# compite con la diarizacion (ver diarize.py, mismo tope) por toda la CPU
+# mientras Alt+S esta grabando en vivo -- lo bastante para congelar el equipo
+# completo. Debe fijarse ANTES de importar numpy/torch.
+_CPU_THREAD_CAP = os.environ.get("VYSPER_STT_CPU_THREADS", "2")
+for _env_var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_env_var, _CPU_THREAD_CAP)
+
 import numpy as np
 from collections import deque
 
@@ -57,6 +68,7 @@ def log(*args) -> None:
 log("Loading Silero VAD via torch.hub...")
 try:
     import torch
+    torch.set_num_threads(int(_CPU_THREAD_CAP))
     _vad_model, _vad_utils = torch.hub.load(
         repo_or_dir="snakers4/silero-vad",
         model="silero_vad",

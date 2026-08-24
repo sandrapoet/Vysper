@@ -16,6 +16,16 @@ import sys
 import warnings
 from pathlib import Path
 
+# pyannote carga su pipeline (segmentacion + embeddings) via torch en cada
+# invocacion de este script; sin tope, torch/OpenMP/MKL usan un hilo por core
+# disponible. Esto corre mientras el sidecar de Alt+S (ver sidecar.py, mismo
+# tope) sigue con la captura en vivo, y la suma de ambos sin limite puede
+# saturar toda la CPU y congelar el equipo. Debe fijarse ANTES de importar
+# numpy/torch/pyannote.
+_CPU_THREAD_CAP = os.environ.get("VYSPER_STT_CPU_THREADS", "2")
+for _env_var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_env_var, _CPU_THREAD_CAP)
+
 
 DEFAULT_MODEL = "pyannote/speaker-diarization-community-1"
 
@@ -108,6 +118,10 @@ def _load_audio_for_pyannote(audio_path: Path) -> dict:
 
 
 def diarize(audio_path: Path) -> dict:
+    import torch
+
+    torch.set_num_threads(int(_CPU_THREAD_CAP))
+
     token = _get_token()
     if not token:
         raise RuntimeError(
