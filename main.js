@@ -70,6 +70,12 @@ const MEETING_SEGMENT_SEC = Number(process.env.VYSPER_MEETING_SEGMENT_SEC || 300
 const MEETING_OVERLAP_SEC = Number(process.env.VYSPER_MEETING_OVERLAP_SEC || 3);
 const MEETING_SEGMENT_SUMMARY = process.env.VYSPER_MEETING_SEGMENT_SUMMARY !== '0';
 const MEETING_FINAL_TRANSCRIPT_CHARS = Number(process.env.VYSPER_MEETING_FINAL_TRANSCRIPT_CHARS || 60000);
+// Si el sidecar no confirma meeting_started en esta ventana (arranque en frio
+// del modelo STT, sidecar caido, comando perdido, etc.), la sesion se cancela
+// sola en vez de quedar en "starting" para siempre (ver troubleshooting de
+// Alt+S atascado en OCUPADO). 25s da margen generoso a una carga lenta
+// legitima del modelo sin dejar al usuario esperando demasiado.
+const MEETING_STARTUP_TIMEOUT_MS = Number(process.env.VYSPER_MEETING_STARTUP_TIMEOUT_MS || 25000);
 const DIARIZE_HELPER_PATH = path.join(__dirname, 'stt', 'diarize.py');
 
 // Modo Optimizacion (Alt+O): entrevista dirigida en paralelo a una sesion Alt+S.
@@ -828,6 +834,7 @@ class ApplicationController {
 
     speechService.on("meeting-started", (data) => {
       if (this.secretariaMeetingSession) {
+        this.clearSecretariaMeetingStartupTimeout(this.secretariaMeetingSession);
         this.secretariaMeetingSession.status = 'recording';
         this.secretariaMeetingSession.recordingStartedAt = new Date().toISOString();
         this.writeSecretariaMeetingManifest(this.secretariaMeetingSession);
@@ -1468,7 +1475,7 @@ class ApplicationController {
     // transcripcion y minuta no depende del skill activo en ningun punto
     // (solo este atajo lo gateaba).
     const session = this.secretariaMeetingSession;
-    if (session?.status === 'recording') {
+    if (session?.status === 'recording' || session?.status === 'starting') {
       this.stopSecretariaMeetingSession().catch((error) => {
         logger.error('No se pudo detener la sesion larga de secretaria', { error: error.message });
         signalMeetingStatus('ERROR', `no se pudo detener la sesion larga: ${error.message}`);
@@ -1766,6 +1773,49 @@ class ApplicationController {
       overlapSec: MEETING_OVERLAP_SEC
     });
     windowManager.showChatWindow();
+
+    // Red de seguridad: si el sidecar nunca confirma meeting_started (modelo
+    // STT tardando en cargar, sidecar caido, start_meeting perdido), esta
+    // sesion se cancela sola en vez de quedar en "starting" para siempre.
+    // Se compara por identidad de objeto (this.secretariaMeetingSession ===
+    // session) para no pisar una sesion distinta si esta ya termino y arranco
+    // otra antes de que venza el timeout.
+    session.startupTimeoutHandle = setTimeout(() => {
+      session.startupTimeoutHandle = null;
+      if (this.secretariaMeetingSession !== session || session.status !== 'starting') return;
+
+      logger.warn('Secretaria Alt+S: el sidecar no confirmo meeting_started a tiempo; cancelando sesion atascada', {
+        sessionDir: session.sessionDir,
+        timeoutMs: MEETING_STARTUP_TIMEOUT_MS
+      });
+      signalMeetingStatus(
+        'ERROR',
+        `el sidecar no confirmo el inicio de la grabacion en ${Math.round(MEETING_STARTUP_TIMEOUT_MS / 1000)}s; cancelando la sesion atascada...`,
+        { sessionDir: session.sessionDir }
+      );
+
+      // stopMeetingRecording() es seguro aunque el sidecar nunca haya llegado
+      // a confirmar el arranque: en ese caso aborta en silencio del lado
+      // Python (ver troubleshooting), y como mucho tarda hasta su propio
+      // timeout de 15s antes de rechazar, lo cual ya queda cubierto abajo.
+      speechService.stopMeetingRecording().catch((error) => {
+        logger.warn('No se pudo confirmar el abort del sidecar tras el timeout de arranque; se limpia la sesion igual', {
+          error: error.message
+        });
+      }).finally(() => {
+        if (this.secretariaMeetingSession === session) {
+          this.secretariaMeetingSession = null;
+        }
+      });
+    }, MEETING_STARTUP_TIMEOUT_MS);
+    session.startupTimeoutHandle.unref?.();
+  }
+
+  clearSecretariaMeetingStartupTimeout(session) {
+    if (session?.startupTimeoutHandle) {
+      clearTimeout(session.startupTimeoutHandle);
+      session.startupTimeoutHandle = null;
+    }
   }
 
   async stopSecretariaMeetingSession() {
@@ -1774,11 +1824,21 @@ class ApplicationController {
       signalMeetingStatus('IGNORADO', 'no hay sesion larga activa.');
       return;
     }
-    if (session.status !== 'recording') {
+    if (session.status !== 'recording' && session.status !== 'starting') {
       signalMeetingStatus('OCUPADO', `la sesion ya esta en estado "${session.status}". No se cancelo nada.`);
       return;
     }
 
+    // Cancelacion manual: si el timeout de arranque de mas arriba todavia
+    // esta pendiente, se descarta para que no dispare tambien el suyo (ya
+    // estamos deteniendo la sesion por este camino).
+    this.clearSecretariaMeetingStartupTimeout(session);
+
+    // Si todavia esta "starting" (el sidecar no confirmo meeting_started),
+    // stopMeetingRecording() sigue siendo seguro: el sidecar aborta el
+    // arranque en silencio (ni meeting_started ni meeting_stopped llegan) y
+    // stopMeetingRecording() como mucho tarda hasta su timeout de 15s antes
+    // de rechazar, lo cual ya se maneja abajo sin perder la sesion.
     session.status = 'stopping';
     this.writeSecretariaMeetingManifest(session);
     signalMeetingStatus('DETENIENDO', 'cerrando captura y ultimo fragmento...');
