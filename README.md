@@ -40,6 +40,9 @@ Comandos de texto (en el chat o por voz):
 - |||  Reintento / fallback de la consolidación
 - °°°  Reinicia el contexto acumulado
 - /actualizaRag  Ejecuta `./build.sh --actualiza` sobre SandraRagCreAI (solo en secretaria, silia y system-design — ver sección "Modo Silia")
+- /hoy <dominio>  Análisis de riesgo de Jira para un dominio de equiv.yaml (secretaria, silia, system-design — ver sección "Modo Silia")
+- /detalle [dominio]  Vuelca el análisis de /hoy ya persistido a un .md (secretaria, silia, system-design)
+- /jira, /notion, /github <consulta>  Acota una consulta libre a esa sola fuente (secretaria, silia, system-design)
 ###
 
 <p align="center">
@@ -485,6 +488,79 @@ Recomendación: pegá el mensaje tal cual en silia.
 `/media/san/Miscosas6/Desarrollo/SandraRagCreAI`) y
 `VYSPER_SANDRA_RAG_ACTUALIZA_TIMEOUT_MS` (default `900000`, 15 minutos —
 el build puede tardar).
+
+### `/hoy`, `/detalle`, `/jira`, `/notion`, `/github` (secretaria, silia, system-design)
+
+Igual que `/actualizaRag`, estos cinco comandos están disponibles en los
+tres modos `secretaria`, `silia` y `system-design` — no son exclusivos de
+Silia. En cualquier otro modo (o si el texto no calza con la sintaxis
+exacta de ninguno) se ignoran igual que el resto del texto libre no
+soportado en esos modos.
+
+**`/hoy <dominio>`** — pipeline fijo de análisis de riesgo: trae, con
+detalle completo, todos los issues de los sprints activos/próximos del
+proyecto Jira mapeado a `<dominio>` en `equiv.yaml` (`dominios:` en la raíz
+de Cerebro), calcula orden de prioridad/bloqueo en Python (nunca lo decide
+el LLM), une los riesgos curados sin ticket del dominio, y le pide al LLM
+una síntesis narrada (riesgos/probabilidad/impacto/mitigación) para las
+actividades de mayor prioridad. Puede tardar varios minutos en dominios
+con muchas actividades — ver `CEREBRO_TIMEOUT_MS` más abajo.
+
+**Ejemplos:**
+```
+/hoy agentes
+```
+```
+/hoy core
+```
+
+**`/detalle [dominio]`** — vacía a un `.md` en `SandraRagCreAI/documentos`
+el análisis de riesgo de `/hoy` ya persistido en SQLite (nunca vuelve a
+llamar a Jira/LLM) — útil cuando la respuesta de `/hoy` es demasiado larga
+para mostrarla completa en el chat. `[dominio]` es opcional: sin él, usa el
+análisis más reciente de cualquier dominio.
+
+**Ejemplos:**
+```
+/detalle agentes
+```
+```
+/detalle
+```
+
+**`/jira <consulta>`**, **`/notion <consulta>`**, **`/github <consulta>`**
+— acotan una consulta libre a Cerebro para que solo use las herramientas de
+esa fuente (`tool_filter` en `Orchestrator.run`), en vez de dejar que el
+LLM elija libremente qué herramienta y qué alcance usar. Útil cuando ya
+sabés dónde está la respuesta y querés evitar que el LLM busque en el
+lugar equivocado (o adivine sin encontrar nada).
+
+**Ejemplos:**
+```
+/jira estatus del bug AGE-285
+```
+```
+/jira cuáles son los tickets asignados a Sandy Reyes
+```
+```
+/notion hay algún runbook de rollback para el servicio de pagos
+```
+```
+/github repo:silia-mx/Agent is:pr checkpointer durable
+```
+
+**Limitación conocida de `/jira`:** no puede filtrar por assignee en texto
+libre — la herramienta que el LLM usa para buscar (`jira_search`) es
+búsqueda de texto plano, nunca JQL, así que "tickets asignados a X" en
+general no encuentra nada aunque X tenga tickets reales (si preguntás por
+un ticket puntual como en el primer ejemplo, sí funciona, incluyendo quién
+es el responsable). Para un checkpoint real por persona/equipo, usá
+`/silia daily <identificador>` en modo silia — ese sí construye una
+consulta JQL real (`assignee in (...)`) en código de confianza, no vía el
+LLM. Importante: el identificador debe ser el nombre exacto que Jira tiene
+registrado (o mejor, el email/accountId) — un nombre parecido pero no
+exacto (p. ej. un apodo) no matchea con nada y no da ningún aviso de que
+el nombre no existe.
 
 **Grabaciones (`Alt+S`) y modo optimización (`Alt+O`) en cualquier módulo:**
 tanto iniciar como detener una grabación larga con `Alt+S`, y armar/desarmar
