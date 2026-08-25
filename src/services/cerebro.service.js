@@ -51,11 +51,19 @@ class CerebroService {
     return this._runCli(args);
   }
 
-  runDailyCheckpoint(assignee, { persona = 'silia' } = {}) {
+  /**
+   * `localNotesFile` (opcional) apunta a un .txt/.md ya armado por el
+   * llamador con minutas/transcripciones locales del ultimo dia habil (la
+   * fuente "Claude" de /silia daily) — Cerebro no tiene forma propia de
+   * obtener eso, asi que Vysper se lo pasa ya extraido.
+   */
+  runDailyCheckpoint(assignee, { persona = 'silia', localNotesFile = null } = {}) {
     if (!assignee) {
       return Promise.reject(new CerebroError('No hay un asignado configurado para el checkpoint diario (VYSPER_SILIA_ASSIGNEE).'));
     }
-    return this._runCli(['daily-checkpoint', assignee, '--persona', persona]);
+    const args = ['daily-checkpoint', assignee, '--persona', persona];
+    if (localNotesFile) args.push('--local-notes-file', localNotesFile);
+    return this._runCli(args);
   }
 
   runIncident(description, { persona = 'silia' } = {}) {

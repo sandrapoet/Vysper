@@ -756,7 +756,15 @@ class LLMService {
     const apiKeys = this.getSecondaryTextModelApiKeys();
     let lastAccountError = null;
 
-    const ragData = await this.getBehavioralRagContext(activeSkill, text);
+    // A caller with a fully custom system instruction (e.g. /hoy's dumping
+    // analysis) never uses ragInstructionBlock (buildSecondaryTextSystemInstruction
+    // returns customSystemInstruction verbatim, before it would be appended) --
+    // skip the RAG lookup entirely rather than pay its latency for nothing.
+    // Without this, isCompensationQuestion's broad keyword heuristic can false-
+    // positive on large free-form dumps (confirmed live on a 240KB Jira dump).
+    const ragData = options.customSystemInstruction
+      ? { applicable: false, ragContext: '', ragUsed: false, ragEndpoint: null, ragContextLength: 0 }
+      : await this.getBehavioralRagContext(activeSkill, text);
     const ragInstructionBlock = ragData.applicable
       ? this.buildBehavioralRagInstructionBlock(ragData.ragContext, text)
       : '';
@@ -1001,6 +1009,170 @@ class LLMService {
 
       throw error;
     }
+  }
+
+  /**
+   * Paso intermedio de /hoy: convierte el markdown crudo de Cerebro
+   * ("dumping de cerebro", 50+ tickets sin estructurar) en el plan de
+   * accion de 3 secciones que de verdad se muestra en el chat. Ruta
+   * completamente aparte de processTextWithSkill/processTranscriptionWith*
+   * (no hay un "activeSkill" real de por medio) para no arrastrar
+   * behavioral RAG, session memory ni prompts de skill: el prompt de
+   * sistema es fijo y completo, dado por el usuario.
+   */
+  async analyzeDumpingDeCerebro(dumpingText) {
+    const systemInstruction = this.buildDumpingAnalysisSystemInstruction();
+
+    if (!this.isInitialized) {
+      const initError = new Error('LLM service not initialized. Check Gemini API key configuration.');
+      if (this.hasSecondaryTextModel()) {
+        return this.processTextWithSecondaryTextModel(dumpingText, 'dumping-analysis', [], null, {
+          customSystemInstruction: systemInstruction
+        });
+      }
+      throw initError;
+    }
+
+    const startTime = Date.now();
+    this.requestCount++;
+
+    try {
+      logger.info('Analyzing dumping de cerebro (/hoy intermediate step)', {
+        textLength: dumpingText.length,
+        requestId: this.requestCount
+      });
+
+      const request = {
+        systemInstruction: { parts: [{ text: systemInstruction }] },
+        contents: [{ role: 'user', parts: [{ text: dumpingText }] }],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: this.getGeminiOutputTokenLimit(null, 'finalization'),
+          topK: 20,
+          topP: 0.9
+        }
+      };
+
+      let response;
+      try {
+        response = await this.executeRequest(request);
+      } catch (error) {
+        if (error.message.includes('fetch failed') && config.get('llm.gemini.enableFallbackMethod')) {
+          response = await this.executeAlternativeRequest(request);
+        } else {
+          throw error;
+        }
+      }
+
+      return {
+        response,
+        metadata: {
+          skill: 'dumping-analysis',
+          processingTime: Date.now() - startTime,
+          requestId: this.requestCount,
+          usedFallback: false
+        }
+      };
+    } catch (error) {
+      this.errorCount++;
+      logger.error('Dumping de cerebro analysis failed', {
+        error: error.message,
+        requestId: this.requestCount
+      });
+
+      if (this.isPrimaryQuotaOrBillingError(error) && this.hasSecondaryTextModel()) {
+        return this.processTextWithSecondaryTextModel(dumpingText, 'dumping-analysis', [], null, {
+          customSystemInstruction: systemInstruction
+        });
+      }
+
+      throw error;
+    }
+  }
+
+  buildDumpingAnalysisSystemInstruction() {
+    return `# Contexto y Objetivo
+
+Actúas como un **Jefe de Proyecto Técnico (Technical Program Manager)** especializado en gestión de riesgos. Tu misión es transformar el "dumping de cerebro" que te voy a proporcionar en un **Plan de Acción Ejecutable**.
+
+El problema actual es que el archivo contiene información no estructurada sobre 50+ tickets de Jira. No se puede usar para la gestión diaria porque es imposible identificar qué requiere atención inmediata. Tu tarea es filtrar, priorizar y estructurar la información para que sea útil para un equipo de desarrollo.
+
+El objetivo final de tu análisis es responder a esta pregunta clave para el equipo: **"¿Qué tenemos que hacer HOY y esta SEMANA para desbloquear el proyecto?"**
+
+---
+
+## Instrucciones de Procesamiento
+
+Sigue estas reglas estrictamente para procesar el archivo. Si encuentras información faltante o ambigua, **no la inventes**. En su lugar, crea una "Pregunta Abierta" para el equipo.
+
+### Fase 1: Análisis y Filtrado (Input Processing)
+
+1.  **Identifica los Bloqueadores Críticos:** Busca en el archivo los tickets que tienen el mayor impacto y dependencias. Estos son los que, si no se resuelven, detienen el progreso de otros equipos.
+2.  **Ignora el Ruido:** Descarta los tickets marcados como "Cerrado" o "Separador de trabajo" a menos que se mencione explícitamente un riesgo de regresión (ej. "Bug ya cerrado: si la solución no fue validada...").
+3.  **Extrae la Esencia de los Tickets Activos:** Para cada ticket activo ("En curso", "Por hacer", "Control de calidad"), extrae:
+    *   **ID y Nombre:** (ej. AGE-137 Memoria extendida).
+    *   **Propietario y Estado:** ¿Quién lo está haciendo y en qué fase está?
+    *   **Riesgo Principal:** ¿Cuál es el riesgo más grave que bloquea a otros o al lanzamiento?
+    *   **Dependencia Clave:** ¿De qué otro ticket depende? ¿Y quién lo bloquea a él?
+
+### Fase 2: Síntesis y Priorización (Output Generation)
+
+1.  **Crea un Tablero de "Acciones Inmediatas":** Genera una tabla priorizada con los tickets que requieren acción HOY (próximas 24-48 horas). La priorización debe ser: **Alto Impacto y Corto Plazo** (Quick Wins) vs. **Alto Impacto y Largo Plazo** (Riesgos Estratégicos).
+2.  **Crea un Plan de "Desbloqueo Semanal":** Formula un plan de acción para desbloquear los tickets de la Fase 1. La salida debe ser tareas concretas.
+
+### Fase 3: Generación de Preguntas (Actionable Intelligence)
+
+Para todos los tickets donde la información era ambigua o faltaba (ej. "Owner sin asignar", "riesgo no listado en comentarios"), crea una lista de **Preguntas Pendientes** que el equipo debe resolver en la próxima reunión. **Este es tu entregable más importante para la reunión de mañana.**
+
+---
+
+## Formato de Salida Estricto
+
+Genera tu respuesta EXACTAMENTE con la siguiente estructura de tres secciones. No añadas texto introductorio ni conclusión.
+
+### SECCIÓN 1: EL TABLERO DE ACCIÓN INMEDIATA (Prioridad 1)
+
+_Esta sección es para el equipo de desarrollo. Debe mostrar, de un vistazo, qué hacer hoy._
+
+| Prioridad | ID y Nombre del Ticket | Propietario | Bloqueo / Riesgo Principal | **Acción Concreta para HOY** |
+| :--- | :--- | :--- | :--- | :--- |
+| **1 (Critico)** | **Ejemplo:** AGE-143 Orquestación | **Ejemplo:** Sandy Reyes | **Ejemplo:** Bloquea 8 features. No está avanzando. | **Ejemplo:** Realizar daily de 15 min con Sandy para revisar el mapeo de LangGraph. |
+| **2** | [Ticket] | [Owner] | [Riesgo] | [Acción] |
+| **...** | ... | ... | ... | ... |
+
+### SECCIÓN 2: EL PLAN DE DESBLOQUEO SEMANAL (Prioridad 2)
+
+_Esta sección es para el Jefe de Proyecto. Debe mostrar cómo resolver los problemas estructurales._
+
+#### 1. Desbloquear la Dependencia "AGE-143" (El Nodo Crítico)
+*   **Problema:** AGE-143 (Orquestación) bloquea a 8 features, incluyendo AGE-137 y AGE-146.
+*   **Plan:**
+    1.  **Sandy Reyes:** Dedicar 2 días completos a terminar el esqueleto del orquestador.
+    2.  **David Alemán:** Proporcionar un mock del orquestador para que AGE-137 pueda avanzar en paralelo.
+    3.  **Equipo:** Reunión de sincronización el viernes para validar la integración.
+
+#### 2. Mitigar Riesgos de Bug Cerrados (AGE-275, AGE-276)
+*   **Problema:** Bugs de flujos de procesos cerrados sin validación de regresión. Riesgo de que vuelvan a aparecer.
+*   **Plan:**
+    1.  **Greynner Moreno:** Crear un ticket técnico (AGE-XXX) para añadir tests automatizados de integración que cubran los escenarios de AGE-275 y AGE-276.
+
+#### 3. Plan de Contingencia por "Guardrails" (AGE-146)
+*   **Problema:** AGE-146 depende de AGE-143. Si AGE-143 se retrasa, no se puede implementar la seguridad anti-prompt-injection.
+*   **Plan:**
+    1.  Activar **Modo Estricto (Strict Mode)** en producción: desactivar la ejecución de herramientas hasta que AGE-146 esté listo.
+    2.  Sandy Reyes continuar con el diseño de patrones de seguridad (regex) en paralelo a AGE-143.
+
+### SECCIÓN 3: PREGUNTAS PENDIENTES PARA EL EQUIPO (Para la Daily de Mañana)
+
+_Estas son las preguntas que, si no se responden, generarán más riesgos. Son tu principal herramienta para la reunión de mañana._
+
+*   **¿Quién es el owner formal de AGE-143?** (El archivo menciona a Sandy Reyes, pero no está confirmado).
+*   **¿Cuál es el "hueco en el mapeo" de LangGraph que menciona andresanta en AGE-143?** (No se puede avanzar sin saberlo).
+*   **¿Cuál es el plan de retención de checkpoints para AGE-137?** ¿Se borran después de X días? (Impacta en el costo de RDS).
+*   **¿Cómo se manejarán los secretos (API keys) para las herramientas de AGE-135?** (No está especificado en el archivo).
+*   **¿Cuál es el objetivo de latencia para la recuperación RAG (AGE-134)?** (Debe cumplir con el SLA de respuesta).
+
+Nota: los tickets/nombres de los ejemplos de arriba son ilustrativos del formato esperado, no datos reales — usa siempre los tickets, propietarios y riesgos que encuentres en el archivo real que se te entrega a continuacion como mensaje de usuario.`;
   }
 
   async processSkillFinalization(text, activeSkill, sessionMemory = [], programmingLanguage = null, imageBuffers = []) {
@@ -1728,6 +1900,10 @@ Remember: the transcript block is the source of truth for the user's current req
   }
 
   buildSecondaryTextSystemInstruction(activeSkill, programmingLanguage, options = {}) {
+    if (options.customSystemInstruction) {
+      return options.customSystemInstruction;
+    }
+
     if (this.normalizeSkillName(activeSkill) === 'programming') {
       return this.buildSecondaryCodingSystemInstruction(activeSkill, programmingLanguage);
     }
@@ -1766,7 +1942,7 @@ ${behavioralOverride}${options.ragInstructionBlock || ''}`;
   }
 
   buildSecondaryTextUserMessage(text, activeSkill, options = {}) {
-    if (this.normalizeSkillName(activeSkill) === 'programming') {
+    if (options.customSystemInstruction || this.normalizeSkillName(activeSkill) === 'programming') {
       return text;
     }
 
