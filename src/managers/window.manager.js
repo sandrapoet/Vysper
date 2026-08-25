@@ -493,12 +493,6 @@ class WindowManager {
     } else {
       // Linux and other platforms
       window.setAlwaysOnTop(true);
-      
-      setTimeout(() => {
-        if (!window.isDestroyed()) {
-          window.setAlwaysOnTop(true);
-        }
-      }, 100);
     }
 
     // Ensure window appears on all workspaces/desktops initially
@@ -540,16 +534,16 @@ class WindowManager {
       }
     };
     
-    // Event-based enforcement
+    // Event-based enforcement. One retry per event is enough to catch a
+    // dropped always-on-top flag; stacking several timers per event across
+    // 4 windows is what let a single interaction burst turn into dozens of
+    // native WM calls (see incident 2026-08-25).
     window.on('blur', () => {
-      setTimeout(enforceAlwaysOnTop, 50);
       setTimeout(enforceAlwaysOnTop, 200);
-      setTimeout(enforceAlwaysOnTop, 500);
     });
-    
+
     window.on('show', () => {
-      setTimeout(enforceAlwaysOnTop, 50);
-      setTimeout(enforceAlwaysOnTop, 200);
+      setTimeout(enforceAlwaysOnTop, 100);
     });
     
     window.on('focus', () => {
@@ -1490,19 +1484,31 @@ class WindowManager {
 
   // New method to enforce always-on-top for all windows
   enforceAlwaysOnTopForAllWindows() {
+    // Debounced: repeated calls within enforceDebounceMs (e.g. a double
+    // shortcut press, OS key-repeat while holding Alt+A, or this running
+    // right after a per-window blur/show/focus listener already did it)
+    // are no-ops. Each call fires several native setAlwaysOnTop calls per
+    // window; without this guard they can burst fast enough to trip a
+    // GNOME Shell/Mutter GC-reentrancy freeze (see incident 2026-08-25).
+    const now = Date.now();
+    if (now - this.lastEnforceTime < this.enforceDebounceMs) {
+      return;
+    }
+    this.lastEnforceTime = now;
+
     this.windows.forEach((window, type) => {
       if (!window.isDestroyed()) {
         try {
           if (process.platform === 'darwin') {
             // Try multiple levels for macOS
             window.setAlwaysOnTop(true, 'pop-up-menu', 1);
-            
+
             setTimeout(() => {
               if (!window.isDestroyed()) {
                 window.setAlwaysOnTop(true, 'floating', 1);
               }
             }, 100);
-            
+
             setTimeout(() => {
               if (!window.isDestroyed()) {
                 window.setAlwaysOnTop(true, 'screen-saver', 1);
@@ -1511,13 +1517,6 @@ class WindowManager {
           } else {
             // Windows and Linux
             window.setAlwaysOnTop(true);
-            
-            // Additional enforcement after a short delay
-            setTimeout(() => {
-              if (!window.isDestroyed()) {
-                window.setAlwaysOnTop(true);
-              }
-            }, 100);
           }
         } catch (error) {
           logger.warn('Error enforcing always-on-top', { 

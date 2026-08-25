@@ -23,7 +23,8 @@ const {
   parseSiliaRetroCompararCommand,
   parseHoyCommand,
   parseDetalleCommand,
-  parseToolScopedCommand
+  parseToolScopedCommand,
+  parseRevisarCommand
 } = require("./src/core/silia-commands");
 const { parseActualizaRagCommand } = require("./src/core/secretaria-commands");
 const {
@@ -32,7 +33,8 @@ const {
   formatSprintRetro,
   formatDomainRiskReview,
   formatActualizaRagResult,
-  buildIncidenteLogEntry
+  buildIncidenteLogEntry,
+  formatPrReview
 } = require("./src/core/silia-response");
 const { classifyOperationalQuery, isExplicitCerebroCommand } = require("./src/core/cerebro-query-router");
 
@@ -5543,6 +5545,81 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     return filePath;
   }
 
+  /**
+   * Vuelca el reporte completo de /revisar a un .md fijo por PR -- el
+   * "Detalle completo" que el reporte original describia como un link
+   * (aca no hay servidor web que sirva eso, asi que es un archivo local
+   * en el mismo directorio que usa /hoy). Se sobreescribe en cada
+   * re-evaluacion del mismo PR.
+   */
+  saveRevisionPrReport(prNumber, markdown) {
+    const dir = this.getApoyosDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, `revision-pr-${prNumber}.md`);
+    fs.writeFileSync(filePath, markdown, 'utf8');
+    return filePath;
+  }
+
+  async runRevisarCommand({ url, mode, diablo }, metadata = {}) {
+    logger.info('Comando /revisar recibido', { url, mode, diablo });
+
+    try {
+      const result = await this.cerebroService.runRevisar(url, { mode, diablo });
+
+      let reportPath = null;
+      try {
+        if (result.report_markdown && result.pr_number) {
+          reportPath = this.saveRevisionPrReport(result.pr_number, result.report_markdown);
+        }
+      } catch (error) {
+        logger.warn('No se pudo guardar el reporte de /revisar en apoyos/', { error: error.message });
+      }
+
+      const text = formatPrReview(result);
+
+      if (result.slack_blocks) {
+        clipboard.writeText(JSON.stringify(result.slack_blocks, null, 2));
+        this.emitSiliaResult(
+          `${text}\n\n_(JSON de Slack copiado al portapapeles -- listo para pegar, no se envio automaticamente.)_`,
+          { ...metadata, siliaCommand: 'revisar', copiedToClipboard: true, reportPath }
+        );
+      } else {
+        this.emitSiliaResult(text, { ...metadata, siliaCommand: 'revisar', reportPath });
+      }
+    } catch (error) {
+      const friendlyMessage = error instanceof CerebroError
+        ? error.message
+        : `No se pudo ejecutar /revisar: ${error.message}`;
+      logger.error('Fallo al ejecutar /revisar', { error: error.message });
+      this.broadcastLLMError(friendlyMessage);
+      this.emitSiliaResult(friendlyMessage, { ...metadata, siliaCommand: 'revisar', usedFallback: true, error: true });
+    }
+  }
+
+  async runRevisarMergeCommand({ url, release }, metadata = {}) {
+    logger.info('Comando /revisar --merge recibido', { url, release });
+
+    try {
+      const result = await this.cerebroService.runRevisarMerge(url, { release });
+      if (result.error) {
+        this.emitSiliaResult(result.error, { ...metadata, siliaCommand: 'revisar-merge', error: true });
+        return;
+      }
+
+      const parts = [`PR mergeado: ${url}`];
+      if (result.comment_url) parts.push(`Comentario: ${result.comment_url}`);
+      if (result.release) parts.push(`Release creado: ${result.release.tag_name} (${result.release.url})`);
+      this.emitSiliaResult(parts.join('\n'), { ...metadata, siliaCommand: 'revisar-merge' });
+    } catch (error) {
+      const friendlyMessage = error instanceof CerebroError
+        ? error.message
+        : `No se pudo ejecutar /revisar --merge: ${error.message}`;
+      logger.error('Fallo al ejecutar /revisar --merge', { error: error.message });
+      this.broadcastLLMError(friendlyMessage);
+      this.emitSiliaResult(friendlyMessage, { ...metadata, siliaCommand: 'revisar-merge', usedFallback: true, error: true });
+    }
+  }
+
   async runHoyCommand(dominio, metadata = {}) {
     logger.info('Comando /hoy recibido', { dominio });
 
@@ -5721,6 +5798,20 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
       clipboard.writeText(prompt);
       this.logIncidente(incidenteDescripcion, prompt);
       this.emitSiliaResult(prompt, { ...baseMetadata, siliaCommand: 'incidente', copiedToClipboard: true });
+      return true;
+    }
+
+    const revisarCommand = parseRevisarCommand(text);
+    if (revisarCommand) {
+      if (revisarCommand.error) {
+        this.emitSiliaResult(revisarCommand.error, { ...baseMetadata, siliaCommand: 'revisar', error: true });
+        return true;
+      }
+      if (revisarCommand.merge) {
+        await this.runRevisarMergeCommand(revisarCommand, baseMetadata);
+      } else {
+        await this.runRevisarCommand(revisarCommand, baseMetadata);
+      }
       return true;
     }
 

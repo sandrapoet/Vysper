@@ -8,7 +8,8 @@ const {
   parseSiliaRetroCompararCommand,
   parseHoyCommand,
   parseDetalleCommand,
-  parseToolScopedCommand
+  parseToolScopedCommand,
+  parseRevisarCommand
 } = require('../src/core/silia-commands');
 
 describe('parseSiliaDailyCommand', () => {
@@ -263,5 +264,64 @@ describe('parseToolScopedCommand', () => {
     expect(parseToolScopedCommand('jira algo')).toBeNull();
     expect(parseToolScopedCommand('')).toBeNull();
     expect(parseToolScopedCommand(undefined)).toBeNull();
+  });
+});
+
+describe('parseRevisarCommand', () => {
+  const url = 'https://github.com/Silia-mx/silia/pull/2142';
+
+  test('parses a bare url with no flags as modo basico', () => {
+    expect(parseRevisarCommand(`/revisar ${url}`)).toEqual({
+      url, mode: 'basico', diablo: false, merge: false, release: false
+    });
+  });
+
+  test('parses --profundo', () => {
+    expect(parseRevisarCommand(`/revisar ${url} --profundo`)).toEqual({
+      url, mode: 'profundo', diablo: false, merge: false, release: false
+    });
+  });
+
+  test('parses --arq', () => {
+    expect(parseRevisarCommand(`/revisar ${url} --arq`)).toMatchObject({ mode: 'arq' });
+  });
+
+  test('parses --security', () => {
+    expect(parseRevisarCommand(`/revisar ${url} --security`)).toMatchObject({ mode: 'security' });
+  });
+
+  test('parses --diablo and --merge together, order-independent', () => {
+    expect(parseRevisarCommand(`/revisar ${url} --merge --diablo`)).toEqual({
+      url, mode: 'basico', diablo: true, merge: true, release: false
+    });
+  });
+
+  test('parses --merge --release together', () => {
+    expect(parseRevisarCommand(`/revisar ${url} --merge --release`)).toMatchObject({
+      merge: true, release: true
+    });
+  });
+
+  test('is case-insensitive on flags', () => {
+    expect(parseRevisarCommand(`/revisar ${url} --PROFUNDO`)).toMatchObject({ mode: 'profundo' });
+  });
+
+  test('rejects combining two depth flags', () => {
+    expect(parseRevisarCommand(`/revisar ${url} --profundo --arq`)).toEqual({
+      error: 'Usa como maximo un modo de profundidad: --profundo, --arq o --security.'
+    });
+  });
+
+  test('rejects an unknown flag', () => {
+    expect(parseRevisarCommand(`/revisar ${url} --bogus`)).toEqual({
+      error: 'Flag desconocido: --bogus'
+    });
+  });
+
+  test('returns null for unrelated text', () => {
+    expect(parseRevisarCommand('/hoy agentes')).toBeNull();
+    expect(parseRevisarCommand('/revisar')).toBeNull();
+    expect(parseRevisarCommand('')).toBeNull();
+    expect(parseRevisarCommand(undefined)).toBeNull();
   });
 });

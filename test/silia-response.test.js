@@ -1,4 +1,4 @@
-const { formatActualizaRagResult } = require('../src/core/silia-response');
+const { formatActualizaRagResult, formatPrReview } = require('../src/core/silia-response');
 
 const ESC = '\x1b';
 const section = (title) => `\n${ESC}[1;34m>> ${title}${ESC}[0m\n`;
@@ -52,5 +52,26 @@ describe('formatActualizaRagResult', () => {
   test('degrades gracefully on unrecognized output instead of throwing', () => {
     expect(() => formatActualizaRagResult('texto sin secciones reconocibles')).not.toThrow();
     expect(formatActualizaRagResult('')).toContain('⚠️');
+  });
+});
+
+describe('formatPrReview', () => {
+  test('passes through report_markdown as-is when there is no signature', () => {
+    const result = formatPrReview({ report_markdown: '🔍 REVISIÓN PR #42\n...' });
+    expect(result).toBe('🔍 REVISIÓN PR #42\n...');
+  });
+
+  test('appends the signature footer when present', () => {
+    const result = formatPrReview({
+      report_markdown: 'reporte',
+      signature: { hash: 'abc123', timestamp: '2026-08-25T00:00:00Z' },
+    });
+    expect(result).toContain('reporte');
+    expect(result).toContain('🔏 Firma: abc123 (2026-08-25T00:00:00Z)');
+  });
+
+  test('degrades gracefully when there is no report_markdown', () => {
+    expect(formatPrReview(null)).toBe('No se pudo generar la revision del PR.');
+    expect(formatPrReview({})).toBe('No se pudo generar la revision del PR.');
   });
 });

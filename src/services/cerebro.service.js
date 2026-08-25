@@ -66,6 +66,31 @@ class CerebroService {
     return this._runCli(args);
   }
 
+  /**
+   * /revisar <url>: pipeline forzado de revision de PR (clone aislado +
+   * merge-check + matriz de cumplimiento). Timeout propio, mas generoso
+   * que el default: clonar historial completo de un repo real via SSH
+   * puede tardar bastante mas que las llamadas normales a Jira/Notion.
+   */
+  runRevisar(url, { mode = 'basico', diablo = false, persona = 'silia', timeoutMs = 300000 } = {}) {
+    const args = ['revisar', url];
+    if (mode && mode !== 'basico') args.push(`--${mode}`);
+    if (diablo) args.push('--diablo');
+    args.push('--persona', persona);
+    return this._runCli(args, { timeoutMs });
+  }
+
+  /**
+   * /revisar <url> --merge: mergea/comenta/transiciona Jira -- solo
+   * procede si Cerebro ya tiene una revision APPROVED vigente (mismo sha)
+   * para esa URL. Nunca re-analiza aqui, asi que el timeout default basta.
+   */
+  runRevisarMerge(url, { release = false } = {}) {
+    const args = ['revisar-merge', url];
+    if (release) args.push('--release');
+    return this._runCli(args);
+  }
+
   runIncident(description, { persona = 'silia' } = {}) {
     return this._runCli(['incident', description, '--persona', persona]);
   }
@@ -168,7 +193,7 @@ class CerebroService {
     return this._runCli(args);
   }
 
-  _runCli(args) {
+  _runCli(args, { timeoutMs = this.timeoutMs } = {}) {
     const startedAt = Date.now();
     const command = `${this.pythonPath} -m cerebro.cli ${args.join(' ')}`;
 
@@ -192,9 +217,9 @@ class CerebroService {
         if (settled) return;
         settled = true;
         child.kill('SIGKILL');
-        this.logger.error?.('Cerebro no respondio a tiempo', { command, timeoutMs: this.timeoutMs });
-        reject(new CerebroError(`Cerebro no respondio dentro de ${Math.round(this.timeoutMs / 1000)}s. Intenta de nuevo o revisa que Ollama/MCP esten activos.`));
-      }, this.timeoutMs);
+        this.logger.error?.('Cerebro no respondio a tiempo', { command, timeoutMs });
+        reject(new CerebroError(`Cerebro no respondio dentro de ${Math.round(timeoutMs / 1000)}s. Intenta de nuevo o revisa que Ollama/MCP esten activos.`));
+      }, timeoutMs);
 
       child.stdout?.on('data', (chunk) => { stdout += chunk.toString(); });
       child.stderr?.on('data', (chunk) => { stderr += chunk.toString(); });

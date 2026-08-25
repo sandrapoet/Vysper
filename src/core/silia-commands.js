@@ -152,6 +152,46 @@ function parseToolScopedCommand(text) {
   return query.length > 0 ? { tool, query } : null;
 }
 
+const REVISAR_DEPTH_FLAGS = ['--profundo', '--arq', '--security'];
+const REVISAR_KNOWN_FLAGS = [...REVISAR_DEPTH_FLAGS, '--diablo', '--merge', '--release'];
+
+/**
+ * Returns {url, mode, diablo, merge, release} if text is
+ * "/revisar <url> [--profundo|--arq|--security] [--diablo] [--merge]
+ * [--release]", or {error} if flags of profundidad se combinan o hay un
+ * flag desconocido (nunca silencioso). Otherwise null. `mode` is one of
+ * 'basico'|'profundo'|'arq'|'security' — 'basico' (sin flags) es solo
+ * conflictos+formato, sin la matriz de cumplimiento completa (ver
+ * CerebroService.runRevisar / Orchestrator.run_pr_review).
+ */
+function parseRevisarCommand(text) {
+  const normalized = normalize(text);
+  const match = normalized.match(/^\/revisar\s+(\S+)((?:\s+--\S+)*)\s*$/i);
+  if (!match) return null;
+
+  const url = match[1];
+  const flagsRaw = (match[2] || '').trim();
+  const flags = flagsRaw.length ? flagsRaw.split(/\s+/).map((f) => f.toLowerCase()) : [];
+
+  const unknownFlags = flags.filter((f) => !REVISAR_KNOWN_FLAGS.includes(f));
+  if (unknownFlags.length > 0) {
+    return { error: `Flag desconocido: ${unknownFlags[0]}` };
+  }
+
+  const depthFlags = flags.filter((f) => REVISAR_DEPTH_FLAGS.includes(f));
+  if (depthFlags.length > 1) {
+    return { error: 'Usa como maximo un modo de profundidad: --profundo, --arq o --security.' };
+  }
+
+  return {
+    url,
+    mode: depthFlags.length ? depthFlags[0].replace('--', '') : 'basico',
+    diablo: flags.includes('--diablo'),
+    merge: flags.includes('--merge'),
+    release: flags.includes('--release'),
+  };
+}
+
 module.exports = {
   parseSiliaDailyCommand,
   parseSiliaDailyArgument,
@@ -164,4 +204,5 @@ module.exports = {
   parseDetalleCommand,
   parseToolScopedCommand,
   SCOPED_TOOLS,
+  parseRevisarCommand,
 };

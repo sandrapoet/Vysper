@@ -279,4 +279,55 @@ describe('CerebroService', () => {
       expect.any(Object)
     );
   });
+
+  test('runRevisar builds bare args for modo basico', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runRevisar('https://github.com/org/repo/pull/1');
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ status: 'APPROVED' })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'revisar', 'https://github.com/org/repo/pull/1', '--persona', 'silia'],
+      expect.any(Object)
+    );
+  });
+
+  test('runRevisar passes the depth flag and --diablo through to the CLI', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runRevisar('https://github.com/org/repo/pull/1', { mode: 'security', diablo: true });
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ status: 'APPROVED' })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'revisar', 'https://github.com/org/repo/pull/1', '--security', '--diablo', '--persona', 'silia'],
+      expect.any(Object)
+    );
+  });
+
+  test('runRevisarMerge builds revisar-merge args, with --release when requested', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runRevisarMerge('https://github.com/org/repo/pull/1', { release: true });
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ merged: true })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'revisar-merge', 'https://github.com/org/repo/pull/1', '--release'],
+      expect.any(Object)
+    );
+  });
 });

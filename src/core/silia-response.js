@@ -135,6 +135,22 @@ function formatDomainRiskReview(review) {
   return review.markdown;
 }
 
+/**
+ * Formats a /revisar <url-pr> result for chat display. `review.report_markdown`
+ * (rendered in Python -- ver Orchestrator._render_pr_review_markdown) ya
+ * trae el detalle completo (pasos ejecutados, decision final, sugerencias)
+ * -- esto es un thin passthrough con un footer de firma si aplica, mismo
+ * patron que formatDomainRiskReview.
+ */
+function formatPrReview(review) {
+  if (!review || !review.report_markdown) return 'No se pudo generar la revision del PR.';
+  const lines = [review.report_markdown];
+  if (review.signature) {
+    lines.push('', `🔏 Firma: ${review.signature.hash} (${review.signature.timestamp})`);
+  }
+  return lines.join('\n');
+}
+
 function buildIncidenteLogEntry(descripcion, prompt, now = new Date()) {
   return {
     timestamp: now.toISOString(),
@@ -264,4 +280,5 @@ module.exports = {
   formatDomainRiskReview,
   formatActualizaRagResult,
   buildIncidenteLogEntry,
+  formatPrReview,
 };
