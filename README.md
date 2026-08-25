@@ -459,12 +459,20 @@ cualquiera de los dos bloquea la aprobación sin importar el resto.
   intenta refutar el veredicto de la primera — solo puede bajar scores u
   agregar observaciones, nunca subirlos.
 
-Si el resultado es `APROBACIÓN CONDICIONADA`, Cerebro comenta el PR con el
-checklist pendiente y crea automáticamente una sub-tarea de Jira ("Atender
-observaciones PR #N", con vencimiento a +24h) bajo el ticket referenciado —
-esto sí es automático, no requiere confirmación. Si el PR es tuyo
-(`PR_REVIEW_OWNER_GITHUB_LOGIN`), el reporte incluye una firma
-(`sha256(reporte + sha + timestamp)`) como evidencia de integridad.
+Si el resultado es `APROBACIÓN CONDICIONADA`, Cerebro comenta el PR con un
+resumen ejecutivo (título, decisión, checklist de pendientes) y crea
+automáticamente una sub-tarea de Jira ("Atender observaciones PR #N", con
+vencimiento a +24h) bajo el ticket referenciado — esto sí es automático, no
+requiere confirmación. **El comentario que se publica en GitHub es
+deliberadamente distinto del reporte que ves en el chat de Vysper**: es un
+markdown limpio y profesional (`## Revisión Ejecutiva del PR #N`, decisión,
+resumen de validación, próximos pasos) pensado para que lo lea el equipo,
+sin los separadores ASCII ni los recordatorios de comandos internos
+("corre /revisar --merge", etc.) que sí tiene el reporte de Vysper. Lo mismo
+aplica al comentario que se publica al mergear con `--merge`. Si el PR es
+tuyo (`PR_REVIEW_OWNER_GITHUB_LOGIN`), el reporte del chat (no el comentario
+del PR) incluye además una firma (`sha256(reporte + sha + timestamp)`) como
+evidencia de integridad.
 
 **Nada mergea/taggea solo.** Si el resultado es `APROBADO` y el PR es tuyo,
 correr `/revisar <url> --merge` (agregando `--release` si además querés un
@@ -477,9 +485,14 @@ nuevo en vez de mergear a ciegas. La re-evaluación de un PR
 no cambió, devuelve el resultado ya guardado sin llamar a nada; si cambió,
 re-evalúa únicamente las observaciones pendientes, no la matriz completa.
 
-El reporte completo se guarda en `apoyos/revision-pr-<numero>.md`, y si
-Cerebro genera un mensaje de Slack (Block Kit JSON) se copia automáticamente
-al portapapeles — nunca se envía solo, no hay integración real con Slack.
+El reporte completo se guarda en `apoyos/revision-pr-<numero>.md`, y Cerebro
+además genera un resumen en texto plano (sintaxis mrkdwn de Slack:
+`*negrita*`, bullets `•`) que Vysper copia automáticamente al
+portapapeles, listo para pegar directo en un mensaje de Slack — nunca se
+envía solo, no hay integración real con Slack. (Deliberadamente texto
+plano, no JSON de Block Kit: pegado como texto en un canal normal, el JSON
+se ve crudo y feo — Block Kit solo se renderiza vía la API de Slack o el
+Workflow Builder.)
 
 **Ejemplos:**
 ```
