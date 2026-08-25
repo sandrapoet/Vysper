@@ -338,10 +338,17 @@ se responde consultando Jira/GitHub (estado, cronograma) o Notion/RAG
 (decisiones, contexto histórico), con riesgos de cronograma señalados
 proactivamente cuando aplica.
 
-**`/silia daily [identificador]`** — checkpoint diario: consulta tickets
-asignados en progreso/pendientes (Jira), PRs abiertos (GitHub) y menciones
-recientes (RAG), y devuelve un resumen ejecutivo con tickets vencidos, PRs
-bloqueados y riesgos. `[identificador]` es opcional; Cerebro
+**`/silia daily [identificador]`** — resumen diario en dos partes: (1) las
+actividades reales que `[identificador]` realizó el **último día hábil**
+(ayer, o el viernes si hoy es lunes), sintetizadas en bullets de
+logro/descripción/siguientes pasos a partir de Jira (tickets
+creados/actualizados ese día), GitHub (PRs mergeados ese día), Notion
+(búsqueda por nombre) y las minutas locales de sesiones Alt+S de Vysper de
+ese mismo día (la única fuente disponible para "actividad de Claude/Vysper" —
+no hay integración con el historial de conversaciones de Claude.ai/Claude
+Code); y (2) el checkpoint de riesgo original sobre el estado *abierto*
+actual (tickets vencidos, PRs bloqueados) — ninguna de las dos partes
+reemplaza a la otra. `[identificador]` es opcional; Cerebro
 (`identifier_resolver.py`) decide qué es:
 
 - **Sin argumento** → usa `VYSPER_SILIA_ASSIGNEE`.
@@ -351,6 +358,12 @@ bloqueados y riesgos. `[identificador]` es opcional; Cerebro
   (...)` en Jira). Ver `equiv.yaml` para el formato — cada clave es un
   alias (p. ej. `agentes`) y su valor la lista de identificadores.
 - **Un email** → se usa tal cual como assignee.
+- **Un nombre de persona** (p. ej. `Sandy Reyes`) → se busca en Jira
+  (`user/search`) y se resuelve a su accountId real. Si la búsqueda
+  encuentra más de una coincidencia (Jira busca por substring: "Sandy
+  Reyes" también puede traer a alguien más con apellido "Reyes"), Silia
+  prefiere automáticamente un match exacto de nombre; si sigue habiendo
+  ambigüedad, devuelve un error listando los candidatos en vez de adivinar.
 - **Una clave de Jira** (p. ej. `LAGE-143`) → se resuelve consultando ese
   ticket y usando su assignee.
 - **Un PR de GitHub** (URL completa o `owner/repo#123`; un número
@@ -362,8 +375,8 @@ bloqueados y riesgos. `[identificador]` es opcional; Cerebro
   (convención "smart commit": `LAGE-143 arregla timeout`).
 - Si un PR/commit no menciona ningún ticket, o un ticket de Jira no tiene
   assignee, Silia responde con un error claro en vez de adivinar.
-- **Cualquier otro texto** (un nombre, un username) se pasa literal, igual
-  que antes de que existiera esta resolución.
+- **Cualquier otro texto** (un username) se pasa literal, igual que antes
+  de que existiera esta resolución.
 
 **Ejemplos:**
 ```
@@ -374,6 +387,9 @@ bloqueados y riesgos. `[identificador]` es opcional; Cerebro
 ```
 ```
 /silia daily sandrareyes@slia.com
+```
+```
+/silia daily Sandy Reyes
 ```
 ```
 /silia daily LAGE-143
@@ -420,6 +436,74 @@ constancia de por qué se rechazó o pospuso.
 /propuesta 2 posponer revisar despues del sprint
 ```
 
+**`/revisar <url-pr> [--profundo|--arq|--security] [--diablo] [--merge] [--release]`**
+— pipeline fijo de revisión de PR: clona el repo por SSH en aislado
+(`git@<PR_REVIEW_GIT_SSH_HOST>:owner/repo.git`, nunca ejecuta código del
+PR) y verifica conflictos de merge contra el branch base real del PR
+(normalmente `develop`) **y** contra tu propia rama
+(`PR_REVIEW_REFERENCE_BRANCH`, default `main`) — un conflicto contra
+cualquiera de los dos bloquea la aprobación sin importar el resto.
+
+- **Sin flags** (PRs triviales): solo conflictos + formato superficial
+  (título + ticket de Jira referenciado), sin LLM.
+- **`--profundo`**: corre la matriz completa de cumplimiento (tests 30%/min
+  80%, documentación 20%/min 100%, deuda técnica 20%/min 90%, AC de Jira
+  30%/min 100% — cada criterio con score y nivel de confianza del LLM;
+  Python decide la aprobación, nunca el LLM), con contexto exhaustivo.
+- **`--arq`**: misma matriz, pero la síntesis se enfoca en patrones de
+  diseño, acoplamiento y escalabilidad.
+- **`--security`**: misma matriz, más una búsqueda explícita de
+  secretos/credenciales/PII expuestos en el diff — es lectura de un LLM,
+  **no** un escaneo automatizado de CVEs, y el reporte lo aclara.
+- **`--diablo`** ("abogado del diablo"): segunda pasada adversarial que
+  intenta refutar el veredicto de la primera — solo puede bajar scores u
+  agregar observaciones, nunca subirlos.
+
+Si el resultado es `APROBACIÓN CONDICIONADA`, Cerebro comenta el PR con el
+checklist pendiente y crea automáticamente una sub-tarea de Jira ("Atender
+observaciones PR #N", con vencimiento a +24h) bajo el ticket referenciado —
+esto sí es automático, no requiere confirmación. Si el PR es tuyo
+(`PR_REVIEW_OWNER_GITHUB_LOGIN`), el reporte incluye una firma
+(`sha256(reporte + sha + timestamp)`) como evidencia de integridad.
+
+**Nada mergea/taggea solo.** Si el resultado es `APROBADO` y el PR es tuyo,
+correr `/revisar <url> --merge` (agregando `--release` si además querés un
+tag/release) es la única forma de ejecutar el merge real — Cerebro primero
+confirma que sigue habiendo una revisión `APROBADO` vigente sobre el mismo
+commit; si subiste algo nuevo mientras tanto, pide que corras `/revisar` de
+nuevo en vez de mergear a ciegas. La re-evaluación de un PR
+`CONDITIONAL_APPROVED` también es así: solo ocurre cuando volvés a correr
+`/revisar` sobre la misma URL (no hay polling en segundo plano) — si el sha
+no cambió, devuelve el resultado ya guardado sin llamar a nada; si cambió,
+re-evalúa únicamente las observaciones pendientes, no la matriz completa.
+
+El reporte completo se guarda en `apoyos/revision-pr-<numero>.md`, y si
+Cerebro genera un mensaje de Slack (Block Kit JSON) se copia automáticamente
+al portapapeles — nunca se envía solo, no hay integración real con Slack.
+
+**Ejemplos:**
+```
+/revisar https://github.com/Silia-mx/silia/pull/2142
+```
+```
+/revisar https://github.com/Silia-mx/silia/pull/2142 --profundo
+```
+```
+/revisar https://github.com/Silia-mx/silia/pull/2142 --security --diablo
+```
+```
+/revisar https://github.com/Silia-mx/silia/pull/2142 --merge --release
+```
+
+**Configuración adicional en Cerebro** (`.env` de Cerebro, ver su
+`.env.example`): `GITHUB_RW_TOKEN` (token **separado** del
+`GITHUB_TOKEN` de solo lectura — nunca reusar este último — con permisos de
+escritura solo para comentar/mergear/crear releases, usado únicamente por
+`--merge`), `PR_REVIEW_REFERENCE_BRANCH` (default `main`),
+`PR_REVIEW_GIT_SSH_HOST` (alias de host en tu `~/.ssh/config`, default
+`github-silia`), `PR_REVIEW_OWNER_GITHUB_LOGIN` (tu username de GitHub,
+para la firma y el gate de `--merge`).
+
 **Configuración** (`.env`, ver `env.example`): `CEREBRO_PATH`,
 `CEREBRO_PYTHON`, `CEREBRO_TIMEOUT_MS`, `VYSPER_SILIA_ASSIGNEE`. Cerebro debe
 estar configurado por separado (Ollama, MCP, credenciales de Jira/Notion/
@@ -433,7 +517,7 @@ igual que ya hace con LightRAG.
 Si Cerebro no responde (timeout, proceso caído, token inválido), Silia
 muestra un mensaje de error claro en el chat en vez de fallar silenciosamente.
 
-### ¿`/incidente`, `/silia daily`, `/optimizaciones` o `/propuesta` no responden?
+### ¿`/incidente`, `/silia daily`, `/optimizaciones`, `/propuesta` o `/revisar` no responden?
 
 Antes de sospechar de Cerebro, revisá esto en orden — cubre el motivo más
 común de "nunca recibí respuesta":
@@ -458,7 +542,10 @@ común de "nunca recibí respuesta":
 3. **Esperá hasta 90 segundos** (`CEREBRO_TIMEOUT_MS`, default `90000`): si
    Cerebro está vivo pero una llamada externa (Jira/GitHub/RAG) se cuelga,
    Vysper espera ese tiempo antes de mostrar el error — no hay indicador de
-   progreso intermedio en el chat.
+   progreso intermedio en el chat. Excepción: `/revisar` usa un timeout
+   propio de 5 minutos (`CerebroService.runRevisar`), porque clonar el
+   historial completo de un repo real por SSH puede tardar bastante más
+   que una consulta normal a Jira/Notion.
 
 ### `/actualizaRag` (secretaria, silia, system-design)
 
@@ -507,6 +594,22 @@ el LLM), une los riesgos curados sin ticket del dominio, y le pide al LLM
 una síntesis narrada (riesgos/probabilidad/impacto/mitigación) para las
 actividades de mayor prioridad. Puede tardar varios minutos en dominios
 con muchas actividades — ver `CEREBRO_TIMEOUT_MS` más abajo.
+
+Antes de mostrar la respuesta en el chat, Vysper hace un paso intermedio
+propio (no en Cerebro): guarda el markdown crudo de Cerebro (el "dumping de
+cerebro", que en dominios grandes puede traer 50+ tickets sin priorizar) en
+`apoyos/dumping de cerebro.txt`, y se lo pasa a un LLM con un prompt fijo de
+Jefe de Proyecto Técnico (`llmService.analyzeDumpingDeCerebro`, en
+`src/services/llm.service.js`) que lo convierte en un plan de acción de 3
+secciones: **Tablero de Acción Inmediata** (qué hacer hoy, priorizado),
+**Plan de Desbloqueo Semanal** (cómo resolver los bloqueadores
+estructurales) y **Preguntas Pendientes** (para la próxima daily). Ese plan
+—no el markdown crudo— es lo que se muestra en el chat. Usa Gemini con
+fallback automático a Claude/Anthropic si Gemini falla por cuota/billing
+(mismo mecanismo que el resto de Vysper — ver `ANTHROPIC_API_KEY` /
+`ANTHROPIC_FALLBACK_API_KEY` en `env.example`); si el paso de análisis
+falla por completo, se muestra el dumping crudo con una advertencia en vez
+de perder la corrida.
 
 **Ejemplos:**
 ```
