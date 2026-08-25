@@ -40,9 +40,11 @@ Comandos de texto (en el chat o por voz):
 - |||  Reintento / fallback de la consolidación
 - °°°  Reinicia el contexto acumulado
 - /actualizaRag  Ejecuta `./build.sh --actualiza` sobre SandraRagCreAI (solo en secretaria, silia y system-design — ver sección "Modo Silia")
-- /hoy <dominio>  Análisis de riesgo de Jira para un dominio de equiv.yaml (secretaria, silia, system-design — ver sección "Modo Silia")
+- /hoy <dominio>  Análisis de riesgo de Jira para un dominio de equiv.yaml, sintetizado por un LLM en un plan de acción de 3 secciones (secretaria, silia, system-design — ver sección "Modo Silia")
 - /detalle [dominio]  Vuelca el análisis de /hoy ya persistido a un .md (secretaria, silia, system-design)
 - /jira, /notion, /github <consulta>  Acota una consulta libre a esa sola fuente (secretaria, silia, system-design)
+- /silia daily [identificador]  Actividades del último día hábil (Jira/GitHub/Notion/minutas locales) + checkpoint de riesgo abierto (silia, system-design — ver sección "Modo Silia")
+- /revisar <url-pr> [--profundo|--arq|--security] [--diablo] [--merge] [--release]  Revisión automatizada de PR: conflictos + matriz de cumplimiento ponderada (silia, system-design — ver sección "Modo Silia")
 ###
 
 <p align="center">
