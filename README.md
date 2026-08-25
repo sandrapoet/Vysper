@@ -45,6 +45,7 @@ Comandos de texto (en el chat o por voz):
 - /jira, /notion, /github <consulta>  Acota una consulta libre a esa sola fuente (secretaria, silia, system-design)
 - /silia daily [identificador]  Actividades del último día hábil (Jira/GitHub/Notion/minutas locales) + checkpoint de riesgo abierto (silia, system-design — ver sección "Modo Silia")
 - /revisar <url-pr> [--profundo|--arq|--security] [--diablo] [--merge] [--release]  Revisión automatizada de PR: conflictos + matriz de cumplimiento ponderada (silia, system-design — ver sección "Modo Silia")
+- /crear-pr <rama> [--draft|--publish] [--labels a,b,c] [--ticket AGE-123], /cancelar-pr <url-pr>, /aprobar-pr <url-pr> [--revisar] [--merge] [--tag]  Creación/cancelación/aprobación de PRs (silia, system-design — ver sección "Modo Silia")
 ###
 
 <p align="center">
@@ -506,6 +507,72 @@ Workflow Builder.)
 ```
 ```
 /revisar https://github.com/Silia-mx/silia/pull/2142 --merge --release
+```
+
+### `/crear-pr`, `/cancelar-pr`, `/aprobar-pr`
+
+Complementan a `/revisar`: mientras `/revisar` solo audita un PR ya
+existente, estos cubren el lado de creación/aprobación. A diferencia de
+Cerebro corrido directo en terminal (donde estos comandos pueden pedir
+cosas por consola — selección de labels, si crear un milestone, la
+confirmación de `--merge`/`--tag`), **el chat de Vysper no tiene un stdin
+interactivo real que un subprocess pueda leer** — un `input()`/
+`typer.confirm()` esperando ahí se quedaría colgado hasta el timeout. Por
+eso la integración a Vysper resuelve cada uno de esos tres puntos *sin*
+tocar stdin del proceso de Cerebro:
+
+- **`/crear-pr <rama> [--draft|--publish] [--labels a,b,c] [--ticket AGE-123]`**
+  — nunca commitea por vos (si hay cambios sin commit, se detiene pidiendo
+  que commitees primero); hace push de la rama, sintetiza título y
+  descripción del PR usando los mensajes de commit como fuente principal
+  (no el diff), asigna reviewers desde `.github/CODEOWNERS` y comenta un
+  resumen para el equipo (nunca el reporte interno de Vysper — mismo
+  cuidado que `/revisar`). Crea el PR **en draft por defecto** (`--publish`
+  para saltarlo) y, si hay ticket de Jira asociado, lo transiciona a "In
+  Review" con un comentario del link.
+  - **Labels**: a diferencia del CLI de Cerebro (que sin `--labels` cae en
+    un flujo interactivo de consola — el LLM propone, vos elegís por
+    stdin), en Vysper **las labels son parte de la sintaxis del comando**:
+    `--labels a,b,c` en el mismo mensaje. Sin `--labels`, el PR se crea sin
+    labels (nunca dispara el flujo interactivo de Cerebro, que Vysper
+    siempre evita pasándole `--labels` explícito internamente).
+  - **Milestone**: Vysper nunca crea un milestone nuevo automáticamente
+    (le pasa `--no-milestone` a Cerebro) — si el sprint activo de Jira
+    necesita uno, créalo a mano en GitHub. Evita el `input()` de consola
+    que Cerebro usaría para preguntar si crear uno.
+- **`/cancelar-pr <url-pr>`** — cierra un PR de `/crear-pr` que sigue en
+  draft y revierte la transición de Jira a un estado anterior ("Back to To
+  Do", con fallback a otros nombres según lo que el ticket tenga
+  disponible). No es un revert de git/Jira: nunca toca commits,
+  releases/tags ni contenido de Jira más allá de esa transición. Sin
+  interactividad de ningún tipo.
+- **`/aprobar-pr <url-pr> [--revisar] [--merge] [--tag]`** — un PR de
+  Dependabot se aprueba automático; cualquier otro se valida (mergeable +
+  checks de CI) antes de aprobar. Los tags siempre son anotados con mensaje
+  detallado; Jira pasa a "Done" solo si hubo merge real.
+  - **Confirmación de `--merge`/`--tag`**: nunca se ejecutan en la misma
+    corrida que la aprobación. Vysper primero corre `/aprobar-pr` **sin**
+    esos flags (aprueba el PR y, si pediste `--revisar`, corre la revisión
+    profunda) y muestra el resultado. Si tu mensaje original pedía
+    `--merge` y/o `--tag`, el chat responde con una pregunta explícita
+    (`¿Confirmas mergear el PR <url>? Responde "si" para continuar o "no"
+    para cancelar.`) y queda esperando tu próxima respuesta — cualquier
+    otra cosa que no se lea como sí/no descarta la confirmación pendiente
+    sin ejecutar nada. Solo cuando respondés afirmativo, Vysper vuelve a
+    llamar a Cerebro con `--merge`/`--tag` **más** `--confirmar` (una
+    bandera nueva del CLI de Cerebro que reemplaza su `typer.confirm()` de
+    consola por esta confirmación ya obtenida en el chat).
+
+**Ejemplos:**
+```
+/crear-pr feature/AGE-123-nuevo-endpoint --labels backend,bug-fix --ticket AGE-123
+```
+```
+/cancelar-pr https://github.com/Silia-mx/silia/pull/2150
+```
+```
+/aprobar-pr https://github.com/Silia-mx/silia/pull/2150 --revisar --merge --tag
+si
 ```
 
 **Configuración adicional en Cerebro** (`.env` de Cerebro, ver su

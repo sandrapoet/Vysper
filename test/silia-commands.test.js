@@ -9,7 +9,11 @@ const {
   parseHoyCommand,
   parseDetalleCommand,
   parseToolScopedCommand,
-  parseRevisarCommand
+  parseRevisarCommand,
+  parseCrearPrCommand,
+  parseCancelarPrCommand,
+  parseAprobarPrCommand,
+  parseConfirmationResponse
 } = require('../src/core/silia-commands');
 
 describe('parseSiliaDailyCommand', () => {
@@ -323,5 +327,128 @@ describe('parseRevisarCommand', () => {
     expect(parseRevisarCommand('/revisar')).toBeNull();
     expect(parseRevisarCommand('')).toBeNull();
     expect(parseRevisarCommand(undefined)).toBeNull();
+  });
+});
+
+describe('parseCrearPrCommand', () => {
+  test('defaults to draft:true and labels:[] when no flags are given', () => {
+    expect(parseCrearPrCommand('/crear-pr feature/AGE-123-cosas')).toEqual({
+      rama: 'feature/AGE-123-cosas',
+      draft: true,
+      labels: [],
+      ticket: null
+    });
+  });
+
+  test('parses --publish, --labels and --ticket together, in any order', () => {
+    expect(parseCrearPrCommand('/crear-pr mi-rama --publish --labels bug-fix,backend --ticket AGE-123')).toEqual({
+      rama: 'mi-rama',
+      draft: false,
+      labels: ['bug-fix', 'backend'],
+      ticket: 'AGE-123'
+    });
+
+    expect(parseCrearPrCommand('/crear-pr mi-rama --ticket AGE-123 --labels bug-fix --draft')).toEqual({
+      rama: 'mi-rama',
+      draft: true,
+      labels: ['bug-fix'],
+      ticket: 'AGE-123'
+    });
+  });
+
+  test('trims and drops empty entries in --labels', () => {
+    expect(parseCrearPrCommand('/crear-pr mi-rama --labels bug-fix,,backend')).toEqual({
+      rama: 'mi-rama',
+      draft: true,
+      labels: ['bug-fix', 'backend'],
+      ticket: null
+    });
+  });
+
+  test('errors when --labels or --ticket is missing its value', () => {
+    expect(parseCrearPrCommand('/crear-pr mi-rama --labels')).toEqual({
+      error: 'Falta el valor de --labels (ej. --labels bug-fix,backend).'
+    });
+    expect(parseCrearPrCommand('/crear-pr mi-rama --ticket')).toEqual({
+      error: 'Falta el valor de --ticket (ej. --ticket AGE-123).'
+    });
+  });
+
+  test('errors on an unknown flag', () => {
+    expect(parseCrearPrCommand('/crear-pr mi-rama --bogus')).toEqual({
+      error: 'Flag desconocido: --bogus'
+    });
+  });
+
+  test('returns null for unrelated text', () => {
+    expect(parseCrearPrCommand('/crear-pr')).toBeNull();
+    expect(parseCrearPrCommand('/revisar https://github.com/org/repo/pull/1')).toBeNull();
+    expect(parseCrearPrCommand('')).toBeNull();
+    expect(parseCrearPrCommand(undefined)).toBeNull();
+  });
+});
+
+describe('parseCancelarPrCommand', () => {
+  test('extracts the PR url', () => {
+    expect(parseCancelarPrCommand('/cancelar-pr https://github.com/org/repo/pull/42')).toEqual({
+      url: 'https://github.com/org/repo/pull/42'
+    });
+  });
+
+  test('returns null for unrelated or malformed text', () => {
+    expect(parseCancelarPrCommand('/cancelar-pr')).toBeNull();
+    expect(parseCancelarPrCommand('/crear-pr mi-rama')).toBeNull();
+    expect(parseCancelarPrCommand('')).toBeNull();
+    expect(parseCancelarPrCommand(undefined)).toBeNull();
+  });
+});
+
+describe('parseAprobarPrCommand', () => {
+  const url = 'https://github.com/org/repo/pull/42';
+
+  test('defaults all flags to false when none are given', () => {
+    expect(parseAprobarPrCommand(`/aprobar-pr ${url}`)).toEqual({
+      url, revisar: false, merge: false, tag: false
+    });
+  });
+
+  test('parses --revisar, --merge and --tag combined', () => {
+    expect(parseAprobarPrCommand(`/aprobar-pr ${url} --revisar --merge --tag`)).toEqual({
+      url, revisar: true, merge: true, tag: true
+    });
+  });
+
+  test('errors on an unknown flag', () => {
+    expect(parseAprobarPrCommand(`/aprobar-pr ${url} --bogus`)).toEqual({
+      error: 'Flag desconocido: --bogus'
+    });
+  });
+
+  test('returns null for unrelated text', () => {
+    expect(parseAprobarPrCommand('/aprobar-pr')).toBeNull();
+    expect(parseAprobarPrCommand('/cancelar-pr ' + url)).toBeNull();
+    expect(parseAprobarPrCommand('')).toBeNull();
+    expect(parseAprobarPrCommand(undefined)).toBeNull();
+  });
+});
+
+describe('parseConfirmationResponse', () => {
+  test('recognizes common affirmative replies, accents/case/punctuation-insensitive', () => {
+    ['si', 'Sí', 'SI!', '¡sí!', 'yes', 'confirmo', 'confirmar', 'dale', 'ok', 'okay', 'adelante'].forEach((text) => {
+      expect(parseConfirmationResponse(text)).toBe(true);
+    });
+  });
+
+  test('recognizes common negative replies', () => {
+    ['no', 'No.', 'cancelar', 'cancela', 'cancelo'].forEach((text) => {
+      expect(parseConfirmationResponse(text)).toBe(false);
+    });
+  });
+
+  test('returns null for anything else', () => {
+    expect(parseConfirmationResponse('tal vez')).toBeNull();
+    expect(parseConfirmationResponse('/hoy agentes')).toBeNull();
+    expect(parseConfirmationResponse('')).toBeNull();
+    expect(parseConfirmationResponse(undefined)).toBeNull();
   });
 });

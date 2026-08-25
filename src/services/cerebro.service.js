@@ -91,6 +91,61 @@ class CerebroService {
     return this._runCli(args);
   }
 
+  /**
+   * /crear-pr <rama>: push de la rama + PR + labels + reviewers +
+   * milestone. Timeout largo (push + sintesis LLM + varias llamadas de
+   * GitHub/Jira), mismo orden de magnitud que /revisar.
+   *
+   * `labels` siempre viaja como --labels explicito (nunca se omite): sin
+   * eso, el CLI de Cerebro cae en su flujo interactivo de consola (LLM
+   * propone, el usuario elige por stdin), que no tiene donde renderizarse
+   * en un subprocess de chat -- se colgaria hasta el timeout. Cuando el
+   * usuario no pidio labels, se manda "," (coma sola): un string no vacio
+   * (asi el CLI no lo trata como "--labels no pasado") que el CLI parsea
+   * a una lista vacia. Por la misma razon (input() de consola si hay un
+   * sprint activo de Jira sin milestone que lo matchee) siempre se manda
+   * --no-milestone -- Vysper nunca crea milestones automaticamente; si
+   * hace falta uno, se crea a mano en GitHub.
+   */
+  runCrearPr(branch, { draft = true, labels = [], ticket = null, timeoutMs = 300000 } = {}) {
+    const args = ['crear-pr', branch, draft ? '--draft' : '--publish'];
+    const labelsArg = Array.isArray(labels) && labels.length > 0 ? labels.join(',') : ',';
+    args.push('--labels', labelsArg);
+    if (ticket) args.push('--ticket', ticket);
+    args.push('--no-milestone');
+    return this._runCli(args, { timeoutMs });
+  }
+
+  /**
+   * /cancelar-pr <url>: cierra un PR de /crear-pr que sigue en draft.
+   * Sin interactividad, timeout default.
+   */
+  runCancelarPr(url) {
+    return this._runCli(['cancelar-pr', url]);
+  }
+
+  /**
+   * /aprobar-pr <url>: aprueba (y opcionalmente corre /revisar --profundo
+   * antes). `merge`/`tag` SOLO deben pasarse ya con `confirmar: true`
+   * cuando el usuario efectivamente confirmo la accion en un turno previo
+   * del chat -- ver runAprobarPrCommand/resolvePendingPrApproval en
+   * main.js. Sin `confirmar`, el CLI de Cerebro pediria confirmacion via
+   * typer.confirm() (stdin de consola), que en un subprocess sin stdin
+   * interactivo real se queda esperando datos que nunca llegan hasta que
+   * este timeout lo mata -- por eso Vysper nunca deja que esto pase:
+   * siempre corre primero sin --merge/--tag, y solo los agrega ya con
+   * --confirmar tras la confirmacion explicita en el chat.
+   */
+  runAprobarPr(url, { revisar = false, merge = false, tag = false, tagMensaje = null, confirmar = false, timeoutMs = 300000 } = {}) {
+    const args = ['aprobar-pr', url];
+    if (revisar) args.push('--revisar');
+    if (merge) args.push('--merge');
+    if (tag) args.push('--tag');
+    if (tagMensaje) args.push('--tag-mensaje', tagMensaje);
+    if (confirmar) args.push('--confirmar');
+    return this._runCli(args, { timeoutMs });
+  }
+
   runIncident(description, { persona = 'silia' } = {}) {
     return this._runCli(['incident', description, '--persona', persona]);
   }

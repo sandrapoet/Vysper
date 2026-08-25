@@ -24,7 +24,11 @@ const {
   parseHoyCommand,
   parseDetalleCommand,
   parseToolScopedCommand,
-  parseRevisarCommand
+  parseRevisarCommand,
+  parseCrearPrCommand,
+  parseCancelarPrCommand,
+  parseAprobarPrCommand,
+  parseConfirmationResponse
 } = require("./src/core/silia-commands");
 const { parseActualizaRagCommand } = require("./src/core/secretaria-commands");
 const {
@@ -34,7 +38,10 @@ const {
   formatDomainRiskReview,
   formatActualizaRagResult,
   buildIncidenteLogEntry,
-  formatPrReview
+  formatPrReview,
+  formatCrearPrResult,
+  formatCancelarPrResult,
+  formatAprobarPrResult
 } = require("./src/core/silia-response");
 const { classifyOperationalQuery, isExplicitCerebroCommand } = require("./src/core/cerebro-query-router");
 
@@ -507,6 +514,12 @@ class ApplicationController {
     // resolvePendingVisualImage).
     this.VISUAL_INSTRUCTION_SKILLS = ['system-design', 'secretaria', 'silia'];
     this.pendingVisualImage = null;
+
+    // /aprobar-pr --merge / --tag: nunca se ejecutan directo (ver
+    // CerebroService.runAprobarPr) -- este objeto guarda la accion a
+    // confirmar hasta que el proximo mensaje del usuario responda si/no
+    // (ver resolvePendingPrApproval). null cuando no hay nada pendiente.
+    this.pendingPrApproval = null;
 
     // Modo Optimizacion (Alt+O): ver handleOptimizacionToggleShortcut.
     this.optimizacionArmed = false;
@@ -5212,6 +5225,21 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         this.clearPendingVisualImage();
       }
 
+      if (this.pendingPrApproval) {
+        const pending = this.pendingPrApproval;
+        this.pendingPrApproval = null;
+        if (pending.skill === normalizedSkill) {
+          const confirmation = parseConfirmationResponse(text);
+          if (confirmation !== null) {
+            await this.resolvePendingPrApproval(pending, confirmation, { skill: normalizedSkill, source: 'cerebro' });
+            return;
+          }
+          // No leyo como si/no -- se descarta la confirmacion pendiente y
+          // el mensaje sigue su camino normal (puede ser un comando nuevo).
+        }
+        // El modo cambio antes de responder: se descarta sin ejecutar nada.
+      }
+
       const actualizaRagAllowed = this.isSiliaMode(normalizedSkill) ||
         this.isSecretariaMode(normalizedSkill) ||
         normalizedSkill === 'system-design';
@@ -5620,6 +5648,126 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     }
   }
 
+  async runCrearPrCommand({ rama, draft, labels, ticket }, metadata = {}) {
+    logger.info('Comando /crear-pr recibido', { rama, draft, labels, ticket });
+
+    try {
+      const result = await this.cerebroService.runCrearPr(rama, { draft, labels, ticket });
+      if (result.error) {
+        this.emitSiliaResult(result.error, { ...metadata, siliaCommand: 'crear-pr', error: true });
+        return;
+      }
+      this.emitSiliaResult(formatCrearPrResult(result), { ...metadata, siliaCommand: 'crear-pr' });
+    } catch (error) {
+      const friendlyMessage = error instanceof CerebroError
+        ? error.message
+        : `No se pudo ejecutar /crear-pr: ${error.message}`;
+      logger.error('Fallo al ejecutar /crear-pr', { error: error.message });
+      this.broadcastLLMError(friendlyMessage);
+      this.emitSiliaResult(friendlyMessage, { ...metadata, siliaCommand: 'crear-pr', usedFallback: true, error: true });
+    }
+  }
+
+  async runCancelarPrCommand({ url }, metadata = {}) {
+    logger.info('Comando /cancelar-pr recibido', { url });
+
+    try {
+      const result = await this.cerebroService.runCancelarPr(url);
+      if (result.error) {
+        this.emitSiliaResult(result.error, { ...metadata, siliaCommand: 'cancelar-pr', error: true });
+        return;
+      }
+      this.emitSiliaResult(formatCancelarPrResult(result), { ...metadata, siliaCommand: 'cancelar-pr' });
+    } catch (error) {
+      const friendlyMessage = error instanceof CerebroError
+        ? error.message
+        : `No se pudo ejecutar /cancelar-pr: ${error.message}`;
+      logger.error('Fallo al ejecutar /cancelar-pr', { error: error.message });
+      this.broadcastLLMError(friendlyMessage);
+      this.emitSiliaResult(friendlyMessage, { ...metadata, siliaCommand: 'cancelar-pr', usedFallback: true, error: true });
+    }
+  }
+
+  /**
+   * /aprobar-pr <url> [--revisar] [--merge] [--tag]: SIEMPRE corre primero
+   * sin --merge/--tag (el CLI de Cerebro los ejecutaria via typer.confirm()
+   * -- stdin de consola que este subprocess no tiene, ver el comentario en
+   * CerebroService.runAprobarPr). Si el usuario pidio --merge y/o --tag,
+   * deja la accion en this.pendingPrApproval y pide confirmacion explicita
+   * en el chat -- solo se ejecuta de verdad en resolvePendingPrApproval,
+   * cuando el proximo mensaje del usuario confirma que si.
+   */
+  async runAprobarPrCommand({ url, revisar, merge, tag }, metadata = {}) {
+    logger.info('Comando /aprobar-pr recibido', { url, revisar, merge, tag });
+
+    try {
+      const result = await this.cerebroService.runAprobarPr(url, { revisar });
+      if (result.error) {
+        this.emitSiliaResult(result.error, { ...metadata, siliaCommand: 'aprobar-pr', error: true });
+        return;
+      }
+
+      this.emitSiliaResult(formatAprobarPrResult(result, { merge: false, tag: false }), { ...metadata, siliaCommand: 'aprobar-pr' });
+
+      if (merge || tag) {
+        const actions = [merge ? 'mergear' : null, tag ? 'crear un tag anotado' : null].filter(Boolean).join(' y ');
+        this.pendingPrApproval = { url, merge, tag, skill: metadata.skill || this.getNormalizedSkill() };
+        this.emitSiliaResult(
+          `¿Confirmas ${actions} el PR ${url}? Responde "si" para continuar o "no" para cancelar.`,
+          { ...metadata, siliaCommand: 'aprobar-pr', awaitingConfirmation: true }
+        );
+      }
+    } catch (error) {
+      const friendlyMessage = error instanceof CerebroError
+        ? error.message
+        : `No se pudo ejecutar /aprobar-pr: ${error.message}`;
+      logger.error('Fallo al ejecutar /aprobar-pr', { error: error.message });
+      this.broadcastLLMError(friendlyMessage);
+      this.emitSiliaResult(friendlyMessage, { ...metadata, siliaCommand: 'aprobar-pr', usedFallback: true, error: true });
+    }
+  }
+
+  /**
+   * Segundo turno de /aprobar-pr --merge/--tag: se dispara desde
+   * processTranscriptionWithLLM cuando hay una confirmacion pendiente y el
+   * mensaje del usuario se leyo como si/no (ver parseConfirmationResponse).
+   * `confirmed === false` cancela sin tocar Cerebro.
+   */
+  async resolvePendingPrApproval(pending, confirmed, metadata = {}) {
+    if (!confirmed) {
+      this.emitSiliaResult(
+        `Cancelado -- no se ejecuto ${pending.merge && pending.tag ? 'el merge ni el tag' : pending.merge ? 'el merge' : 'el tag'} del PR ${pending.url}.`,
+        { ...metadata, siliaCommand: 'aprobar-pr', cancelled: true }
+      );
+      return;
+    }
+
+    logger.info('Confirmacion recibida para /aprobar-pr --merge/--tag', { url: pending.url, merge: pending.merge, tag: pending.tag });
+
+    try {
+      const result = await this.cerebroService.runAprobarPr(pending.url, {
+        merge: pending.merge,
+        tag: pending.tag,
+        confirmar: true
+      });
+      if (result.error) {
+        this.emitSiliaResult(result.error, { ...metadata, siliaCommand: 'aprobar-pr', error: true });
+        return;
+      }
+      this.emitSiliaResult(
+        formatAprobarPrResult(result, { merge: pending.merge, tag: pending.tag }),
+        { ...metadata, siliaCommand: 'aprobar-pr' }
+      );
+    } catch (error) {
+      const friendlyMessage = error instanceof CerebroError
+        ? error.message
+        : `No se pudo confirmar /aprobar-pr: ${error.message}`;
+      logger.error('Fallo al confirmar /aprobar-pr', { error: error.message });
+      this.broadcastLLMError(friendlyMessage);
+      this.emitSiliaResult(friendlyMessage, { ...metadata, siliaCommand: 'aprobar-pr', usedFallback: true, error: true });
+    }
+  }
+
   async runHoyCommand(dominio, metadata = {}) {
     logger.info('Comando /hoy recibido', { dominio });
 
@@ -5812,6 +5960,32 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
       } else {
         await this.runRevisarCommand(revisarCommand, baseMetadata);
       }
+      return true;
+    }
+
+    const crearPrCommand = parseCrearPrCommand(text);
+    if (crearPrCommand) {
+      if (crearPrCommand.error) {
+        this.emitSiliaResult(crearPrCommand.error, { ...baseMetadata, siliaCommand: 'crear-pr', error: true });
+        return true;
+      }
+      await this.runCrearPrCommand(crearPrCommand, baseMetadata);
+      return true;
+    }
+
+    const cancelarPrCommand = parseCancelarPrCommand(text);
+    if (cancelarPrCommand) {
+      await this.runCancelarPrCommand(cancelarPrCommand, baseMetadata);
+      return true;
+    }
+
+    const aprobarPrCommand = parseAprobarPrCommand(text);
+    if (aprobarPrCommand) {
+      if (aprobarPrCommand.error) {
+        this.emitSiliaResult(aprobarPrCommand.error, { ...baseMetadata, siliaCommand: 'aprobar-pr', error: true });
+        return true;
+      }
+      await this.runAprobarPrCommand(aprobarPrCommand, baseMetadata);
       return true;
     }
 

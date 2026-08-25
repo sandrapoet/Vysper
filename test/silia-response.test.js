@@ -1,4 +1,10 @@
-const { formatActualizaRagResult, formatPrReview } = require('../src/core/silia-response');
+const {
+  formatActualizaRagResult,
+  formatPrReview,
+  formatCrearPrResult,
+  formatCancelarPrResult,
+  formatAprobarPrResult,
+} = require('../src/core/silia-response');
 
 const ESC = '\x1b';
 const section = (title) => `\n${ESC}[1;34m>> ${title}${ESC}[0m\n`;
@@ -73,5 +79,95 @@ describe('formatPrReview', () => {
   test('degrades gracefully when there is no report_markdown', () => {
     expect(formatPrReview(null)).toBe('No se pudo generar la revision del PR.');
     expect(formatPrReview({})).toBe('No se pudo generar la revision del PR.');
+  });
+});
+
+describe('formatCrearPrResult', () => {
+  test('includes url, title, jira ticket, labels, reviewers and milestone when present', () => {
+    const result = formatCrearPrResult({
+      pr_url: 'https://github.com/org/repo/pull/9',
+      draft: true,
+      title: 'AGE-123: agrega X',
+      jira_ticket_key: 'AGE-123',
+      labels: ['bug-fix', 'backend'],
+      reviewers: ['juan', 'maria'],
+      milestone: 'Sprint 12',
+    });
+    expect(result).toContain('PR (draft) creado: https://github.com/org/repo/pull/9');
+    expect(result).toContain('Titulo: AGE-123: agrega X');
+    expect(result).toContain('Jira: AGE-123 -> "In Review"');
+    expect(result).toContain('Labels: bug-fix, backend');
+    expect(result).toContain('Reviewers: juan, maria');
+    expect(result).toContain('Milestone: Sprint 12');
+  });
+
+  test('degrades gracefully without pr_url', () => {
+    expect(formatCrearPrResult(null)).toBe('No se pudo crear el PR.');
+    expect(formatCrearPrResult({})).toBe('No se pudo crear el PR.');
+  });
+});
+
+describe('formatCancelarPrResult', () => {
+  test('confirms closure and the Jira transition when present', () => {
+    const result = formatCancelarPrResult({
+      closed: true, pr_url: 'https://github.com/org/repo/pull/9', jira_ticket_key: 'AGE-123',
+    });
+    expect(result).toContain('PR cerrado: https://github.com/org/repo/pull/9');
+    expect(result).toContain('Jira AGE-123 revertido a su estado anterior.');
+  });
+
+  test('degrades gracefully when not closed', () => {
+    expect(formatCancelarPrResult(null)).toBe('No se pudo cancelar el PR.');
+    expect(formatCancelarPrResult({ closed: false })).toBe('No se pudo cancelar el PR.');
+  });
+});
+
+describe('formatAprobarPrResult', () => {
+  test('first pass (no merge/tag requested) only shows approval', () => {
+    const result = formatAprobarPrResult(
+      { approved: true, pr_url: 'https://github.com/org/repo/pull/9', is_bot_author: false },
+      { merge: false, tag: false }
+    );
+    expect(result).toBe('PR aprobado: https://github.com/org/repo/pull/9');
+  });
+
+  test('flags the bot-author auto-approval path', () => {
+    const result = formatAprobarPrResult(
+      { approved: true, pr_url: 'https://github.com/org/repo/pull/9', is_bot_author: true },
+      {}
+    );
+    expect(result).toContain('PR aprobado automaticamente (autor bot)');
+  });
+
+  test('shows merge and tag outcomes when requested and successful', () => {
+    const result = formatAprobarPrResult(
+      {
+        approved: true,
+        pr_url: 'https://github.com/org/repo/pull/9',
+        merge: { merged: true, sha: 'abcdef1234567' },
+        tag: { tag_name: 'pr-9-abcdef1' },
+      },
+      { merge: true, tag: true }
+    );
+    expect(result).toContain('Merge completado (sha abcdef1).');
+    expect(result).toContain('Tag anotado creado: pr-9-abcdef1');
+  });
+
+  test('shows failure messages when merge/tag did not complete', () => {
+    const result = formatAprobarPrResult(
+      {
+        approved: true,
+        pr_url: 'https://github.com/org/repo/pull/9',
+        merge: { merged: false, message: 'no es mergeable' },
+        tag: null,
+      },
+      { merge: true, tag: true }
+    );
+    expect(result).toContain('Merge no completado: no es mergeable');
+    expect(result).toContain('Tag no creado (el merge no se completo).');
+  });
+
+  test('degrades gracefully with no result', () => {
+    expect(formatAprobarPrResult(null)).toBe('No se pudo procesar la aprobacion del PR.');
   });
 });

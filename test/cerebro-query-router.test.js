@@ -54,6 +54,9 @@ describe('isExplicitCerebroCommand', () => {
     expect(isExplicitCerebroCommand('/propuestas')).toBe(true);
     expect(isExplicitCerebroCommand('/propuesta 3 aceptar')).toBe(true);
     expect(isExplicitCerebroCommand('/incidente el login falla')).toBe(true);
+    expect(isExplicitCerebroCommand('/crear-pr feature/AGE-123')).toBe(true);
+    expect(isExplicitCerebroCommand('/cancelar-pr https://github.com/org/repo/pull/1')).toBe(true);
+    expect(isExplicitCerebroCommand('/aprobar-pr https://github.com/org/repo/pull/1 --merge')).toBe(true);
   });
 
   test('is case-insensitive and tolerates surrounding whitespace', () => {

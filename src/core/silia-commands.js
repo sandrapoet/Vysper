@@ -192,6 +192,119 @@ function parseRevisarCommand(text) {
   };
 }
 
+const CREAR_PR_BOOL_FLAGS = { '--draft': true, '--publish': false };
+
+/**
+ * Returns {rama, draft, labels, ticket} if text is "/crear-pr <rama>
+ * [--draft|--publish] [--labels a,b,c] [--ticket AGE-123]", or {error} if a
+ * flag is unknown or a value-flag is missing its value. Otherwise null.
+ * `labels` defaults to [] (no labels) -- unlike Cerebro's own CLI, Vysper
+ * NEVER leaves labels unspecified: the interactive "LLM proposes, user
+ * picks in the console" flow that `crear-pr` falls back to when --labels
+ * is omitted has nowhere to render in a chat, so CerebroService.runCrearPr
+ * always passes --labels explicitly (see its comment for how it encodes
+ * "no labels" without triggering that fallback).
+ */
+function parseCrearPrCommand(text) {
+  const normalized = normalize(text);
+  const match = normalized.match(/^\/crear-pr\s+(\S+)([\s\S]*)$/i);
+  if (!match) return null;
+
+  const rama = match[1];
+  const rest = match[2].trim();
+  const tokens = rest.length ? rest.split(/\s+/) : [];
+
+  let draft = true;
+  let labels = [];
+  let ticket = null;
+  let i = 0;
+  while (i < tokens.length) {
+    const token = tokens[i];
+    const lower = token.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(CREAR_PR_BOOL_FLAGS, lower)) {
+      draft = CREAR_PR_BOOL_FLAGS[lower];
+      i += 1;
+      continue;
+    }
+    if (lower === '--labels') {
+      const value = tokens[i + 1];
+      if (!value) return { error: 'Falta el valor de --labels (ej. --labels bug-fix,backend).' };
+      labels = value.split(',').map((l) => l.trim()).filter(Boolean);
+      i += 2;
+      continue;
+    }
+    if (lower === '--ticket') {
+      const value = tokens[i + 1];
+      if (!value) return { error: 'Falta el valor de --ticket (ej. --ticket AGE-123).' };
+      ticket = value;
+      i += 2;
+      continue;
+    }
+    return { error: `Flag desconocido: ${token}` };
+  }
+
+  return { rama, draft, labels, ticket };
+}
+
+/**
+ * Returns {url} if text is "/cancelar-pr <url-pr>", otherwise null.
+ */
+function parseCancelarPrCommand(text) {
+  const normalized = normalize(text);
+  const match = normalized.match(/^\/cancelar-pr\s+(\S+)\s*$/i);
+  return match ? { url: match[1] } : null;
+}
+
+const APROBAR_PR_KNOWN_FLAGS = ['--revisar', '--merge', '--tag'];
+
+/**
+ * Returns {url, revisar, merge, tag} if text is "/aprobar-pr <url-pr>
+ * [--revisar] [--merge] [--tag]", or {error} on an unknown flag. Otherwise
+ * null. --merge/--tag never mergean/taguean directamente desde este
+ * parseo -- ver runAprobarPrCommand/resolvePendingPrApproval en main.js
+ * para el turno de confirmacion explicita en el chat que exige antes.
+ */
+function parseAprobarPrCommand(text) {
+  const normalized = normalize(text);
+  const match = normalized.match(/^\/aprobar-pr\s+(\S+)((?:\s+--\S+)*)\s*$/i);
+  if (!match) return null;
+
+  const url = match[1];
+  const flagsRaw = (match[2] || '').trim();
+  const flags = flagsRaw.length ? flagsRaw.split(/\s+/).map((f) => f.toLowerCase()) : [];
+
+  const unknownFlags = flags.filter((f) => !APROBAR_PR_KNOWN_FLAGS.includes(f));
+  if (unknownFlags.length > 0) {
+    return { error: `Flag desconocido: ${unknownFlags[0]}` };
+  }
+
+  return {
+    url,
+    revisar: flags.includes('--revisar'),
+    merge: flags.includes('--merge'),
+    tag: flags.includes('--tag'),
+  };
+}
+
+const CONFIRMATION_YES = ['si', 'sí', 'yes', 'confirmo', 'confirmar', 'dale', 'ok', 'okay', 'adelante'];
+const CONFIRMATION_NO = ['no', 'cancelar', 'cancela', 'cancelo', 'nel'];
+
+/**
+ * Classifies a chat reply as an affirmative (true) or negative (false)
+ * answer to a pending yes/no confirmation (e.g. /aprobar-pr --merge's
+ * chat-level confirmation, see resolvePendingPrApproval in main.js), or
+ * null if it doesn't read as either -- callers treat null as "not a
+ * confirmation reply" and drop the pending confirmation rather than
+ * guessing.
+ */
+function parseConfirmationResponse(text) {
+  const normalized = normalize(text).toLowerCase().replace(/[¡!¿?.]/g, '').trim();
+  if (!normalized) return null;
+  if (CONFIRMATION_YES.includes(normalized)) return true;
+  if (CONFIRMATION_NO.includes(normalized)) return false;
+  return null;
+}
+
 module.exports = {
   parseSiliaDailyCommand,
   parseSiliaDailyArgument,
@@ -205,4 +318,8 @@ module.exports = {
   parseToolScopedCommand,
   SCOPED_TOOLS,
   parseRevisarCommand,
+  parseCrearPrCommand,
+  parseCancelarPrCommand,
+  parseAprobarPrCommand,
+  parseConfirmationResponse,
 };

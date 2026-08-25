@@ -23,7 +23,7 @@ const OPERATIONAL_KEYWORDS = [
   'propuesta pendiente', 'propuestas pendientes'
 ];
 
-const EXPLICIT_COMMAND_PATTERN = /^\/(silia\s+daily|optimizaciones|propuestas|propuesta\s+\d+|incidente)\b/i;
+const EXPLICIT_COMMAND_PATTERN = /^\/(silia\s+daily|optimizaciones|propuestas|propuesta\s+\d+|incidente|crear-pr|cancelar-pr|aprobar-pr)\b/i;
 
 const ACTION_VERBS = [
   'optimiza', 'optimizar',

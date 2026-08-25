@@ -330,4 +330,93 @@ describe('CerebroService', () => {
       expect.any(Object)
     );
   });
+
+  test('runCrearPr always passes --labels explicit (comma sentinel when none given) and --no-milestone', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runCrearPr('feature/AGE-123');
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ pr_url: 'https://github.com/org/repo/pull/9' })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'crear-pr', 'feature/AGE-123', '--draft', '--labels', ',', '--no-milestone'],
+      expect.any(Object)
+    );
+  });
+
+  test('runCrearPr passes --publish, joined --labels and --ticket when given', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runCrearPr('feature/AGE-123', {
+      draft: false, labels: ['bug-fix', 'backend'], ticket: 'AGE-123'
+    });
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ pr_url: 'https://github.com/org/repo/pull/9' })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'crear-pr', 'feature/AGE-123', '--publish', '--labels', 'bug-fix,backend', '--ticket', 'AGE-123', '--no-milestone'],
+      expect.any(Object)
+    );
+  });
+
+  test('runCancelarPr builds cancelar-pr args', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runCancelarPr('https://github.com/org/repo/pull/9');
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ closed: true })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'cancelar-pr', 'https://github.com/org/repo/pull/9'],
+      expect.any(Object)
+    );
+  });
+
+  test('runAprobarPr never passes --merge/--tag without --confirmar unless the caller sets confirmar', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runAprobarPr('https://github.com/org/repo/pull/9', { revisar: true });
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ approved: true })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'aprobar-pr', 'https://github.com/org/repo/pull/9', '--revisar'],
+      expect.any(Object)
+    );
+  });
+
+  test('runAprobarPr passes --merge --tag --confirmar only when confirmar:true is passed explicitly', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runAprobarPr('https://github.com/org/repo/pull/9', {
+      merge: true, tag: true, confirmar: true, tagMensaje: 'release 1.2.3'
+    });
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ approved: true })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'aprobar-pr', 'https://github.com/org/repo/pull/9', '--merge', '--tag', '--tag-mensaje', 'release 1.2.3', '--confirmar'],
+      expect.any(Object)
+    );
+  });
 });

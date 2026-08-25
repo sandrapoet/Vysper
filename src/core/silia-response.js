@@ -142,6 +142,69 @@ function formatDomainRiskReview(review) {
  * -- esto es un thin passthrough con un footer de firma si aplica, mismo
  * patron que formatDomainRiskReview.
  */
+/**
+ * /crear-pr: resumen corto para el chat -- el detalle vive en el PR mismo
+ * (titulo/descripcion, comentario, labels, reviewers ya aplicados por
+ * Cerebro), asi que aca solo se confirma lo esencial.
+ */
+function formatCrearPrResult(result) {
+  if (!result || !result.pr_url) return 'No se pudo crear el PR.';
+  const lines = [`PR ${result.draft ? '(draft) ' : ''}creado: ${result.pr_url}`];
+  if (result.title) lines.push(`Titulo: ${result.title}`);
+  if (result.jira_ticket_key) lines.push(`Jira: ${result.jira_ticket_key} -> "In Review"`);
+  if (Array.isArray(result.labels) && result.labels.length) lines.push(`Labels: ${result.labels.join(', ')}`);
+  if (Array.isArray(result.reviewers) && result.reviewers.length) lines.push(`Reviewers: ${result.reviewers.join(', ')}`);
+  if (result.milestone) lines.push(`Milestone: ${result.milestone}`);
+  return lines.join('\n');
+}
+
+/**
+ * /cancelar-pr: confirma el cierre + la transicion de Jira si aplica.
+ */
+function formatCancelarPrResult(result) {
+  if (!result || !result.closed) return 'No se pudo cancelar el PR.';
+  const lines = [`PR cerrado: ${result.pr_url}`];
+  if (result.jira_ticket_key) lines.push(`Jira ${result.jira_ticket_key} revertido a su estado anterior.`);
+  return lines.join('\n');
+}
+
+/**
+ * /aprobar-pr: cubre tanto la primera pasada (solo aprobacion, sin
+ * merge/tag) como la segunda tras la confirmacion en el chat (merge/tag ya
+ * ejecutados) -- `merge`/`tag` indican si esta llamada especifica ya los
+ * incluyo, para no mostrar "sin completar" en la primera pasada donde
+ * result.merge/result.tag vienen null a proposito.
+ */
+function formatAprobarPrResult(result, { merge = false, tag = false } = {}) {
+  if (!result) return 'No se pudo procesar la aprobacion del PR.';
+  const lines = [];
+  lines.push(result.is_bot_author
+    ? `PR aprobado automaticamente (autor bot): ${result.pr_url}`
+    : `PR aprobado: ${result.pr_url}`);
+
+  if (result.review && result.review.status) {
+    lines.push(`Revision (--revisar): ${result.review.status}`);
+  }
+
+  if (merge) {
+    if (result.merge && result.merge.merged) {
+      lines.push(`Merge completado (sha ${String(result.merge.sha || '').slice(0, 7)}).`);
+    } else {
+      lines.push(`Merge no completado${result.merge && result.merge.message ? `: ${result.merge.message}` : '.'}`);
+    }
+  }
+
+  if (tag) {
+    if (result.tag && result.tag.tag_name) {
+      lines.push(`Tag anotado creado: ${result.tag.tag_name}`);
+    } else {
+      lines.push('Tag no creado (el merge no se completo).');
+    }
+  }
+
+  return lines.join('\n');
+}
+
 function formatPrReview(review) {
   if (!review || !review.report_markdown) return 'No se pudo generar la revision del PR.';
   const lines = [review.report_markdown];
@@ -281,4 +344,7 @@ module.exports = {
   formatActualizaRagResult,
   buildIncidenteLogEntry,
   formatPrReview,
+  formatCrearPrResult,
+  formatCancelarPrResult,
+  formatAprobarPrResult,
 };
