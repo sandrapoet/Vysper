@@ -367,6 +367,29 @@ describe('CerebroService', () => {
     );
   });
 
+  test('runCrearPr passes --base and --repo-dir when given', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runCrearPr('feature/AGE-309', {
+      ticket: 'AGE-309', labels: ['age-309'], base: 'develop', repoDir: '/media/san/repo/Agent'
+    });
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ pr_url: 'https://github.com/org/repo/pull/9' })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      [
+        '-m', 'cerebro.cli', 'crear-pr', 'feature/AGE-309', '--draft',
+        '--labels', 'age-309', '--ticket', 'AGE-309',
+        '--base', 'develop', '--repo-dir', '/media/san/repo/Agent', '--no-milestone'
+      ],
+      expect.any(Object)
+    );
+  });
+
   test('runCancelarPr builds cancelar-pr args', async () => {
     const child = makeFakeChild();
     const spawnFn = jest.fn(() => child);

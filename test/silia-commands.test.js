@@ -336,7 +336,9 @@ describe('parseCrearPrCommand', () => {
       rama: 'feature/AGE-123-cosas',
       draft: true,
       labels: [],
-      ticket: null
+      ticket: null,
+      base: null,
+      repoDir: null
     });
   });
 
@@ -345,14 +347,18 @@ describe('parseCrearPrCommand', () => {
       rama: 'mi-rama',
       draft: false,
       labels: ['bug-fix', 'backend'],
-      ticket: 'AGE-123'
+      ticket: 'AGE-123',
+      base: null,
+      repoDir: null
     });
 
     expect(parseCrearPrCommand('/crear-pr mi-rama --ticket AGE-123 --labels bug-fix --draft')).toEqual({
       rama: 'mi-rama',
       draft: true,
       labels: ['bug-fix'],
-      ticket: 'AGE-123'
+      ticket: 'AGE-123',
+      base: null,
+      repoDir: null
     });
   });
 
@@ -361,7 +367,31 @@ describe('parseCrearPrCommand', () => {
       rama: 'mi-rama',
       draft: true,
       labels: ['bug-fix', 'backend'],
-      ticket: null
+      ticket: null,
+      base: null,
+      repoDir: null
+    });
+  });
+
+  test('parses --base, --repo-dir and strips surrounding quotes from values', () => {
+    expect(
+      parseCrearPrCommand('/crear-pr mi-rama --base develop --repo-dir /media/san/repo --labels "age-309"')
+    ).toEqual({
+      rama: 'mi-rama',
+      draft: true,
+      labels: ['age-309'],
+      ticket: null,
+      base: 'develop',
+      repoDir: '/media/san/repo'
+    });
+  });
+
+  test('errors when --base or --repo-dir is missing its value', () => {
+    expect(parseCrearPrCommand('/crear-pr mi-rama --base')).toEqual({
+      error: 'Falta el valor de --base (ej. --base develop).'
+    });
+    expect(parseCrearPrCommand('/crear-pr mi-rama --repo-dir')).toEqual({
+      error: 'Falta el valor de --repo-dir (ej. --repo-dir /ruta/al/repo).'
     });
   });
 

@@ -5648,11 +5648,11 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     }
   }
 
-  async runCrearPrCommand({ rama, draft, labels, ticket }, metadata = {}) {
-    logger.info('Comando /crear-pr recibido', { rama, draft, labels, ticket });
+  async runCrearPrCommand({ rama, draft, labels, ticket, base, repoDir }, metadata = {}) {
+    logger.info('Comando /crear-pr recibido', { rama, draft, labels, ticket, base, repoDir });
 
     try {
-      const result = await this.cerebroService.runCrearPr(rama, { draft, labels, ticket });
+      const result = await this.cerebroService.runCrearPr(rama, { draft, labels, ticket, base, repoDir });
       if (result.error) {
         this.emitSiliaResult(result.error, { ...metadata, siliaCommand: 'crear-pr', error: true });
         return;

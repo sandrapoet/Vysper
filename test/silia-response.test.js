@@ -105,6 +105,17 @@ describe('formatCrearPrResult', () => {
     expect(formatCrearPrResult(null)).toBe('No se pudo crear el PR.');
     expect(formatCrearPrResult({})).toBe('No se pudo crear el PR.');
   });
+
+  test('shows the already-exists message instead of claiming a PR was created', () => {
+    const result = formatCrearPrResult({
+      already_exists: true,
+      pr_url: 'https://github.com/org/repo/pull/133',
+      pr_number: 133,
+      message: "Ya existe un PR abierto para la rama 'feature/x': https://github.com/org/repo/pull/133",
+    });
+    expect(result).toBe("Ya existe un PR abierto para la rama 'feature/x': https://github.com/org/repo/pull/133");
+    expect(result).not.toContain('PR creado');
+  });
 });
 
 describe('formatCancelarPrResult', () => {

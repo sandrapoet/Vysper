@@ -106,12 +106,25 @@ class CerebroService {
    * sprint activo de Jira sin milestone que lo matchee) siempre se manda
    * --no-milestone -- Vysper nunca crea milestones automaticamente; si
    * hace falta uno, se crea a mano en GitHub.
+   *
+   * `repoDir` es CRITICO en uso real: este CLI siempre corre con cwd =
+   * this.cerebroPath (ver _runCli mas abajo), asi que sin --repo-dir
+   * /crear-pr operaria (por error) sobre el propio repo de Cerebro en vez
+   * del repo del usuario -- el chequeo de "cambios sin commitear" fallaria
+   * ahi, o peor, pushearia/commitaria contra el repo equivocado. Pasa el
+   * path absoluto del repo real (ej. /media/.../Silia/Agent) tal como lo
+   * escribe el usuario en el comando de chat (--repo-dir <path>).
+   * `base` es el nombre de la rama base (ej. 'develop') cuando el repo no
+   * integra features contra 'main' -- default: PR_REVIEW_REFERENCE_BRANCH
+   * del lado de Cerebro si se omite.
    */
-  runCrearPr(branch, { draft = true, labels = [], ticket = null, timeoutMs = 300000 } = {}) {
+  runCrearPr(branch, { draft = true, labels = [], ticket = null, base = null, repoDir = null, timeoutMs = 300000 } = {}) {
     const args = ['crear-pr', branch, draft ? '--draft' : '--publish'];
     const labelsArg = Array.isArray(labels) && labels.length > 0 ? labels.join(',') : ',';
     args.push('--labels', labelsArg);
     if (ticket) args.push('--ticket', ticket);
+    if (base) args.push('--base', base);
+    if (repoDir) args.push('--repo-dir', repoDir);
     args.push('--no-milestone');
     return this._runCli(args, { timeoutMs });
   }

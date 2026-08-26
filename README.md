@@ -521,35 +521,58 @@ interactivo real que un subprocess pueda leer** — un `input()`/
 eso la integración a Vysper resuelve cada uno de esos tres puntos *sin*
 tocar stdin del proceso de Cerebro:
 
-- **`/crear-pr <rama> [--draft|--publish] [--labels a,b,c] [--ticket AGE-123]`**
+- **`/crear-pr <rama> [--draft|--publish] [--labels a,b,c] [--ticket AGE-123] [--base <rama>] [--repo-dir <path>]`**
   — nunca commitea por vos (si hay cambios sin commit, se detiene pidiendo
   que commitees primero); hace push de la rama, sintetiza título y
   descripción del PR usando los mensajes de commit como fuente principal
   (no el diff), asigna reviewers desde `.github/CODEOWNERS` y comenta un
   resumen para el equipo (nunca el reporte interno de Vysper — mismo
   cuidado que `/revisar`). Crea el PR **en draft por defecto** (`--publish`
-  para saltarlo) y, si hay ticket de Jira asociado, lo transiciona a "In
-  Review" con un comentario del link.
+  para saltarlo) y, si hay ticket de Jira asociado, lo transiciona a la
+  transición equivalente a "In Review" que el workflow real del proyecto
+  tenga disponible (nombre resuelto contra `get_available_transitions`, no
+  asumido — el nombre exacto varía por proyecto/idioma, ej. "En revisión").
+  - **`--repo-dir <path>` es OBLIGATORIO en la práctica** — Cerebro corre
+    como subproceso con `cwd` fijo en `CEREBRO_PATH` (el propio directorio
+    de Cerebro), nunca en el repo sobre el que querés el PR. Sin
+    `--repo-dir`, `/crear-pr` operaría (por error) sobre el repo de Cerebro
+    en vez del tuyo. Pasá el path absoluto real, ej.
+    `--repo-dir /media/san/Miscosas6/Desarrollo/CreAI/Silia/Agent`.
+  - **`--base <rama>`**: rama base para el PR y para calcular qué commits
+    van en la descripción (default: `PR_REVIEW_REFERENCE_BRANCH`, `main`).
+    Usalo cuando el repo integra features contra otra rama (ej. `develop`)
+    en vez de `main` — es el caso de la mayoría de los repos de Silia-mx.
   - **Labels**: a diferencia del CLI de Cerebro (que sin `--labels` cae en
     un flujo interactivo de consola — el LLM propone, vos elegís por
     stdin), en Vysper **las labels son parte de la sintaxis del comando**:
-    `--labels a,b,c` en el mismo mensaje. Sin `--labels`, el PR se crea sin
-    labels (nunca dispara el flujo interactivo de Cerebro, que Vysper
-    siempre evita pasándole `--labels` explícito internamente).
+    `--labels a,b,c` en el mismo mensaje (las comillas alrededor del valor,
+    ej. `--labels "age-309"`, son opcionales — Vysper las quita solas). Sin
+    `--labels`, el PR se crea sin labels (nunca dispara el flujo
+    interactivo de Cerebro, que Vysper siempre evita pasándole `--labels`
+    explícito internamente).
   - **Milestone**: Vysper nunca crea un milestone nuevo automáticamente
     (le pasa `--no-milestone` a Cerebro) — si el sprint activo de Jira
     necesita uno, créalo a mano en GitHub. Evita el `input()` de consola
     que Cerebro usaría para preguntar si crear uno.
+  - **Si ya existe un PR abierto para esa rama**: Cerebro lo detecta antes
+    de gastar una llamada al LLM en título/descripción/labels que no se
+    van a usar, y responde con un mensaje claro (`Ya existe un PR abierto
+    para la rama '...': <url> -- tus commits nuevos ya se subieron a esa
+    rama...`) en vez de un error crudo de la API de GitHub. El push sí se
+    hace igual — GitHub actualiza el PR existente solo con eso, no hace
+    falta crear uno duplicado.
 - **`/cancelar-pr <url-pr>`** — cierra un PR de `/crear-pr` que sigue en
   draft y revierte la transición de Jira a un estado anterior ("Back to To
-  Do", con fallback a otros nombres según lo que el ticket tenga
-  disponible). No es un revert de git/Jira: nunca toca commits,
-  releases/tags ni contenido de Jira más allá de esa transición. Sin
-  interactividad de ningún tipo.
+  Do"/"To Do"/"Reopen"/"Por hacer", el primero que el ticket realmente
+  tenga disponible — resuelto contra `get_available_transitions`, nunca
+  asumido). No es un revert de git/Jira: nunca toca commits, releases/tags
+  ni contenido de Jira más allá de esa transición. Sin interactividad de
+  ningún tipo.
 - **`/aprobar-pr <url-pr> [--revisar] [--merge] [--tag]`** — un PR de
   Dependabot se aprueba automático; cualquier otro se valida (mergeable +
   checks de CI) antes de aprobar. Los tags siempre son anotados con mensaje
-  detallado; Jira pasa a "Done" solo si hubo merge real.
+  detallado; Jira pasa a la transición equivalente a "Done" (ej. "Listo")
+  solo si hubo merge real.
   - **Confirmación de `--merge`/`--tag`**: nunca se ejecutan en la misma
     corrida que la aprobación. Vysper primero corre `/aprobar-pr` **sin**
     esos flags (aprueba el PR y, si pediste `--revisar`, corre la revisión
@@ -565,7 +588,7 @@ tocar stdin del proceso de Cerebro:
 
 **Ejemplos:**
 ```
-/crear-pr feature/AGE-123-nuevo-endpoint --labels backend,bug-fix --ticket AGE-123
+/crear-pr feature/AGE-123-nuevo-endpoint --labels backend,bug-fix --ticket AGE-123 --base develop --repo-dir /media/san/Miscosas6/Desarrollo/CreAI/Silia/Agent
 ```
 ```
 /cancelar-pr https://github.com/Silia-mx/silia/pull/2150

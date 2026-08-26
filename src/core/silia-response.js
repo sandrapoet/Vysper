@@ -148,6 +148,9 @@ function formatDomainRiskReview(review) {
  * Cerebro), asi que aca solo se confirma lo esencial.
  */
 function formatCrearPrResult(result) {
+  if (result && result.already_exists) {
+    return result.message || `Ya existe un PR abierto para esta rama: ${result.pr_url}`;
+  }
   if (!result || !result.pr_url) return 'No se pudo crear el PR.';
   const lines = [`PR ${result.draft ? '(draft) ' : ''}creado: ${result.pr_url}`];
   if (result.title) lines.push(`Titulo: ${result.title}`);

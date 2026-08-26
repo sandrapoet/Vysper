@@ -195,15 +195,33 @@ function parseRevisarCommand(text) {
 const CREAR_PR_BOOL_FLAGS = { '--draft': true, '--publish': false };
 
 /**
- * Returns {rama, draft, labels, ticket} if text is "/crear-pr <rama>
- * [--draft|--publish] [--labels a,b,c] [--ticket AGE-123]", or {error} if a
- * flag is unknown or a value-flag is missing its value. Otherwise null.
+ * Strips one matching pair of surrounding quotes (") from a flag value --
+ * users naturally type `--labels "age-309"` like they would on a real
+ * shell, but the naive whitespace tokenizer below doesn't do shell-style
+ * quote parsing, so the quotes would otherwise end up baked into the value.
+ */
+function _stripQuotes(value) {
+  if (value.length >= 2 && value[0] === '"' && value[value.length - 1] === '"') {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+/**
+ * Returns {rama, draft, labels, ticket, base, repoDir} if text is
+ * "/crear-pr <rama> [--draft|--publish] [--labels a,b,c] [--ticket AGE-123]
+ * [--base <rama>] [--repo-dir <path>]", or {error} if a flag is unknown or
+ * a value-flag is missing its value. Otherwise null.
  * `labels` defaults to [] (no labels) -- unlike Cerebro's own CLI, Vysper
  * NEVER leaves labels unspecified: the interactive "LLM proposes, user
  * picks in the console" flow that `crear-pr` falls back to when --labels
  * is omitted has nowhere to render in a chat, so CerebroService.runCrearPr
  * always passes --labels explicitly (see its comment for how it encodes
  * "no labels" without triggering that fallback).
+ * `base`/`repoDir` default to null (Cerebro CLI's own defaults: base =
+ * PR_REVIEW_REFERENCE_BRANCH, repo-dir = cwd of the Cerebro process --
+ * which is CEREBRO_PATH, NOT the user's target repo, so `--repo-dir` is
+ * normally required in real usage; see CerebroService.runCrearPr).
  */
 function parseCrearPrCommand(text) {
   const normalized = normalize(text);
@@ -217,6 +235,8 @@ function parseCrearPrCommand(text) {
   let draft = true;
   let labels = [];
   let ticket = null;
+  let base = null;
+  let repoDir = null;
   let i = 0;
   while (i < tokens.length) {
     const token = tokens[i];
@@ -229,21 +249,35 @@ function parseCrearPrCommand(text) {
     if (lower === '--labels') {
       const value = tokens[i + 1];
       if (!value) return { error: 'Falta el valor de --labels (ej. --labels bug-fix,backend).' };
-      labels = value.split(',').map((l) => l.trim()).filter(Boolean);
+      labels = _stripQuotes(value).split(',').map((l) => l.trim()).filter(Boolean);
       i += 2;
       continue;
     }
     if (lower === '--ticket') {
       const value = tokens[i + 1];
       if (!value) return { error: 'Falta el valor de --ticket (ej. --ticket AGE-123).' };
-      ticket = value;
+      ticket = _stripQuotes(value);
+      i += 2;
+      continue;
+    }
+    if (lower === '--base') {
+      const value = tokens[i + 1];
+      if (!value) return { error: 'Falta el valor de --base (ej. --base develop).' };
+      base = _stripQuotes(value);
+      i += 2;
+      continue;
+    }
+    if (lower === '--repo-dir') {
+      const value = tokens[i + 1];
+      if (!value) return { error: 'Falta el valor de --repo-dir (ej. --repo-dir /ruta/al/repo).' };
+      repoDir = _stripQuotes(value);
       i += 2;
       continue;
     }
     return { error: `Flag desconocido: ${token}` };
   }
 
-  return { rama, draft, labels, ticket };
+  return { rama, draft, labels, ticket, base, repoDir };
 }
 
 /**
