@@ -561,6 +561,18 @@ tocar stdin del proceso de Cerebro:
     rama...`) en vez de un error crudo de la API de GitHub. El push sí se
     hace igual — GitHub actualiza el PR existente solo con eso, no hace
     falta crear uno duplicado.
+  - **Resumen para Slack**: igual que `/revisar`, si Cerebro devuelve
+    `slack_message` (siempre que se creó o ya existía un PR), Vysper lo
+    copia automáticamente al portapapeles y lo avisa en el chat — nunca se
+    envía solo. El texto sigue el estilo natural con el que ya se pide
+    revisión en Slack ("Hola team, me ayudan con este PR por favor: -
+    github.com/.../pull/N" + "Contexto: \<ticket\> - \<título\>."), no un
+    formato de bullets/emojis.
+  - **Ningún texto publicado en GitHub/Jira menciona "Vysper" ni
+    "Cerebro"** — ni el comentario del PR, ni el mensaje de Slack, ni la
+    identidad del tagger de los tags que crea `/aprobar-pr --tag` (usa la
+    identidad real configurada en `PR_REVIEW_OWNER_GITHUB_LOGIN`, nunca un
+    nombre que revele la herramienta).
 - **`/cancelar-pr <url-pr>`** — cierra un PR de `/crear-pr` que sigue en
   draft y revierte la transición de Jira a un estado anterior ("Back to To
   Do"/"To Do"/"Reopen"/"Por hacer", el primero que el ticket realmente
