@@ -443,7 +443,13 @@ constancia de por qué se rechazó o pospuso.
 PR) y verifica conflictos de merge contra el branch base real del PR
 (normalmente `develop`) **y** contra tu propia rama
 (`PR_REVIEW_REFERENCE_BRANCH`, default `main`) — un conflicto contra
-cualquiera de los dos bloquea la aprobación sin importar el resto.
+cualquiera de los dos bloquea la aprobación sin importar el resto. También
+trae los checks de CI del commit (GitHub Checks API) y exige que **más del
+90%** de los ya terminados estén en verde (`success`/`neutral`/`skipped`);
+uno todavía en `queued`/`in_progress` no cuenta ni a favor ni en contra, y
+si no hay ningún check terminado bloquea por falta de evidencia
+(fail-closed). El reporte del chat siempre muestra el % de checks pasando,
+haya bloqueado o no.
 
 - **Sin flags** (PRs triviales): solo conflictos + formato superficial
   (título + ticket de Jira referenciado), sin LLM.
@@ -460,17 +466,27 @@ cualquiera de los dos bloquea la aprobación sin importar el resto.
   intenta refutar el veredicto de la primera — solo puede bajar scores u
   agregar observaciones, nunca subirlos.
 
-Si el resultado es `APROBACIÓN CONDICIONADA`, Cerebro comenta el PR con un
-resumen ejecutivo (título, decisión, checklist de pendientes) y crea
-automáticamente una sub-tarea de Jira ("Atender observaciones PR #N", con
-vencimiento a +24h) bajo el ticket referenciado — esto sí es automático, no
-requiere confirmación. **El comentario que se publica en GitHub es
-deliberadamente distinto del reporte que ves en el chat de Vysper**: es un
-markdown limpio y profesional (`## Revisión Ejecutiva del PR #N`, decisión,
-resumen de validación, próximos pasos) pensado para que lo lea el equipo,
-sin los separadores ASCII ni los recordatorios de comandos internos
-("corre /revisar --merge", etc.) que sí tiene el reporte de Vysper. Lo mismo
-aplica al comentario que se publica al mergear con `--merge`. Si el PR es
+**El comentario se publica en GitHub siempre** (`APROBADO`,
+`APROBACIÓN CONDICIONADA` o `BLOQUEADO*`), no solo en el caso condicionado —
+así el equipo ve la leyenda de la decisión en el PR aunque no esté siguiendo
+el chat de Vysper. Es un markdown limpio y profesional
+(`## Revisión Ejecutiva del PR #N`, decisión, resumen de validación con el %
+de checks de CI, próximos pasos), **deliberadamente distinto del reporte
+que ves en el chat de Vysper**: nunca lleva los separadores ASCII ni los
+recordatorios de comandos internos ("corre /revisar --merge", etc.) que sí
+tiene el reporte de Vysper. Lo mismo aplica al comentario que se publica al
+mergear con `--merge`. Si el resultado es `APROBACIÓN CONDICIONADA`, además
+crea automáticamente una sub-tarea de Jira ("Atender observaciones PR #N",
+con vencimiento a +24h) bajo el ticket referenciado — esto sí es automático,
+no requiere confirmación. Si el resultado es `APROBADO`, `/revisar` también
+envía el **GitHub Review real** (`POST /pulls/{n}/reviews`, `event=APPROVE`
+— el mismo que un click en "Approve" desde la UI de GitHub), no solo el
+comentario de texto: eso es lo que cuenta para el gate de "reviews
+requeridos" del repo. Si `GITHUB_RW_TOKEN` no está configurado o GitHub
+rechaza el approve (por ejemplo, el autor del PR es la misma cuenta del
+token — GitHub no permite auto-aprobarse), el reporte del chat lo avisa
+explícitamente y sugiere correr `/aprobar-pr` para intentarlo de nuevo; el
+análisis y el comentario ya publicados no se pierden por esto. Si el PR es
 tuyo (`PR_REVIEW_OWNER_GITHUB_LOGIN`), el reporte del chat (no el comentario
 del PR) incluye además una firma (`sha256(reporte + sha + timestamp)`) como
 evidencia de integridad.
@@ -582,9 +598,10 @@ tocar stdin del proceso de Cerebro:
   ningún tipo.
 - **`/aprobar-pr <url-pr> [--revisar] [--merge] [--tag]`** — un PR de
   Dependabot se aprueba automático; cualquier otro se valida (mergeable +
-  checks de CI) antes de aprobar. Los tags siempre son anotados con mensaje
-  detallado; Jira pasa a la transición equivalente a "Done" (ej. "Listo")
-  solo si hubo merge real.
+  checks de CI, aquí cualquier check en rojo bloquea, sin el margen del 90%
+  que usa `/revisar`) antes de aprobar. Los tags siempre son anotados con
+  mensaje detallado; Jira pasa a la transición equivalente a "Done" (ej.
+  "Listo") solo si hubo merge real.
   - **Confirmación de `--merge`/`--tag`**: nunca se ejecutan en la misma
     corrida que la aprobación. Vysper primero corre `/aprobar-pr` **sin**
     esos flags (aprueba el PR y, si pediste `--revisar`, corre la revisión
