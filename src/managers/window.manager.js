@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, desktopCapturer } = require('electron');
+const { app, BrowserWindow, screen, desktopCapturer, dialog } = require('electron');
 const path = require('path');
 const logger = require('../core/logger').createServiceLogger('WINDOW');
 const config = require('../core/config');
@@ -26,8 +26,8 @@ class WindowManager {
     this.isInitializing = false;
     this.isRecording = false;
     this.selectionOverlayWindows = [];
-    this.displayPickerWindows = [];
     this.displayPickerPromise = null;
+    this.displayPickerActive = false;
     this.preCaptureVisibleWindows = null;
     this.pinnedDisplayMode = false;
     this.pinnedDisplayId = null;
@@ -511,9 +511,16 @@ class WindowManager {
     // More aggressive event listeners to maintain always-on-top behavior
     const enforceAlwaysOnTop = () => {
       if (!window.isDestroyed()) {
-        if (this.displayPickerWindows && this.displayPickerWindows.length > 0) {
-          // No pelear por el tope mientras el selector de monitor esta activo,
-          // o tapa el picker y el click nunca llega a la ventana de seleccion.
+        if (this.displayPickerActive) {
+          // El dialogo nativo de seleccion de monitor (showDisplayPicker)
+          // roba el foco de las 4 ventanas de la app a la vez -> cada una
+          // dispara su listener de 'blur' -> enforceAlwaysOnTop en las 4,
+          // ~200ms despues, que entierra el dialogo recien abierto detras
+          // de las ventanas de Vysper (siempre-encima). Sin este guard, el
+          // atajo Ctrl+Shift+0 parece "no hacer nada" -- el dialogo si se
+          // abre, pero queda invisible detras de la app (confirmado en
+          // vivo: "success": true en el registro del shortcut, pero nunca
+          // se ve ni se puede interactuar con el).
           return;
         }
         try {
@@ -846,7 +853,6 @@ class WindowManager {
   }
 
   disablePinnedDisplayMode() {
-    this.hideDisplayPicker();
     this.pinnedDisplayMode = false;
     this.pinnedDisplayId = null;
     this.pinnedDisplay = null;
@@ -892,57 +898,103 @@ class WindowManager {
       return this.displayPickerPromise;
     }
 
-    this.hideDisplayPicker();
-
     const displays = screen.getAllDisplays();
     if (displays.length <= 1) {
       return displays[0] || null;
     }
 
-    const findDisplayForCurrentPointer = (fallbackDisplay) => {
-      const point = screen.getCursorScreenPoint();
-      const containingDisplay = screen.getAllDisplays().find((display) => {
-        const bounds = display.bounds;
-        return point.x >= bounds.x
-          && point.x < bounds.x + bounds.width
-          && point.y >= bounds.y
-          && point.y < bounds.y + bounds.height;
+    // Antes esto abria una ventana invisible, always-on-top y con content
+    // protection POR MONITOR (screen.getAllDisplays().length ventanas
+    // cubriendo cada pantalla completa) esperando un click para detectar
+    // en cual display estaba el cursor. En vivo esto colgo el sistema
+    // completo (el proceso de Vysper tuvo que reiniciarse -- PID distinto
+    // en los logs antes/despues del intento) -- probablemente esas
+    // ventanas fullscreen siempre-encima con proteccion de contenido
+    // pelearon con el compositor de la ventana. Un dialog.showMessageBox
+    // nativo, numerado, es simple: no hay ventanas propias que crear,
+    // posicionar ni pelear por el tope -- el SO lo maneja como cualquier
+    // otro dialogo modal.
+    this.displayPickerPromise = (async () => {
+      const buttons = displays.map((display, index) => {
+        const isPrimary = display.id === screen.getPrimaryDisplay().id;
+        return `${index + 1}. ${display.bounds.width}x${display.bounds.height}` +
+          (isPrimary ? ' (principal)' : '') +
+          ` @ (${display.bounds.x}, ${display.bounds.y})`;
       });
+      const cancelLabel = 'Cancelar';
+      buttons.push(cancelLabel);
+      const cancelId = buttons.length - 1;
 
-      return containingDisplay || screen.getDisplayNearestPoint(point) || fallbackDisplay;
-    };
-
-    this.displayPickerPromise = new Promise((resolve) => {
-      let settled = false;
-      const finish = (display, reason = display ? 'selected' : 'cancelled') => {
-        if (settled) return;
-        settled = true;
-        this.displayPickerPromise = null;
-        this.hideDisplayPicker();
-        logger.debug('Display picker finished', {
-          reason,
-          displayId: display?.id,
-          cursorPosition: screen.getCursorScreenPoint()
+      // Evita que los listeners de 'blur' de las 4 ventanas de la app
+      // (que el dialogo nativo dispara al robarles el foco) entierren el
+      // dialogo reafirmando always-on-top sobre la app -- ver el guard en
+      // enforceAlwaysOnTop()/enforceAlwaysOnTopForAllWindows().
+      this.displayPickerActive = true;
+      const identifierWindows = this.showDisplayIdentifiers(displays);
+      try {
+        const { response } = await dialog.showMessageBox({
+          type: 'question',
+          title: 'Fijar ventanas a un monitor',
+          message: `Hay ${displays.length} monitores conectados. Elige el numero al que quieres fijar las ventanas de Vysper (el numero grande en cada pantalla indica cual es cual):`,
+          buttons,
+          defaultId: 0,
+          cancelId,
+          noLink: true
         });
-        resolve(display);
-      };
 
-      for (const display of displays) {
-        const displayBounds = this.normalizeBounds(display.bounds);
-        let pickerOptions = {
-          x: displayBounds.x,
-          y: displayBounds.y,
-          width: displayBounds.width,
-          height: displayBounds.height,
+        const display = response === cancelId ? null : displays[response];
+        logger.debug('Display picker finished', {
+          reason: display ? 'selected' : 'cancelled',
+          displayId: display?.id
+        });
+        return display;
+      } catch (error) {
+        logger.warn('Display picker dialog failed', { error: error.message });
+        return null;
+      } finally {
+        this.hideDisplayIdentifiers(identifierWindows);
+        this.displayPickerActive = false;
+        this.displayPickerPromise = null;
+      }
+    })();
+
+    return this.displayPickerPromise;
+  }
+
+  // Un numero grande centrado en cada pantalla mientras el dialogo del
+  // selector de monitor esta abierto, para que sea obvio cual fisico es
+  // cual (con monitores de resolucion parecida, "1536x864 @ (3072, 0)" no
+  // dice nada a simple vista). A diferencia del picker viejo que este
+  // archivo eliminaba (ver showDisplayPicker arriba), estas ventanas:
+  //   - ignoran el mouse (setIgnoreMouseEvents(true)) -- nunca capturan
+  //     clicks ni pueden bloquear nada, a diferencia del click-catcher
+  //     fullscreen que colgo el sistema.
+  //   - son chicas (no fullscreen) y sin proteccion de contenido.
+  //   - alwaysOnTop se fija UNA vez al crearlas, sin loop de refuerzo ni
+  //     moveTop() -- no compiten con enforceAlwaysOnTop.
+  //   - nunca se agregan a this.windows, asi que no heredan los listeners
+  //     de blur/show que reintentan el always-on-top de las ventanas
+  //     reales de la app.
+  showDisplayIdentifiers(displays) {
+    const badgeSize = 220;
+    return displays.map((display, index) => {
+      try {
+        const bounds = display.bounds;
+        const options = this.sanitizeBrowserWindowOptions({
+          x: Math.round(bounds.x + bounds.width / 2 - badgeSize / 2),
+          y: Math.round(bounds.y + bounds.height / 2 - badgeSize / 2),
+          width: badgeSize,
+          height: badgeSize,
           title: this.getStealthWindowTitle(),
           frame: false,
-          transparent: false,
-          backgroundColor: '#111827',
+          transparent: true,
+          backgroundColor: '#00000000',
           alwaysOnTop: true,
           show: false,
           skipTaskbar: true,
-          focusable: true,
+          focusable: false,
           resizable: false,
+          movable: false,
           minimizable: false,
           maximizable: false,
           closable: true,
@@ -954,46 +1006,14 @@ class WindowManager {
             contextIsolation: true,
             backgroundThrottling: true,
             devTools: false
-          },
-          ...(process.platform === 'darwin' && {
-            type: 'panel',
-            acceptFirstMouse: true,
-            disableAutoHideCursor: true,
-            level: 'screen-saver'
-          })
-        };
-        pickerOptions = this.sanitizeBrowserWindowOptions(pickerOptions);
-
-        const pickerWindow = new BrowserWindow(pickerOptions);
-        pickerWindow.__displayPickerDisplay = display;
-
-        pickerWindow.on('closed', () => {
-          this.displayPickerWindows = this.displayPickerWindows.filter(item => item !== pickerWindow);
-        });
-
-        pickerWindow.webContents.on('before-input-event', (event, input) => {
-          if (input.key === 'Escape' && input.type === 'keyDown') {
-            finish(null, 'escape');
-            event.preventDefault();
           }
         });
 
-        pickerWindow.on('focus', () => {
-          pickerWindow.webContents.focus();
-        });
+        const badgeWindow = new BrowserWindow(options);
+        badgeWindow.setIgnoreMouseEvents(true);
 
-        pickerWindow.on('page-title-updated', (event, title) => {
-          if (String(title || '').startsWith('vysper-display-selected')) {
-            event.preventDefault();
-            finish(findDisplayForCurrentPointer(display), 'click-title');
-          }
-        });
-
-        pickerWindow.webContents.on('did-navigate-in-page', () => {
-          finish(findDisplayForCurrentPointer(display), 'click-hash');
-        });
-
-        const pickerHtml = encodeURIComponent(`<!doctype html>
+        const label = `${index + 1}`;
+        const html = encodeURIComponent(`<!doctype html>
 <html>
   <head>
     <meta charset="utf-8">
@@ -1004,85 +1024,58 @@ class WindowManager {
         height: 100%;
         margin: 0;
         overflow: hidden;
-        cursor: crosshair;
-        background: rgba(17, 24, 39, 0.10);
+        background: transparent;
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
-      #target {
-        position: fixed;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-        border: 0;
-        padding: 0;
-        margin: 0;
-        cursor: crosshair;
-        background: rgba(17, 24, 39, 0.10);
+      .badge {
+        width: 160px;
+        height: 160px;
+        border-radius: 50%;
+        background: rgba(17, 24, 39, 0.82);
+        border: 3px solid rgba(255, 255, 255, 0.85);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+        font-size: 84px;
+        font-weight: 700;
+        color: #ffffff;
       }
     </style>
   </head>
   <body>
-    <button id="target" type="button" aria-label="select display"></button>
-    <script>
-      let selected = false;
-      function selectDisplay(event) {
-        if (selected) return;
-        selected = true;
-        event.preventDefault();
-        event.stopPropagation();
-        document.title = 'vysper-display-selected-' + Date.now();
-        window.location.hash = 'selected';
-      }
-      document.addEventListener('pointerdown', selectDisplay, true);
-      document.addEventListener('mousedown', selectDisplay, true);
-      document.getElementById('target').addEventListener('click', selectDisplay, true);
-    </script>
+    <div class="badge">${label}</div>
   </body>
 </html>`);
 
-        pickerWindow.loadURL(`data:text/html;charset=utf-8,${pickerHtml}`).catch(error => {
-          logger.warn('Unable to load display picker window', { error: error.message });
-          finish(null, 'load-error');
+        badgeWindow.loadURL(`data:text/html;charset=utf-8,${html}`).catch((error) => {
+          logger.debug('Unable to load display identifier badge', { error: error.message });
         });
 
         if (process.platform === 'darwin') {
-          pickerWindow.setAlwaysOnTop(true, 'screen-saver', 1);
-          pickerWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+          badgeWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+          badgeWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
         } else {
-          pickerWindow.setAlwaysOnTop(true);
+          badgeWindow.setAlwaysOnTop(true);
         }
+        badgeWindow.show();
 
-        pickerWindow.setIgnoreMouseEvents(false);
-        this.setWindowBounds(pickerWindow, displayBounds, 'displayPicker');
-        try {
-          pickerWindow.setOpacity(0.12);
-        } catch (error) {
-          logger.debug('Unable to set display picker opacity', { error: error.message });
-        }
-        try {
-          pickerWindow.setContentProtection(true);
-        } catch (error) {
-          logger.debug('Content protection not supported on this platform', { error: error.message });
-        }
-        pickerWindow.show();
-        pickerWindow.moveTop();
-        this.displayPickerWindows.push(pickerWindow);
+        return badgeWindow;
+      } catch (error) {
+        logger.debug('Unable to create display identifier badge', { error: error.message, displayId: display.id });
+        return null;
       }
-
-      if (this.displayPickerWindows[0] && !this.displayPickerWindows[0].isDestroyed()) {
-        this.displayPickerWindows[0].focus();
-      }
-    });
-
-    return this.displayPickerPromise;
+    }).filter(Boolean);
   }
 
-  hideDisplayPicker() {
-    for (const window of this.displayPickerWindows) {
-      if (window && !window.isDestroyed()) {
-        window.close();
+  hideDisplayIdentifiers(identifierWindows) {
+    for (const badgeWindow of identifierWindows || []) {
+      if (badgeWindow && !badgeWindow.isDestroyed()) {
+        badgeWindow.close();
       }
     }
-    this.displayPickerWindows = [];
   }
 
   getWindowType(targetWindow) {
@@ -1484,6 +1477,12 @@ class WindowManager {
 
   // New method to enforce always-on-top for all windows
   enforceAlwaysOnTopForAllWindows() {
+    if (this.displayPickerActive) {
+      // No enterrar el dialogo nativo de seleccion de monitor -- ver el
+      // mismo guard en enforceAlwaysOnTop() arriba.
+      return;
+    }
+
     // Debounced: repeated calls within enforceDebounceMs (e.g. a double
     // shortcut press, OS key-repeat while holding Alt+A, or this running
     // right after a per-window blur/show/focus listener already did it)
