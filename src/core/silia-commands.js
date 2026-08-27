@@ -195,16 +195,22 @@ function parseRevisarCommand(text) {
 const CREAR_PR_BOOL_FLAGS = { '--draft': true, '--publish': false };
 
 /**
- * Strips one matching pair of surrounding quotes (") from a flag value --
- * users naturally type `--labels "age-309"` like they would on a real
- * shell, but the naive whitespace tokenizer below doesn't do shell-style
- * quote parsing, so the quotes would otherwise end up baked into the value.
+ * Shell-like tokenizer: splits on whitespace, but a double-quoted span
+ * (which MAY itself contain whitespace, e.g. `--labels "foundations, AGE-143"`)
+ * is kept together as one token with the quotes stripped. A naive
+ * `text.split(/\s+/)` would instead break that value at the internal
+ * space -- confirmed live: `--labels "foundations, AGE-143"` produced the
+ * bogus token `AGE-143"` afterwards, which then failed as an "unknown
+ * flag" since the parser had no more `--labels`/etc. to attach it to.
  */
-function _stripQuotes(value) {
-  if (value.length >= 2 && value[0] === '"' && value[value.length - 1] === '"') {
-    return value.slice(1, -1);
+function _tokenizeQuoted(text) {
+  const tokens = [];
+  const re = /"([^"]*)"|(\S+)/g;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    tokens.push(match[1] !== undefined ? match[1] : match[2]);
   }
-  return value;
+  return tokens;
 }
 
 /**
@@ -230,7 +236,7 @@ function parseCrearPrCommand(text) {
 
   const rama = match[1];
   const rest = match[2].trim();
-  const tokens = rest.length ? rest.split(/\s+/) : [];
+  const tokens = rest.length ? _tokenizeQuoted(rest) : [];
 
   let draft = true;
   let labels = [];
@@ -249,28 +255,28 @@ function parseCrearPrCommand(text) {
     if (lower === '--labels') {
       const value = tokens[i + 1];
       if (!value) return { error: 'Falta el valor de --labels (ej. --labels bug-fix,backend).' };
-      labels = _stripQuotes(value).split(',').map((l) => l.trim()).filter(Boolean);
+      labels = value.split(',').map((l) => l.trim()).filter(Boolean);
       i += 2;
       continue;
     }
     if (lower === '--ticket') {
       const value = tokens[i + 1];
       if (!value) return { error: 'Falta el valor de --ticket (ej. --ticket AGE-123).' };
-      ticket = _stripQuotes(value);
+      ticket = value;
       i += 2;
       continue;
     }
     if (lower === '--base') {
       const value = tokens[i + 1];
       if (!value) return { error: 'Falta el valor de --base (ej. --base develop).' };
-      base = _stripQuotes(value);
+      base = value;
       i += 2;
       continue;
     }
     if (lower === '--repo-dir') {
       const value = tokens[i + 1];
       if (!value) return { error: 'Falta el valor de --repo-dir (ej. --repo-dir /ruta/al/repo).' };
-      repoDir = _stripQuotes(value);
+      repoDir = value;
       i += 2;
       continue;
     }

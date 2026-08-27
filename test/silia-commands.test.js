@@ -386,6 +386,21 @@ describe('parseCrearPrCommand', () => {
     });
   });
 
+  test('keeps a quoted multi-value --labels together even with an internal space (real repro)', () => {
+    expect(
+      parseCrearPrCommand(
+        '/crear-pr feat/AGE-143-orchestrator-foundations --base develop --ticket AGE-143 --labels "foundations, AGE-143" --repo-dir /media/san/Miscosas6/Desarrollo/CreAI/Silia/Agent'
+      )
+    ).toEqual({
+      rama: 'feat/AGE-143-orchestrator-foundations',
+      draft: true,
+      labels: ['foundations', 'AGE-143'],
+      ticket: 'AGE-143',
+      base: 'develop',
+      repoDir: '/media/san/Miscosas6/Desarrollo/CreAI/Silia/Agent'
+    });
+  });
+
   test('errors when --base or --repo-dir is missing its value', () => {
     expect(parseCrearPrCommand('/crear-pr mi-rama --base')).toEqual({
       error: 'Falta el valor de --base (ej. --base develop).'
