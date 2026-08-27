@@ -538,8 +538,13 @@ eso la integración a Vysper resuelve cada uno de esos tres puntos *sin*
 tocar stdin del proceso de Cerebro:
 
 - **`/crear-pr <rama> [--draft|--publish] [--labels a,b,c] [--ticket AGE-123] [--base <rama>] [--repo-dir <path>]`**
-  — nunca commitea por vos (si hay cambios sin commit, se detiene pidiendo
-  que commitees primero); hace push de la rama, sintetiza título y
+  — nunca commitea por vos: si hay cambios sin commitear en archivos **ya
+  trackeados**, se detiene pidiendo que commitees primero (esos sí podrían
+  faltar en el PR sin que te des cuenta). Archivos **sin trackear** ya NO
+  bloquean — nunca pueden colarse en el PR de todas formas (el push solo
+  manda lo commiteado) — Vysper solo te avisa con una advertencia (⚠️) al
+  final del mensaje, listando cuáles son, para que decidas si igual querés
+  seguir. Hace push de la rama, sintetiza título y
   descripción del PR usando los mensajes de commit como fuente principal
   (no el diff), asigna reviewers desde `.github/CODEOWNERS` y comenta un
   resumen para el equipo (nunca el reporte interno de Vysper — mismo
