@@ -116,6 +116,27 @@ describe('formatCrearPrResult', () => {
     expect(result).toBe("Ya existe un PR abierto para la rama 'feature/x': https://github.com/org/repo/pull/133");
     expect(result).not.toContain('PR creado');
   });
+
+  test('appends the untracked-files warning without treating it as an error', () => {
+    const result = formatCrearPrResult({
+      pr_url: 'https://github.com/org/repo/pull/9',
+      draft: true,
+      untracked_files_warning: 'Hay 2 archivo(s) sin trackear en /repo que NO se incluyen en este PR: a.log, b.log.',
+    });
+    expect(result).toContain('PR (draft) creado: https://github.com/org/repo/pull/9');
+    expect(result).toContain('⚠️ Hay 2 archivo(s) sin trackear en /repo que NO se incluyen en este PR: a.log, b.log.');
+  });
+
+  test('shows the untracked-files warning on the already-exists path too', () => {
+    const result = formatCrearPrResult({
+      already_exists: true,
+      pr_url: 'https://github.com/org/repo/pull/133',
+      message: "Ya existe un PR abierto para la rama 'feature/x': https://github.com/org/repo/pull/133",
+      untracked_files_warning: 'Hay 1 archivo(s) sin trackear en /repo que NO se incluyen en este PR: a.log.',
+    });
+    expect(result).toContain("Ya existe un PR abierto para la rama 'feature/x'");
+    expect(result).toContain('⚠️ Hay 1 archivo(s) sin trackear en /repo que NO se incluyen en este PR: a.log.');
+  });
 });
 
 describe('formatCancelarPrResult', () => {

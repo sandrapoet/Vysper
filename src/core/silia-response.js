@@ -149,7 +149,9 @@ function formatDomainRiskReview(review) {
  */
 function formatCrearPrResult(result) {
   if (result && result.already_exists) {
-    return result.message || `Ya existe un PR abierto para esta rama: ${result.pr_url}`;
+    const lines = [result.message || `Ya existe un PR abierto para esta rama: ${result.pr_url}`];
+    if (result.untracked_files_warning) lines.push(`\n⚠️ ${result.untracked_files_warning}`);
+    return lines.join('\n');
   }
   if (!result || !result.pr_url) return 'No se pudo crear el PR.';
   const lines = [`PR ${result.draft ? '(draft) ' : ''}creado: ${result.pr_url}`];
@@ -158,6 +160,7 @@ function formatCrearPrResult(result) {
   if (Array.isArray(result.labels) && result.labels.length) lines.push(`Labels: ${result.labels.join(', ')}`);
   if (Array.isArray(result.reviewers) && result.reviewers.length) lines.push(`Reviewers: ${result.reviewers.join(', ')}`);
   if (result.milestone) lines.push(`Milestone: ${result.milestone}`);
+  if (result.untracked_files_warning) lines.push(`\n⚠️ ${result.untracked_files_warning}`);
   return lines.join('\n');
 }
 
