@@ -13,6 +13,7 @@ const {
   parseCrearPrCommand,
   parseCancelarPrCommand,
   parseAprobarPrCommand,
+  parseActualizarJiraCommand,
   parseConfirmationResponse
 } = require('../src/core/silia-commands');
 
@@ -474,6 +475,33 @@ describe('parseAprobarPrCommand', () => {
     expect(parseAprobarPrCommand('/cancelar-pr ' + url)).toBeNull();
     expect(parseAprobarPrCommand('')).toBeNull();
     expect(parseAprobarPrCommand(undefined)).toBeNull();
+  });
+});
+
+describe('parseActualizarJiraCommand', () => {
+  test('captures everything after the command as free text, untouched', () => {
+    const texto = 'AGE-143: aclarar que el Planner es autonomo.\nAGE-159: sin cambios.';
+    expect(parseActualizarJiraCommand(`/actualizar-jira ${texto}`)).toEqual({ texto });
+  });
+
+  test('preserves multi-line pasted text verbatim (no flag parsing, no lowercasing)', () => {
+    const texto = 'AGE-143 -- Fecha limite: 2026-09-01\n--esto no es un flag--';
+    expect(parseActualizarJiraCommand(`/actualizar-jira ${texto}`)).toEqual({ texto });
+  });
+
+  test('errors when the command has no text after it', () => {
+    expect(parseActualizarJiraCommand('/actualizar-jira')).toEqual({
+      error: 'Falta el texto de correcciones para /actualizar-jira.'
+    });
+    expect(parseActualizarJiraCommand('/actualizar-jira   ')).toEqual({
+      error: 'Falta el texto de correcciones para /actualizar-jira.'
+    });
+  });
+
+  test('returns null for unrelated text', () => {
+    expect(parseActualizarJiraCommand('/crear-pr feature/x')).toBeNull();
+    expect(parseActualizarJiraCommand('')).toBeNull();
+    expect(parseActualizarJiraCommand(undefined)).toBeNull();
   });
 });
 

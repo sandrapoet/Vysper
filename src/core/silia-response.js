@@ -211,6 +211,66 @@ function formatAprobarPrResult(result, { merge = false, tag = false } = {}) {
   return lines.join('\n');
 }
 
+/**
+ * /actualizar-jira SIN --confirmar: muestra el preview de `result.cambios`
+ * (uno por cambio identificado en el texto libre) antes de que se escriba
+ * nada en Jira -- runActualizarJiraCommand en main.js guarda este mismo
+ * array como `this.pendingJiraUpdate.plan` y lo reenvia tal cual (sin
+ * regenerarlo) cuando el usuario confirma. Las entradas marcadas
+ * `requiere_revision` se muestran aparte con su motivo, nunca como si
+ * fueran a aplicarse.
+ */
+function formatActualizarJiraPreview(result) {
+  if (!result || !Array.isArray(result.cambios)) return 'No se pudo generar el preview de /actualizar-jira.';
+  if (!result.cambios.length) return 'No se identifico ningun cambio a partir del texto dado.';
+
+  const lines = [`Se identificaron ${result.cambios.length} cambio(s):`, ''];
+  result.cambios.forEach((cambio, i) => {
+    lines.push(`${i + 1}. ${cambio.issue_key} — ${cambio.campo}`);
+    if (cambio.requiere_revision) {
+      lines.push(`   ⚠️ Requiere revisión manual: ${cambio.nota || 'sin detalle'}`);
+    } else {
+      const actual = cambio.valor_actual === null || cambio.valor_actual === undefined || cambio.valor_actual === ''
+        ? '(vacío)' : cambio.valor_actual;
+      lines.push(`   Actual: ${actual}`);
+      lines.push(`   Propuesto: ${cambio.valor_propuesto}`);
+    }
+    lines.push('');
+  });
+  return lines.join('\n').trim();
+}
+
+/**
+ * Segundo turno de /actualizar-jira (tras la confirmacion explicita del
+ * usuario, ver resolvePendingJiraUpdate en main.js): resume que se aplico
+ * de verdad, que fallo al escribir, y que se omitio por seguir marcado
+ * `requiere_revision` (defensa en profundidad -- nunca deberia llegar
+ * ninguno aca, ver Orchestrator._apply_jira_update_plan).
+ */
+function formatActualizarJiraApplyResult(result) {
+  if (!result) return 'No se pudo aplicar los cambios de /actualizar-jira.';
+  const aplicados = result.aplicados || [];
+  const fallidos = result.fallidos || [];
+  const omitidos = result.omitidos || [];
+  const lines = [];
+
+  if (aplicados.length) {
+    lines.push(`✅ Aplicados (${aplicados.length}):`);
+    aplicados.forEach((a) => lines.push(`- ${a.issue_key} (${a.campo})`));
+  }
+  if (fallidos.length) {
+    if (lines.length) lines.push('');
+    lines.push(`❌ Fallidos (${fallidos.length}):`);
+    fallidos.forEach((f) => lines.push(`- ${f.issue_key} (${f.campo}): ${f.error}`));
+  }
+  if (omitidos.length) {
+    if (lines.length) lines.push('');
+    lines.push(`⏭️ Omitidos por requerir revisión (${omitidos.length}):`);
+    omitidos.forEach((o) => lines.push(`- ${o.issue_key} (${o.campo}): ${o.nota}`));
+  }
+  return lines.length ? lines.join('\n') : 'No se aplico ningun cambio.';
+}
+
 function formatPrReview(review) {
   if (!review || !review.report_markdown) return 'No se pudo generar la revision del PR.';
   const lines = [review.report_markdown];
@@ -353,4 +413,6 @@ module.exports = {
   formatCrearPrResult,
   formatCancelarPrResult,
   formatAprobarPrResult,
+  formatActualizarJiraPreview,
+  formatActualizarJiraApplyResult,
 };

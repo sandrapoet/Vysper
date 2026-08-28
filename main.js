@@ -28,6 +28,7 @@ const {
   parseCrearPrCommand,
   parseCancelarPrCommand,
   parseAprobarPrCommand,
+  parseActualizarJiraCommand,
   parseConfirmationResponse
 } = require("./src/core/silia-commands");
 const { parseActualizaRagCommand } = require("./src/core/secretaria-commands");
@@ -41,7 +42,9 @@ const {
   formatPrReview,
   formatCrearPrResult,
   formatCancelarPrResult,
-  formatAprobarPrResult
+  formatAprobarPrResult,
+  formatActualizarJiraPreview,
+  formatActualizarJiraApplyResult
 } = require("./src/core/silia-response");
 const { classifyOperationalQuery, isExplicitCerebroCommand } = require("./src/core/cerebro-query-router");
 
@@ -520,6 +523,16 @@ class ApplicationController {
     // confirmar hasta que el proximo mensaje del usuario responda si/no
     // (ver resolvePendingPrApproval). null cuando no hay nada pendiente.
     this.pendingPrApproval = null;
+
+    // /actualizar-jira: la primera corrida (con --texto) solo genera un
+    // preview ("cambios") sin escribir nada en Jira -- este objeto guarda
+    // ese plan tal cual hasta que el proximo mensaje del usuario responda
+    // si/no (ver resolvePendingJiraUpdate). null cuando no hay nada
+    // pendiente. A diferencia de pendingPrApproval, el plan mismo (que
+    // campos de que tickets, con que valor nuevo) viaja completo aca -- se
+    // reenvia sin cambios en la confirmacion, nunca se le vuelve a pedir al
+    // LLM que lo regenere.
+    this.pendingJiraUpdate = null;
 
     // Modo Optimizacion (Alt+O): ver handleOptimizacionToggleShortcut.
     this.optimizacionArmed = false;
@@ -5240,6 +5253,21 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         // El modo cambio antes de responder: se descarta sin ejecutar nada.
       }
 
+      if (this.pendingJiraUpdate) {
+        const pending = this.pendingJiraUpdate;
+        this.pendingJiraUpdate = null;
+        if (pending.skill === normalizedSkill) {
+          const confirmation = parseConfirmationResponse(text);
+          if (confirmation !== null) {
+            await this.resolvePendingJiraUpdate(pending, confirmation, { skill: normalizedSkill, source: 'cerebro' });
+            return;
+          }
+          // No leyo como si/no -- se descarta el plan pendiente y el
+          // mensaje sigue su camino normal (puede ser un comando nuevo).
+        }
+        // El modo cambio antes de responder: se descarta sin aplicar nada.
+      }
+
       const actualizaRagAllowed = this.isSiliaMode(normalizedSkill) ||
         this.isSecretariaMode(normalizedSkill) ||
         normalizedSkill === 'system-design';
@@ -5777,6 +5805,81 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     }
   }
 
+  /**
+   * /actualizar-jira <texto>: SIEMPRE corre primero sin --confirmar (solo
+   * preview, ver CerebroService.runActualizarJira) -- si el LLM identifico
+   * al menos un cambio, deja el plan completo en this.pendingJiraUpdate y
+   * pide confirmacion explicita en el chat. Solo se escribe de verdad en
+   * resolvePendingJiraUpdate, cuando el proximo mensaje del usuario
+   * confirma que si -- y con el MISMO plan que se le mostro, nunca uno
+   * regenerado.
+   */
+  async runActualizarJiraCommand({ texto }, metadata = {}) {
+    logger.info('Comando /actualizar-jira recibido', { textoLength: (texto || '').length });
+
+    try {
+      const result = await this.cerebroService.runActualizarJira(texto);
+      if (result.error) {
+        this.emitSiliaResult(result.error, { ...metadata, siliaCommand: 'actualizar-jira', error: true });
+        return;
+      }
+
+      this.emitSiliaResult(formatActualizarJiraPreview(result), { ...metadata, siliaCommand: 'actualizar-jira' });
+
+      const aplicables = (result.cambios || []).filter((c) => !c.requiere_revision);
+      if (aplicables.length > 0) {
+        this.pendingJiraUpdate = { plan: result.cambios, skill: metadata.skill || this.getNormalizedSkill() };
+        this.emitSiliaResult(
+          `¿Confirmas aplicar ${aplicables.length} cambio(s) en Jira? Responde "si" para continuar o "no" para cancelar.`,
+          { ...metadata, siliaCommand: 'actualizar-jira', awaitingConfirmation: true }
+        );
+      }
+    } catch (error) {
+      const friendlyMessage = error instanceof CerebroError
+        ? error.message
+        : `No se pudo ejecutar /actualizar-jira: ${error.message}`;
+      logger.error('Fallo al ejecutar /actualizar-jira', { error: error.message });
+      this.broadcastLLMError(friendlyMessage);
+      this.emitSiliaResult(friendlyMessage, { ...metadata, siliaCommand: 'actualizar-jira', usedFallback: true, error: true });
+    }
+  }
+
+  /**
+   * Segundo turno de /actualizar-jira: se dispara desde
+   * processTranscriptionWithLLM cuando hay un plan pendiente y el mensaje
+   * del usuario se leyo como si/no (ver parseConfirmationResponse).
+   * `confirmed === false` cancela sin tocar Jira. El plan viaja de vuelta
+   * a Cerebro tal cual se genero -- Cerebro no vuelve a llamar al LLM aca,
+   * solo ejecuta las escrituras ya revisadas.
+   */
+  async resolvePendingJiraUpdate(pending, confirmed, metadata = {}) {
+    if (!confirmed) {
+      this.emitSiliaResult(
+        'Cancelado -- no se aplico ningun cambio en Jira.',
+        { ...metadata, siliaCommand: 'actualizar-jira', cancelled: true }
+      );
+      return;
+    }
+
+    logger.info('Confirmacion recibida para /actualizar-jira', { cambios: pending.plan.length });
+
+    try {
+      const result = await this.cerebroService.runActualizarJira(null, { plan: pending.plan, confirmar: true });
+      if (result.error) {
+        this.emitSiliaResult(result.error, { ...metadata, siliaCommand: 'actualizar-jira', error: true });
+        return;
+      }
+      this.emitSiliaResult(formatActualizarJiraApplyResult(result), { ...metadata, siliaCommand: 'actualizar-jira' });
+    } catch (error) {
+      const friendlyMessage = error instanceof CerebroError
+        ? error.message
+        : `No se pudo confirmar /actualizar-jira: ${error.message}`;
+      logger.error('Fallo al confirmar /actualizar-jira', { error: error.message });
+      this.broadcastLLMError(friendlyMessage);
+      this.emitSiliaResult(friendlyMessage, { ...metadata, siliaCommand: 'actualizar-jira', usedFallback: true, error: true });
+    }
+  }
+
   async runHoyCommand(dominio, metadata = {}) {
     logger.info('Comando /hoy recibido', { dominio });
 
@@ -5995,6 +6098,16 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         return true;
       }
       await this.runAprobarPrCommand(aprobarPrCommand, baseMetadata);
+      return true;
+    }
+
+    const actualizarJiraCommand = parseActualizarJiraCommand(text);
+    if (actualizarJiraCommand) {
+      if (actualizarJiraCommand.error) {
+        this.emitSiliaResult(actualizarJiraCommand.error, { ...baseMetadata, siliaCommand: 'actualizar-jira', error: true });
+        return true;
+      }
+      await this.runActualizarJiraCommand(actualizarJiraCommand, baseMetadata);
       return true;
     }
 

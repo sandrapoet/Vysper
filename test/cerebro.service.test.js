@@ -442,4 +442,39 @@ describe('CerebroService', () => {
       expect.any(Object)
     );
   });
+
+  test('runActualizarJira without confirmar sends --texto and never a --plan', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runActualizarJira('AGE-143: aclarar que el Planner es autonomo');
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ pending: true, cambios: [] })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'actualizar-jira', '--texto', 'AGE-143: aclarar que el Planner es autonomo'],
+      expect.any(Object)
+    );
+  });
+
+  test('runActualizarJira with confirmar sends the plan as JSON and never re-sends --texto', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+    const plan = [{ issue_key: 'AGE-143', campo: 'descripcion', requiere_revision: false }];
+
+    const promise = service.runActualizarJira(null, { plan, confirmar: true });
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ aplicados: [], fallidos: [], omitidos: [] })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'actualizar-jira', '--confirmar', '--plan', JSON.stringify(plan)],
+      expect.any(Object)
+    );
+  });
 });

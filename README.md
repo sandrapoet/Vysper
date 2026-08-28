@@ -46,6 +46,7 @@ Comandos de texto (en el chat o por voz):
 - /silia daily [identificador]  Actividades del último día hábil (Jira/GitHub/Notion/minutas locales) + checkpoint de riesgo abierto (silia, system-design — ver sección "Modo Silia")
 - /revisar <url-pr> [--profundo|--arq|--security] [--diablo] [--merge] [--release]  Revisión automatizada de PR: conflictos + matriz de cumplimiento ponderada (silia, system-design — ver sección "Modo Silia")
 - /crear-pr <rama> [--draft|--publish] [--labels a,b,c] [--ticket AGE-123], /cancelar-pr <url-pr>, /aprobar-pr <url-pr> [--revisar] [--merge] [--tag]  Creación/cancelación/aprobación de PRs (silia, system-design — ver sección "Modo Silia")
+- /actualizar-jira <texto>  Actualiza descripción/fecha/estado/story points de uno o varios tickets a partir de texto libre, con preview + confirmación antes de escribir (silia, system-design — ver sección "Modo Silia")
 ###
 
 <p align="center">
@@ -629,6 +630,46 @@ tocar stdin del proceso de Cerebro:
 ```
 ```
 /aprobar-pr https://github.com/Silia-mx/silia/pull/2150 --revisar --merge --tag
+si
+```
+
+### `/actualizar-jira`
+
+Automatiza actualizar Jira (descripción, fecha límite, estado, story
+points) a partir de un texto libre de correcciones que puede mencionar
+varios tickets a la vez — el caso real es pegar una nota de "esto hay que
+corregir en Jira" (varias decisiones de diseño que se traducen en cambios
+a distintos campos de distintos tickets) y dejar que el LLM identifique
+qué tocar en cada uno. Mismo principio que `/aprobar-pr --merge/--tag`:
+**nunca escribe nada en Jira en la misma corrida que lo propone** — dos
+turnos separados, con confirmación explícita en el medio:
+
+- **`/actualizar-jira <texto>`** — primer turno: Cerebro identifica los
+  cambios que el texto pide (uno por ticket/campo mencionado) y los
+  resuelve contra el estado **real** de cada ticket ahora mismo (para
+  descripción, redacta el valor nuevo preservando lo no relacionado; para
+  estado, valida que la transición realmente esté disponible; para fecha/
+  story points, valida formato). Vysper muestra el preview completo
+  (*actual → propuesto* por cada cambio) — **nada se escribe todavía**.
+  Cualquier cambio ambiguo (ticket que no existe, transición no
+  disponible, campo no reconocido) se muestra aparte marcado como
+  "requiere revisión manual", con el motivo — nunca se adivina ni se
+  aplica solo.
+  - Si hay al menos un cambio aplicable, el chat pregunta explícitamente
+    (`¿Confirmas aplicar N cambio(s) en Jira? Responde "si" para continuar
+    o "no" para cancelar.`) y queda esperando tu próxima respuesta —
+    cualquier cosa que no se lea como sí/no descarta el plan pendiente sin
+    aplicar nada.
+  - Solo cuando respondés afirmativo, Vysper reenvía **el mismo plan que
+    ya viste** (nunca uno regenerado — Cerebro no vuelve a llamar al LLM
+    en este segundo turno) para que se escriba de verdad. El resultado
+    final distingue qué se aplicó, qué falló al escribir, y qué se omitió
+    por seguir marcado como "requiere revisión".
+
+**Ejemplo:**
+```
+/actualizar-jira AGE-143: aclarar que el Planner es autonomo y clasifica sin depender de L1-L3.
+AGE-159: aclarar que el nodo Planner no tiene dependencia de L1-L3 en su descripcion.
 si
 ```
 

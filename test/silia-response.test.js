@@ -4,6 +4,8 @@ const {
   formatCrearPrResult,
   formatCancelarPrResult,
   formatAprobarPrResult,
+  formatActualizarJiraPreview,
+  formatActualizarJiraApplyResult,
 } = require('../src/core/silia-response');
 
 const ESC = '\x1b';
@@ -201,5 +203,61 @@ describe('formatAprobarPrResult', () => {
 
   test('degrades gracefully with no result', () => {
     expect(formatAprobarPrResult(null)).toBe('No se pudo procesar la aprobacion del PR.');
+  });
+});
+
+describe('formatActualizarJiraPreview', () => {
+  test('lists resolved changes with actual/proposed values', () => {
+    const result = formatActualizarJiraPreview({
+      pending: true,
+      cambios: [
+        { issue_key: 'AGE-143', campo: 'descripcion', requiere_revision: false, valor_actual: 'vieja', valor_propuesto: 'nueva' },
+      ],
+    });
+    expect(result).toContain('Se identificaron 1 cambio(s):');
+    expect(result).toContain('AGE-143 — descripcion');
+    expect(result).toContain('Actual: vieja');
+    expect(result).toContain('Propuesto: nueva');
+  });
+
+  test('shows requiere_revision entries with their reason instead of actual/proposed', () => {
+    const result = formatActualizarJiraPreview({
+      pending: true,
+      cambios: [{ issue_key: 'AGE-159', campo: 'estado', requiere_revision: true, nota: "'Hecho' no es una transicion disponible" }],
+    });
+    expect(result).toContain('⚠️ Requiere revisión manual');
+    expect(result).toContain("'Hecho' no es una transicion disponible");
+    expect(result).not.toContain('Propuesto:');
+  });
+
+  test('reports no changes found instead of an empty list', () => {
+    expect(formatActualizarJiraPreview({ pending: true, cambios: [] })).toBe('No se identifico ningun cambio a partir del texto dado.');
+  });
+
+  test('degrades gracefully without a cambios array', () => {
+    expect(formatActualizarJiraPreview(null)).toBe('No se pudo generar el preview de /actualizar-jira.');
+  });
+});
+
+describe('formatActualizarJiraApplyResult', () => {
+  test('shows applied, failed, and skipped entries together', () => {
+    const result = formatActualizarJiraApplyResult({
+      aplicados: [{ issue_key: 'AGE-143', campo: 'descripcion' }],
+      fallidos: [{ issue_key: 'AGE-159', campo: 'estado', error: 'transicion rechazada' }],
+      omitidos: [{ issue_key: 'AGE-160', campo: 'otro', nota: 'no reconocido' }],
+    });
+    expect(result).toContain('✅ Aplicados (1):');
+    expect(result).toContain('AGE-143 (descripcion)');
+    expect(result).toContain('❌ Fallidos (1):');
+    expect(result).toContain('transicion rechazada');
+    expect(result).toContain('⏭️ Omitidos por requerir revisión (1):');
+  });
+
+  test('degrades gracefully with no result', () => {
+    expect(formatActualizarJiraApplyResult(null)).toBe('No se pudo aplicar los cambios de /actualizar-jira.');
+  });
+
+  test('reports nothing applied when all lists are empty', () => {
+    expect(formatActualizarJiraApplyResult({ aplicados: [], fallidos: [], omitidos: [] })).toBe('No se aplico ningun cambio.');
   });
 });

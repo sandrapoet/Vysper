@@ -164,6 +164,28 @@ class CerebroService {
   }
 
   /**
+   * /actualizar-jira <texto>: identifica que cambios de descripcion/fecha/
+   * estado/story points pide un texto libre de correcciones (que puede
+   * mencionar varios tickets a la vez) y devuelve un PREVIEW -- nunca
+   * escribe nada en Jira en esta llamada. `plan`/`confirmar` SOLO deben
+   * pasarse cuando el usuario ya confirmo en un turno previo del chat que
+   * quiere aplicar ese preview exacto (ver runActualizarJiraCommand/
+   * resolvePendingJiraUpdate en main.js) -- `plan` es el array `cambios`
+   * devuelto tal cual por la llamada anterior sin --confirmar, nunca se
+   * re-genera: Cerebro no vuelve a llamar al LLM en la confirmacion, asi
+   * que lo que el usuario vio en el chat es exactamente lo que se escribe.
+   */
+  runActualizarJira(texto, { plan = null, confirmar = false, timeoutMs = 300000 } = {}) {
+    const args = ['actualizar-jira'];
+    if (confirmar) {
+      args.push('--confirmar', '--plan', JSON.stringify(plan || []));
+    } else {
+      args.push('--texto', texto);
+    }
+    return this._runCli(args, { timeoutMs });
+  }
+
+  /**
    * Consulta con una imagen adjunta (lamina/diagrama/captura): la imagen
    * viaja como un archivo local (el CLI solo acepta argumentos de texto),
    * Cerebro la envia como bloque nativo de la Messages API de Anthropic

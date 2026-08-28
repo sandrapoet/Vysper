@@ -326,6 +326,26 @@ function parseAprobarPrCommand(text) {
   };
 }
 
+/**
+ * Returns {texto} if text is "/actualizar-jira <texto libre>" -- todo lo
+ * que sigue al comando viaja tal cual (sin flags, sin tokenizar) como el
+ * cuerpo de correcciones/decisiones a analizar, ya que puede mencionar
+ * varios tickets a la vez (ver Orchestrator.run_actualizar_jira en
+ * Cerebro). {error} si no hay texto despues del comando. Otherwise null.
+ * NUNCA escribe nada en Jira por si solo -- ver runActualizarJiraCommand/
+ * resolvePendingJiraUpdate en main.js para el preview + confirmacion
+ * explicita que exige antes de aplicar cualquier cambio.
+ */
+function parseActualizarJiraCommand(text) {
+  const normalized = normalize(text);
+  const match = normalized.match(/^\/actualizar-jira(?:\s+([\s\S]+))?$/i);
+  if (!match) return null;
+
+  const texto = (match[1] || '').trim();
+  if (!texto) return { error: 'Falta el texto de correcciones para /actualizar-jira.' };
+  return { texto };
+}
+
 const CONFIRMATION_YES = ['si', 'sí', 'yes', 'confirmo', 'confirmar', 'dale', 'ok', 'okay', 'adelante'];
 const CONFIRMATION_NO = ['no', 'cancelar', 'cancela', 'cancelo', 'nel'];
 
@@ -361,5 +381,6 @@ module.exports = {
   parseCrearPrCommand,
   parseCancelarPrCommand,
   parseAprobarPrCommand,
+  parseActualizarJiraCommand,
   parseConfirmationResponse,
 };
