@@ -46,7 +46,9 @@ Comandos de texto (en el chat o por voz):
 - /silia daily [identificador]  Actividades del último día hábil (Jira/GitHub/Notion/minutas locales) + checkpoint de riesgo abierto (silia, system-design — ver sección "Modo Silia")
 - /revisar <url-pr> [--profundo|--arq|--security] [--diablo] [--merge] [--release]  Revisión automatizada de PR: conflictos + matriz de cumplimiento ponderada (silia, system-design — ver sección "Modo Silia")
 - /crear-pr <rama> [--draft|--publish] [--labels a,b,c] [--ticket AGE-123], /cancelar-pr <url-pr>, /aprobar-pr <url-pr> [--revisar] [--merge] [--tag]  Creación/cancelación/aprobación de PRs (silia, system-design — ver sección "Modo Silia")
+- /merge <numero-pr> --repo <owner/repo> [--merge]  Mergea un PR directo vía la API de GitHub, sin aprobar ni tocar Jira, con confirmación explícita en el chat (silia, system-design — ver sección "Modo Silia")
 - /actualizar-jira <texto>  Actualiza descripción/fecha/estado/story points de uno o varios tickets a partir de texto libre, con preview + confirmación antes de escribir (silia, system-design — ver sección "Modo Silia")
+- /script  Ejecuta cerebro/scripts/jira_transition.py (ruta fija, sin argumentos) — ver sección "Modo Silia"
 ###
 
 <p align="center">
@@ -633,6 +635,31 @@ tocar stdin del proceso de Cerebro:
 si
 ```
 
+### `/merge`
+
+Equivalente a `gh pr merge <numero> --repo <owner/repo> --merge`, pero
+**puro** — a diferencia de `/aprobar-pr --merge`, que siempre aprueba el PR
+y transiciona el ticket de Jira asociado además de mergear, `/merge` no
+hace nada de eso: solo el merge (`PUT /pulls/{numero}/merge` vía la API de
+GitHub). Pensado para cuando el PR ya se aprobó por otro medio y lo único
+que falta es el merge en sí. Usá `/aprobar-pr --merge` en cualquier otro
+caso — es el flujo con las validaciones (mergeable, checks de CI) y la
+integración con Jira.
+
+`--repo` es obligatorio (`owner/repo`, ej. `Silia-mx/Agent`); el `--merge`
+final es opcional, solo calca la sintaxis de `gh pr merge`. Mismo patrón de
+confirmación explícita en el chat que `/aprobar-pr --merge`: Vysper nunca
+mergea en el mismo turno que el comando, siempre pregunta primero
+(`¿Confirmas mergear el PR #<numero> en <owner/repo>? Responde "si" para
+continuar o "no" para cancelar.`) y solo ejecuta el merge real cuando
+respondés afirmativo.
+
+**Ejemplo:**
+```
+/merge 149 --repo Silia-mx/Agent --merge
+si
+```
+
 ### `/actualizar-jira`
 
 Automatiza actualizar Jira (descripción, fecha límite, estado, story
@@ -694,6 +721,36 @@ igual que ya hace con LightRAG.
 
 Si Cerebro no responde (timeout, proceso caído, token inválido), Silia
 muestra un mensaje de error claro en el chat en vez de fallar silenciosamente.
+
+### `/script`
+
+Ejecuta `cerebro/scripts/jira_transition.py` — **sin argumentos, sin
+excepciones**: a diferencia de todo lo demás en esta sección, `/script` no
+acepta ningún parámetro (`/script jira_transition`, por ejemplo, se
+rechaza como comando desconocido en vez de ejecutarse). La ruta del script
+está hardcodeada del lado de Cerebro para que este comando nunca pueda
+convertirse en una forma de correr un `.py` arbitrario desde el chat. No
+pide confirmación en el chat como `/merge` o `/aprobar-pr --merge`: el
+contenido del script ya está fijo en su propio código (no es generado
+dinámicamente a partir de tu mensaje, como sí pasa en `/actualizar-jira`),
+así que no hay nada que confirmar en el momento — correrlo escribe en Jira
+de inmediato.
+
+⚠️ **El script en sí no interpreta argumentos** — corre de punta a punta
+apenas se invoca el archivo, sea como sea que se invoque. Si necesitás
+correrlo manualmente fuera de Vysper (ej. desde una sesión de Claude Code
+en el repo de Cerebro), tené cuidado con pasarle flags "inofensivos" como
+`--help` pensando que va a mostrar la ayuda — el script los ignora
+por completo y ejecuta igual todas las escrituras reales en Jira.
+
+Si el script termina con un error, el chat muestra el código de salida y
+el traceback completo (stdout + stderr), no un mensaje genérico — útil
+para diagnosticar sin tener que ir a buscar logs aparte.
+
+**Ejemplo:**
+```
+/script
+```
 
 ### ¿`/incidente`, `/silia daily`, `/optimizaciones`, `/propuesta` o `/revisar` no responden?
 

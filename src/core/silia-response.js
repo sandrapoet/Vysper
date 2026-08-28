@@ -175,6 +175,27 @@ function formatCancelarPrResult(result) {
 }
 
 /**
+ * /script: confirma que el script corrio y muestra su salida (stdout).
+ */
+function formatScriptResult(result) {
+  if (!result || !result.executed) return 'No se pudo ejecutar el script.';
+  const lines = ['Script ejecutado correctamente.'];
+  if (result.output) lines.push(result.output);
+  return lines.join('\n\n');
+}
+
+/**
+ * /merge: confirma el merge puro (sin approve/Jira, ver /aprobar-pr para
+ * ese flujo completo).
+ */
+function formatMergeResult(result) {
+  if (!result || !result.merged) return 'No se pudo mergear el PR.';
+  const lines = [`PR mergeado: ${result.pr_url}`];
+  if (result.sha) lines.push(`SHA: ${result.sha}`);
+  return lines.join('\n');
+}
+
+/**
  * /aprobar-pr: cubre tanto la primera pasada (solo aprobacion, sin
  * merge/tag) como la segunda tras la confirmacion en el chat (merge/tag ya
  * ejecutados) -- `merge`/`tag` indican si esta llamada especifica ya los
@@ -412,6 +433,8 @@ module.exports = {
   formatPrReview,
   formatCrearPrResult,
   formatCancelarPrResult,
+  formatScriptResult,
+  formatMergeResult,
   formatAprobarPrResult,
   formatActualizarJiraPreview,
   formatActualizarJiraApplyResult,

@@ -186,6 +186,31 @@ class CerebroService {
   }
 
   /**
+   * /script: ejecuta cerebro/scripts/jira_transition.py -- ruta hardcodeada
+   * del lado de Cerebro (_SCRIPT_PATH en cerebro/cli.py), sin argumentos,
+   * para que este comando nunca pueda disparar un .py arbitrario. A
+   * diferencia de /actualizar-jira, el contenido ya esta fijado en el
+   * codigo del script -- no hay preview ni turno de confirmacion en el chat.
+   */
+  runScript() {
+    return this._runCli(['script']);
+  }
+
+  /**
+   * /merge <numero> --repo <owner/repo>: mergea un PR directo via la API
+   * de GitHub -- sin aprobar, sin /revisar, sin Jira (ver runAprobarPr
+   * para ese pipeline completo). `confirmar` SOLO debe pasarse en true
+   * cuando el usuario ya confirmo en un turno previo del chat (ver
+   * runMergeCommand/resolvePendingMerge en main.js) -- sin eso, el CLI de
+   * Cerebro rechaza el merge (requiere --confirmar explicito).
+   */
+  runMergePr(numero, repo, { confirmar = false } = {}) {
+    const args = ['merge-pr', String(numero), '--repo', repo];
+    if (confirmar) args.push('--confirmar');
+    return this._runCli(args);
+  }
+
+  /**
    * Consulta con una imagen adjunta (lamina/diagrama/captura): la imagen
    * viaja como un archivo local (el CLI solo acepta argumentos de texto),
    * Cerebro la envia como bloque nativo de la Messages API de Anthropic

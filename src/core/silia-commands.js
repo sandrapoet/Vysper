@@ -346,6 +346,39 @@ function parseActualizarJiraCommand(text) {
   return { texto };
 }
 
+/**
+ * Returns {numero, repo} if text is "/merge <numero-pr> --repo
+ * <owner/repo> [--merge]", {error} si falta --repo o el formato no calza,
+ * o null si el texto no empieza con "/merge". Comando de merge PURO via
+ * GitHub API (PUT /pulls/{n}/merge) -- sin aprobar el PR, sin correr
+ * /revisar, sin transicionar Jira (para ese pipeline completo ver
+ * /aprobar-pr --merge). El "--merge" final es opcional, solo calca la
+ * sintaxis de `gh pr merge <n> --repo x --merge`. NUNCA mergea directo --
+ * ver runMergeCommand/resolvePendingMerge en main.js para el turno de
+ * confirmacion explicita que exige antes.
+ */
+function parseMergeCommand(text) {
+  const normalized = normalize(text);
+  if (!/^\/merge\b/i.test(normalized)) return null;
+
+  const match = normalized.match(/^\/merge\s+(\d+)\s+--repo\s+(\S+)(?:\s+--merge)?\s*$/i);
+  if (!match) {
+    return { error: 'Uso: /merge <numero-pr> --repo <owner/repo>' };
+  }
+  return { numero: parseInt(match[1], 10), repo: match[2] };
+}
+
+/**
+ * Returns true if text is exactly "/script" (sin argumentos -- el comando
+ * SIEMPRE ejecuta el mismo script fijo del lado de Cerebro, ver
+ * _SCRIPT_PATH en cerebro/cli.py; no acepta nombre para que nunca se
+ * pueda pedir ejecutar un .py arbitrario desde el chat).
+ */
+function parseScriptCommand(text) {
+  const normalized = normalize(text);
+  return /^\/script\s*$/i.test(normalized);
+}
+
 const CONFIRMATION_YES = ['si', 'sí', 'yes', 'confirmo', 'confirmar', 'dale', 'ok', 'okay', 'adelante'];
 const CONFIRMATION_NO = ['no', 'cancelar', 'cancela', 'cancelo', 'nel'];
 
@@ -382,5 +415,7 @@ module.exports = {
   parseCancelarPrCommand,
   parseAprobarPrCommand,
   parseActualizarJiraCommand,
+  parseScriptCommand,
+  parseMergeCommand,
   parseConfirmationResponse,
 };

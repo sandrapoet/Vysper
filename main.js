@@ -29,6 +29,8 @@ const {
   parseCancelarPrCommand,
   parseAprobarPrCommand,
   parseActualizarJiraCommand,
+  parseScriptCommand,
+  parseMergeCommand,
   parseConfirmationResponse
 } = require("./src/core/silia-commands");
 const { parseActualizaRagCommand } = require("./src/core/secretaria-commands");
@@ -42,6 +44,8 @@ const {
   formatPrReview,
   formatCrearPrResult,
   formatCancelarPrResult,
+  formatScriptResult,
+  formatMergeResult,
   formatAprobarPrResult,
   formatActualizarJiraPreview,
   formatActualizarJiraApplyResult
@@ -533,6 +537,12 @@ class ApplicationController {
     // reenvia sin cambios en la confirmacion, nunca se le vuelve a pedir al
     // LLM que lo regenere.
     this.pendingJiraUpdate = null;
+
+    // /merge <numero> --repo <owner/repo>: nunca se ejecuta directo (ver
+    // CerebroService.runMergePr) -- este objeto guarda la accion a
+    // confirmar hasta que el proximo mensaje del usuario responda si/no
+    // (ver resolvePendingMerge). null cuando no hay nada pendiente.
+    this.pendingMerge = null;
 
     // Modo Optimizacion (Alt+O): ver handleOptimizacionToggleShortcut.
     this.optimizacionArmed = false;
@@ -5268,6 +5278,21 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         // El modo cambio antes de responder: se descarta sin aplicar nada.
       }
 
+      if (this.pendingMerge) {
+        const pending = this.pendingMerge;
+        this.pendingMerge = null;
+        if (pending.skill === normalizedSkill) {
+          const confirmation = parseConfirmationResponse(text);
+          if (confirmation !== null) {
+            await this.resolvePendingMerge(pending, confirmation, { skill: normalizedSkill, source: 'cerebro' });
+            return;
+          }
+          // No leyo como si/no -- se descarta la confirmacion pendiente y
+          // el mensaje sigue su camino normal (puede ser un comando nuevo).
+        }
+        // El modo cambio antes de responder: se descarta sin ejecutar nada.
+      }
+
       const actualizaRagAllowed = this.isSiliaMode(normalizedSkill) ||
         this.isSecretariaMode(normalizedSkill) ||
         normalizedSkill === 'system-design';
@@ -5725,6 +5750,75 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     }
   }
 
+  async runScriptCommand(metadata = {}) {
+    logger.info('Comando /script recibido');
+
+    try {
+      const result = await this.cerebroService.runScript();
+      if (result.error) {
+        this.emitSiliaResult(result.error, { ...metadata, siliaCommand: 'script', error: true });
+        return;
+      }
+      this.emitSiliaResult(formatScriptResult(result), { ...metadata, siliaCommand: 'script' });
+    } catch (error) {
+      const friendlyMessage = error instanceof CerebroError
+        ? error.message
+        : `No se pudo ejecutar /script: ${error.message}`;
+      logger.error('Fallo al ejecutar /script', { error: error.message });
+      this.broadcastLLMError(friendlyMessage);
+      this.emitSiliaResult(friendlyMessage, { ...metadata, siliaCommand: 'script', usedFallback: true, error: true });
+    }
+  }
+
+  /**
+   * /merge <numero> --repo <owner/repo>: merge PURO via GitHub API, sin
+   * aprobar el PR, sin correr /revisar, sin transicionar Jira (para eso
+   * ver /aprobar-pr --merge). Nunca ejecuta directo -- deja la accion en
+   * this.pendingMerge y pide confirmacion explicita en el chat, igual que
+   * /aprobar-pr --merge (ver resolvePendingMerge).
+   */
+  async runMergeCommand({ numero, repo }, metadata = {}) {
+    logger.info('Comando /merge recibido', { numero, repo });
+    this.pendingMerge = { numero, repo, skill: metadata.skill || this.getNormalizedSkill() };
+    this.emitSiliaResult(
+      `¿Confirmas mergear el PR #${numero} en ${repo}? Responde "si" para continuar o "no" para cancelar.`,
+      { ...metadata, siliaCommand: 'merge', awaitingConfirmation: true }
+    );
+  }
+
+  /**
+   * Segundo turno de /merge: se dispara desde processTranscriptionWithLLM
+   * cuando hay una confirmacion pendiente y el mensaje del usuario se leyo
+   * como si/no. `confirmed === false` cancela sin tocar Cerebro.
+   */
+  async resolvePendingMerge(pending, confirmed, metadata = {}) {
+    if (!confirmed) {
+      this.emitSiliaResult(
+        `Cancelado -- no se mergeo el PR #${pending.numero} en ${pending.repo}.`,
+        { ...metadata, siliaCommand: 'merge', cancelled: true }
+      );
+      return;
+    }
+
+    logger.info('Confirmacion recibida para /merge', { numero: pending.numero, repo: pending.repo });
+
+    try {
+      const result = await this.cerebroService.runMergePr(pending.numero, pending.repo, { confirmar: true });
+      if (result.error) {
+        this.emitSiliaResult(result.error, { ...metadata, siliaCommand: 'merge', error: true });
+        return;
+      }
+      this.emitSiliaResult(formatMergeResult(result), { ...metadata, siliaCommand: 'merge' });
+    } catch (error) {
+      const friendlyMessage = error instanceof CerebroError
+        ? error.message
+        : `No se pudo confirmar /merge: ${error.message}`;
+      logger.error('Fallo al confirmar /merge', { error: error.message });
+      this.broadcastLLMError(friendlyMessage);
+      this.emitSiliaResult(friendlyMessage, { ...metadata, siliaCommand: 'merge', usedFallback: true, error: true });
+    }
+  }
+
   /**
    * /aprobar-pr <url> [--revisar] [--merge] [--tag]: SIEMPRE corre primero
    * sin --merge/--tag (el CLI de Cerebro los ejecutaria via typer.confirm()
@@ -6088,6 +6182,21 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     const cancelarPrCommand = parseCancelarPrCommand(text);
     if (cancelarPrCommand) {
       await this.runCancelarPrCommand(cancelarPrCommand, baseMetadata);
+      return true;
+    }
+
+    if (parseScriptCommand(text)) {
+      await this.runScriptCommand(baseMetadata);
+      return true;
+    }
+
+    const mergeCommand = parseMergeCommand(text);
+    if (mergeCommand) {
+      if (mergeCommand.error) {
+        this.emitSiliaResult(mergeCommand.error, { ...baseMetadata, siliaCommand: 'merge', error: true });
+        return true;
+      }
+      await this.runMergeCommand(mergeCommand, baseMetadata);
       return true;
     }
 
