@@ -1,6 +1,6 @@
 require("dotenv").config();
 
-const { app, BrowserWindow, globalShortcut, session, ipcMain, clipboard, dialog } = require("electron");
+const { app, BrowserWindow, globalShortcut, session, ipcMain, clipboard, dialog, shell } = require("electron");
 const logger = require("./src/core/logger").createServiceLogger("MAIN");
 const config = require("./src/core/config");
 
@@ -33,7 +33,13 @@ const {
   parseMergeCommand,
   parseConfirmationResponse
 } = require("./src/core/silia-commands");
-const { parseActualizaRagCommand } = require("./src/core/secretaria-commands");
+const {
+  parseActualizaRagCommand,
+  parseReconocerVozCommand,
+  parseOptimizaCommand,
+  parseReconocerVozPendientesCommand,
+  parseActualizarHablantesCommand
+} = require("./src/core/secretaria-commands");
 const {
   formatCerebroFinalAnswer,
   formatOptimizacionesList,
@@ -93,6 +99,7 @@ const MEETING_FINAL_TRANSCRIPT_CHARS = Number(process.env.VYSPER_MEETING_FINAL_T
 // legitima del modelo sin dejar al usuario esperando demasiado.
 const MEETING_STARTUP_TIMEOUT_MS = Number(process.env.VYSPER_MEETING_STARTUP_TIMEOUT_MS || 25000);
 const DIARIZE_HELPER_PATH = path.join(__dirname, 'stt', 'diarize.py');
+const ENROLL_SPEAKER_HELPER_PATH = path.join(__dirname, 'stt', 'enroll_speaker.py');
 
 // Modo Optimizacion (Alt+O): entrevista dirigida en paralelo a una sesion Alt+S.
 // Arma el modo ANTES de Alt+S: la sesion arranca con fragmentos cortos
@@ -100,6 +107,14 @@ const DIARIZE_HELPER_PATH = path.join(__dirname, 'stt', 'diarize.py');
 const OPTIMIZACION_SEGMENT_SEC = Number(process.env.VYSPER_OPTIMIZACION_SEGMENT_SEC || 15);
 const OPTIMIZACION_SILENCE_SEC = Number(process.env.VYSPER_OPTIMIZACION_SILENCE_SEC || 6);
 const OPTIMIZACION_CONTEXT_CHARS = Number(process.env.VYSPER_OPTIMIZACION_CONTEXT_CHARS || 8000);
+
+// Etiquetas de hablante todavia sin nombre real: SPEAKER_NN/UNKNOWN_NN
+// (crudas de diarize.py, ver markSpeakerAsUnknown) y las variantes de
+// "Hablante desconocido" ya usadas en transcripciones pegadas a mano (ver
+// estimateSecretariaTeamsTranscriptFromPlainText). Cualquier otro valor de
+// speaker ya es un nombre real -- usado por assignSecretariaSpeakerDisplayNames
+// para no aplicarle el fallback "PARTICIPANTE N".
+const SECRETARIA_GENERIC_SPEAKER_PATTERN = /^(speaker[_\s]?\d+|unknown[_\s]?\d+|hablante[_\s]?desconocido|hablante\s*\d*)$/i;
 
 function signalShortcut(message, meta = {}) {
   console.log(`[Vysper shortcut] ${message}`);
@@ -510,7 +525,6 @@ class ApplicationController {
     this.secretariaBufferGeneration = 0;
     this.secretariaRawRecordingPath = null;
     this.secretariaMeetingSession = null;
-    this.secretariaMeetingProcessingQueue = Promise.resolve();
     this.translatorRawRecordingPath = null;
     this.pendingSelectionCaptureMode = 'ocr';
     this.pendingSelectionCaptureOptions = {};
@@ -545,7 +559,11 @@ class ApplicationController {
     this.pendingMerge = null;
 
     // Modo Optimizacion (Alt+O): ver handleOptimizacionToggleShortcut.
+    // optimizacionArmed = modo tiempo real armado; optimizacionPosthocArmed =
+    // modo posterior armado (mutuamente excluyentes, se eligen en el dialogo
+    // de Alt+O). optimizacionActive = tiempo real corriendo AHORA MISMO.
     this.optimizacionArmed = false;
+    this.optimizacionPosthocArmed = false;
     this.optimizacionActive = false;
     this.optimizacionPendingText = [];
     this.optimizacionSilentSeconds = 0;
@@ -1552,8 +1570,9 @@ class ApplicationController {
       return;
     }
 
-    if (this.optimizacionArmed) {
+    if (this.optimizacionArmed || this.optimizacionPosthocArmed) {
       this.optimizacionArmed = false;
+      this.optimizacionPosthocArmed = false;
       signalShortcut('Alt+O: optimizacion desarmada. La proxima sesion Alt+S usara el fragmento normal');
       return;
     }
@@ -1600,9 +1619,32 @@ class ApplicationController {
       return;
     }
 
+    // Se pregunta el modo ACA (antes de grabar) porque tiempo real necesita
+    // fragmentos cortos desde el arranque de la sesion -- no se puede decidir
+    // despues de que Alt+S ya empezo a grabar con el tamano normal.
+    const modeChoice = await dialog.showMessageBox({
+      type: 'question',
+      buttons: ['Tiempo real', 'Posterior', 'Cancelar'],
+      defaultId: 1,
+      cancelId: 2,
+      title: 'Modo Optimizacion',
+      message: 'Como quieres el analisis de optimizacion para la proxima sesion Alt+S?',
+      detail: 'Tiempo real: sugiere preguntas durante la reunion y sigue bloqueando Alt+S hasta que termina su documento final (como hoy).\n\nPosterior: no interviene en vivo; genera el analisis automaticamente al terminar la reunion, y no bloquea la siguiente sesion.'
+    });
+
+    if (modeChoice.response === 2) {
+      signalShortcut('Alt+O cancelado');
+      return;
+    }
+
     this.resetOptimizacionRuntimeState();
-    this.optimizacionArmed = true;
-    signalShortcut(`Alt+O: optimizacion armada. La proxima sesion Alt+S usara fragmentos de ${OPTIMIZACION_SEGMENT_SEC}s y sugerira preguntas tras ${OPTIMIZACION_SILENCE_SEC}s de silencio`);
+    if (modeChoice.response === 0) {
+      this.optimizacionArmed = true;
+      signalShortcut(`Alt+O: tiempo real armado. La proxima sesion Alt+S usara fragmentos de ${OPTIMIZACION_SEGMENT_SEC}s y sugerira preguntas tras ${OPTIMIZACION_SILENCE_SEC}s de silencio`);
+    } else {
+      this.optimizacionPosthocArmed = true;
+      signalShortcut('Alt+O: analisis posterior armado. Al terminar la proxima sesion Alt+S se generara automaticamente optimizacion-estrategia.md');
+    }
   }
 
   resetOptimizacionRuntimeState() {
@@ -1670,6 +1712,22 @@ class ApplicationController {
     }
 
     const sessionDir = result.filePaths[0];
+    signalUserNotice('Alt+9: generando estrategia de optimizacion sobre sesion ya terminada...', { sessionDir });
+    const analysis = await this.runOptimizaAnalysis(sessionDir);
+    if (!analysis.ok) {
+      signalUserNotice(`Alt+9: ${analysis.error}`, { sessionDir });
+    }
+  }
+
+  // Nucleo compartido para el analisis "posterior" de Optimizacion: dada una
+  // carpeta de sesion ya terminada por Alt+S/Ctrl+5 (tiene final/full-audio.wav,
+  // transcript-*.txt, etc.), busca su transcript, suma el resumen/sugerencias
+  // que hubiera quedado en optimizacion/estado.json (compatibilidad con
+  // sesiones que si usaron el modo tiempo real), y genera
+  // final/optimizacion-estrategia.md. Lo usan Alt+9, el comando de chat
+  // /optimiza, y el disparo automatico al terminar una sesion en modo
+  // "posterior" (ver stopSecretariaMeetingSession).
+  async runOptimizaAnalysis(sessionDir) {
     const finalDir = path.join(sessionDir, 'final');
     const candidatePaths = [
       path.join(finalDir, 'transcript-hablantes.txt'),
@@ -1677,8 +1735,7 @@ class ApplicationController {
     ];
     const transcriptPath = candidatePaths.find((candidate) => fs.existsSync(candidate));
     if (!transcriptPath) {
-      signalUserNotice(`Alt+9: no se encontro transcript en ${finalDir} (la sesion debe estar terminada con Alt+S)`, { sessionDir });
-      return;
+      return { ok: false, error: `no se encontro transcript en ${finalDir} (la sesion debe estar terminada con Alt+S)` };
     }
     const transcriptText = fs.readFileSync(transcriptPath, 'utf8');
 
@@ -1691,13 +1748,15 @@ class ApplicationController {
         summary = state.summary || '';
         suggestions = Array.isArray(state.suggestions) ? state.suggestions : [];
       } catch (error) {
-        logger.warn('Alt+9: no se pudo leer estado.json previo, se genera solo con el transcript', { error: error.message });
+        logger.warn('runOptimizaAnalysis: no se pudo leer estado.json previo, se genera solo con el transcript', { error: error.message, sessionDir });
       }
     }
 
-    signalUserNotice('Alt+9: generando estrategia de optimizacion sobre sesion ya terminada...', { sessionDir, transcriptPath });
-    await this.generateOptimizacionStrategyDocument(finalDir, transcriptText, summary, suggestions);
+    const result = await this.generateOptimizacionStrategyDocument(finalDir, transcriptText, summary, suggestions);
     this.writeOptimizacionState({ sessionDir }, { finalized: true }, summary, suggestions);
+    return result.ok
+      ? result
+      : { ok: false, strategyPath: result.strategyPath, error: result.error?.message || String(result.error || 'error desconocido') };
   }
 
   createSecretariaMeetingSessionState(sourceType = null, segmentSec = MEETING_SEGMENT_SEC) {
@@ -1716,7 +1775,7 @@ class ApplicationController {
       sourceType
     };
     this.secretariaMeetingSession = session;
-    this.secretariaMeetingProcessingQueue = Promise.resolve();
+    session.processingQueue = Promise.resolve();
     this.writeSecretariaMeetingManifest(session);
 
     return session;
@@ -1788,10 +1847,11 @@ class ApplicationController {
       teamsTranscriptPath: manifest.teamsTranscriptPath,
       minutesPath: manifest.minutesPath,
       minutaGenerated: Boolean(manifest.minutaGenerated),
-      optimizacionActive: Boolean(manifest.optimizacionActive)
+      optimizacionActive: Boolean(manifest.optimizacionActive),
+      optimizacionMode: manifest.optimizacionMode || null
     };
     this.secretariaMeetingSession = session;
-    this.secretariaMeetingProcessingQueue = Promise.resolve();
+    session.processingQueue = Promise.resolve();
     return session;
   }
 
@@ -1799,10 +1859,18 @@ class ApplicationController {
     // No se resetea el estado de optimizacion aca: handleOptimizacionToggleShortcut
     // ya lo deja listo al armar (limpio para una entrevista nueva, o precargado
     // con el resumen de una sesion retomada). Resetearlo aca borraria ese resumen.
-    this.optimizacionActive = this.optimizacionArmed;
+    const optimizacionMode = this.optimizacionArmed
+      ? 'realtime'
+      : (this.optimizacionPosthocArmed ? 'posthoc' : null);
+    this.optimizacionActive = optimizacionMode === 'realtime';
+    // El modo posterior no necesita nada en vivo: se consume el armado aca
+    // mismo (a diferencia de optimizacionArmed, que sigue vivo durante toda
+    // la sesion en tiempo real -- ver stopSecretariaMeetingSession).
+    this.optimizacionPosthocArmed = false;
     const segmentSec = this.optimizacionActive ? OPTIMIZACION_SEGMENT_SEC : MEETING_SEGMENT_SEC;
     const session = this.createSecretariaMeetingSessionState('liveRecording', segmentSec);
     session.optimizacionActive = this.optimizacionActive;
+    session.optimizacionMode = optimizacionMode;
     this.writeSecretariaMeetingManifest(session);
 
     signalMeetingStatus('INICIANDO', `preparando sesion larga en ${session.sessionDir}${this.optimizacionActive ? ` (optimizacion activa, fragmentos de ${segmentSec}s)` : ''}`);
@@ -1895,28 +1963,55 @@ class ApplicationController {
       signalMeetingStatus('ERROR', `no se confirmo a tiempo el fin de la grabacion (${error.message}); generando minuta con lo que se alcanzo a procesar...`);
     }
 
+    // Libera el slot de grabacion apenas termina de grabar (no despues de
+    // procesar/finalizar) para que Alt+S pueda arrancar una sesion nueva de
+    // inmediato -- ver Fase 2 en el plan. Excepcion: el modo tiempo real de
+    // Optimizacion sigue usando this.optimizacionSummary/Suggestions/Queue
+    // como estado compartido (no por sesion), asi que esa sesion en
+    // particular sigue bloqueando hasta el finally de mas abajo, igual que
+    // antes -- evita que una sesion nueva en tiempo real pise sus datos
+    // mientras esta todavia genera su documento final.
+    if (session.optimizacionMode !== 'realtime' && this.secretariaMeetingSession === session) {
+      this.secretariaMeetingSession = null;
+    }
+
     try {
       session.status = 'processing';
       this.writeSecretariaMeetingManifest(session);
-      signalMeetingStatus('PROCESANDO', 'esperando transcripciones, hablantes y sintesis pendientes...');
-      await this.secretariaMeetingProcessingQueue;
+      signalMeetingStatus('PROCESANDO', `esperando transcripciones, hablantes y sintesis pendientes de ${path.basename(session.sessionDir)}...`, { sessionDir: session.sessionDir });
+      await session.processingQueue;
 
       session.status = 'finalizing';
       this.writeSecretariaMeetingManifest(session);
-      signalMeetingStatus('FINALIZANDO', 'generando transcript completo y minuta final...');
+      signalMeetingStatus('FINALIZANDO', `generando transcript completo y minuta final de ${path.basename(session.sessionDir)}...`, { sessionDir: session.sessionDir });
       await this.finalizeSecretariaMeetingSession(session);
+
+      if (session.optimizacionMode === 'posthoc') {
+        const analysis = await this.runOptimizaAnalysis(session.sessionDir);
+        if (!analysis.ok) {
+          logger.warn('No se pudo generar el analisis de optimizacion posterior', {
+            error: analysis.error,
+            sessionDir: session.sessionDir
+          });
+        }
+      }
     } finally {
       // Pase lo que pase (exito o fallo en cualquiera de los pasos de
-      // arriba), Alt+S tiene que quedar disponible de nuevo.
-      this.secretariaMeetingSession = null;
+      // arriba), Alt+S tiene que quedar disponible de nuevo. Con identidad
+      // de objeto por si una sesion nueva ya tomo el slot mientras esta
+      // (modo tiempo real) seguia bloqueando.
+      if (this.secretariaMeetingSession === session) {
+        this.secretariaMeetingSession = null;
+      }
 
-      // Si esta sesion tuvo optimizacion activa, no dejar el resumen/texto
-      // pendiente en memoria para la proxima Alt+S: startSecretariaMeetingSession
-      // asume que optimizacionArmed/optimizacionSummary siempre se dejaron
-      // "listos" por un Alt+O reciente (arma en limpio, o retoma explicitamente
-      // via el dialogo de sesion sin terminar). Sin este reset, una sesion
-      // nueva iniciada con un simple Alt+S (sin volver a tocar Alt+O) hereda
-      // en silencio el resumen/texto pendiente de ESTA sesion ya cerrada.
+      // Si esta sesion tuvo optimizacion en tiempo real, no dejar el
+      // resumen/texto pendiente en memoria para la proxima Alt+S:
+      // startSecretariaMeetingSession asume que optimizacionArmed/
+      // optimizacionSummary siempre se dejaron "listos" por un Alt+O
+      // reciente (arma en limpio, o retoma explicitamente via el dialogo de
+      // sesion sin terminar). Sin este reset, una sesion nueva iniciada con
+      // un simple Alt+S (sin volver a tocar Alt+O) hereda en silencio el
+      // resumen/texto pendiente de ESTA sesion ya cerrada.
       if (session.optimizacionActive) {
         this.optimizacionActive = false;
         this.optimizacionArmed = false;
@@ -1926,7 +2021,7 @@ class ApplicationController {
   }
 
   enqueueSecretariaMeetingSegment(session, data) {
-    if (!session || !data?.path) return this.secretariaMeetingProcessingQueue;
+    if (!session || !data?.path) return session?.processingQueue || Promise.resolve();
 
     const segment = {
       index: Number(data.index || session.segments.length + 1),
@@ -1943,7 +2038,7 @@ class ApplicationController {
       audioPath: segment.audioPath
     });
 
-    this.secretariaMeetingProcessingQueue = this.secretariaMeetingProcessingQueue
+    session.processingQueue = session.processingQueue
       .then(() => this.processSecretariaMeetingSegment(session, segment))
       .catch((error) => {
         segment.error = error.message;
@@ -1953,7 +2048,7 @@ class ApplicationController {
         });
       });
 
-    return this.secretariaMeetingProcessingQueue;
+    return session.processingQueue;
   }
 
   async handleSecretariaMeetingSegment(data) {
@@ -2037,8 +2132,8 @@ class ApplicationController {
     }
   }
 
-  // Cola propia (independiente de secretariaMeetingProcessingQueue) para que
-  // una llamada lenta al LLM de optimizacion nunca bloquee la transcripcion/
+  // Cola propia (independiente de session.processingQueue) para que una
+  // llamada lenta al LLM de optimizacion nunca bloquee la transcripcion/
   // diarizacion/minuta de Alt+S. Se serializa igual para no disparar dos
   // sugerencias en paralelo si llegan fragmentos rapido.
   enqueueOptimizacionSegment(session, segment, transcript) {
@@ -2277,7 +2372,9 @@ class ApplicationController {
       speakerTranscriptPath: session.speakerTranscriptPath,
       teamsTranscriptPath: session.teamsTranscriptPath,
       minutesPath: session.minutesPath,
-      minutaGenerated: session.minutaGenerated
+      minutaGenerated: session.minutaGenerated,
+      optimizacionMode: session.optimizacionMode || null,
+      optimizacionActive: Boolean(session.optimizacionActive)
     };
     fs.writeFileSync(path.join(session.sessionDir, 'session.json'), JSON.stringify(manifest, null, 2) + '\n', 'utf8');
   }
@@ -2777,16 +2874,23 @@ class ApplicationController {
         // continua su propio pipeline en vez del generico de Ctrl+5.
         signalMeetingStatus('RETOMANDO', `continuando sesion de grabacion en vivo en ${session.sessionDir}`);
         windowManager.showChatWindow();
-        this.secretariaMeetingSession = session;
         // No hay audio en vivo que reanudar aca (solo se retoma la
         // finalizacion), asi que optimizacionActive queda en false: no debe
         // volver a intentar sugerir preguntas, solo generar la estrategia
         // final si la sesion original la tenia activa (session.optimizacionActive).
         this.optimizacionActive = false;
-        try {
-          await this.finalizeSecretariaMeetingSession(session);
-        } finally {
-          this.secretariaMeetingSession = null;
+        // No hay captura exclusiva que proteger en este retomado -- no se
+        // ocupa this.secretariaMeetingSession, igual que el resto de los
+        // flujos de procesamiento en segundo plano (ver Fase 2).
+        await this.finalizeSecretariaMeetingSession(session);
+        if (session.optimizacionMode === 'posthoc') {
+          const analysis = await this.runOptimizaAnalysis(session.sessionDir);
+          if (!analysis.ok) {
+            logger.warn('No se pudo generar el analisis de optimizacion posterior al retomar', {
+              error: analysis.error,
+              sessionDir: session.sessionDir
+            });
+          }
         }
         return;
       }
@@ -3005,7 +3109,7 @@ class ApplicationController {
     session.sourceFilePath = filePath;
     session.sourceType = session.sourceType || 'uploadedFile';
     this.secretariaMeetingSession = session;
-    this.secretariaMeetingProcessingQueue = Promise.resolve();
+    session.processingQueue = session.processingQueue || Promise.resolve();
 
     signalMeetingStatus(
       existingSession ? 'RETOMANDO' : 'INICIANDO',
@@ -3013,6 +3117,14 @@ class ApplicationController {
       { filePath }
     );
     windowManager.showChatWindow();
+
+    // Este flujo (Ctrl+5 sobre un archivo ya existente) nunca mantiene un
+    // recurso exclusivo como la captura en vivo de Alt+S -- se libera el
+    // slot ya mismo para que Alt+S pueda arrancar una grabacion nueva
+    // mientras este archivo se sigue procesando en segundo plano.
+    if (this.secretariaMeetingSession === session) {
+      this.secretariaMeetingSession = null;
+    }
 
     try {
       session.status = 'processing';
@@ -3048,7 +3160,9 @@ class ApplicationController {
 
       await this.finalizeSecretariaMeetingSessionFromTranscript(session, transcript, transcriptPath, speakerResult);
     } finally {
-      this.secretariaMeetingSession = null;
+      if (this.secretariaMeetingSession === session) {
+        this.secretariaMeetingSession = null;
+      }
     }
   }
 
@@ -3355,8 +3469,11 @@ class ApplicationController {
     return `${pad(hours)}:${pad(minutes)}:${pad(secs)}`;
   }
 
-  // Asigna "PARTICIPANTE N" (en orden de primera aparicion) a las etiquetas
-  // sin nombre real resuelto en nameMap; respeta los nombres ya resueltos.
+  // Asigna "PARTICIPANTE N" (en orden de primera aparicion) solo a las
+  // etiquetas genericas sin nombre real (SECRETARIA_GENERIC_SPEAKER_PATTERN);
+  // un label que ya es un nombre real (venga o no de nameMap -- matcheo de
+  // huella de voz automatico, o resuelto por /actualizarHablantes o
+  // /reconocerVoz) se respeta tal cual.
   assignSecretariaSpeakerDisplayNames(lines, nameMap = {}) {
     const displayNames = {};
     let nextParticipant = 1;
@@ -3365,6 +3482,8 @@ class ApplicationController {
       const resolved = nameMap[line.speaker];
       if (resolved) {
         displayNames[line.speaker] = resolved.toUpperCase();
+      } else if (!SECRETARIA_GENERIC_SPEAKER_PATTERN.test(line.speaker)) {
+        displayNames[line.speaker] = line.speaker.toUpperCase();
       } else {
         displayNames[line.speaker] = `PARTICIPANTE ${nextParticipant}`;
         nextParticipant += 1;
@@ -3505,15 +3624,10 @@ class ApplicationController {
 
     // Etiquetas genericas (SPEAKER_00, "Hablante desconocido", etc.) se
     // numeran como PARTICIPANTE N; cualquier otra cosa se trata como nombre
-    // real ya identificado y se respeta tal cual (en mayusculas).
-    const genericPattern = /^(speaker[_\s]?\d+|hablante[_\s]?desconocido|hablante\s*\d*)$/i;
-    const nameMap = {};
-    for (const entry of timedLines) {
-      if (nameMap[entry.speaker] !== undefined) continue;
-      nameMap[entry.speaker] = genericPattern.test(entry.speaker) ? null : entry.speaker;
-    }
-
-    return this.formatSecretariaTeamsTranscript(timedLines, nameMap);
+    // real ya identificado y se respeta tal cual (en mayusculas) --
+    // assignSecretariaSpeakerDisplayNames ya aplica ese criterio solo, sin
+    // necesitar un nameMap explicito aca.
+    return this.formatSecretariaTeamsTranscript(timedLines);
   }
 
   // Concatena WAV PCM16 mono generados por nuestro propio pipeline (mismo
@@ -5248,6 +5362,34 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         this.clearPendingVisualImage();
       }
 
+      if (this.pendingVoiceEnrollment) {
+        if (this.pendingVoiceEnrollment.skill === normalizedSkill) {
+          await this.resolvePendingVoiceEnrollment(text);
+          return;
+        }
+        // El modo cambio a mitad del enrolamiento: se descarta la cola
+        // pendiente en vez de seguir preguntando nombres en un modo distinto.
+        this.clearPendingVoiceEnrollment();
+      }
+
+      if (this.pendingReconocerVozChain) {
+        const pending = this.pendingReconocerVozChain;
+        this.pendingReconocerVozChain = null;
+        if (pending.skill === normalizedSkill) {
+          const confirmation = parseConfirmationResponse(text);
+          if (confirmation !== null) {
+            if (confirmation) {
+              await this.startVoiceEnrollmentFlow(pending.sessionDir, { onlySpeakers: pending.unknownLabels });
+            } else {
+              this.emitCommandResult('Ok, quedan pendientes -- corre /reconocerVozPendientes cuando quieras retomarlos.', { reconocerVozCommand: true });
+            }
+            return;
+          }
+          // No leyo como si/no -- se descarta y el mensaje sigue su camino normal.
+        }
+        // El modo cambio antes de responder: se descarta sin ejecutar nada.
+      }
+
       if (this.pendingPrApproval) {
         const pending = this.pendingPrApproval;
         this.pendingPrApproval = null;
@@ -5300,6 +5442,34 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
       if (actualizaRagAllowed && parseActualizaRagCommand(text)) {
         await this.runActualizaRagCommand();
         return;
+      }
+
+      if (this.isSecretariaMode(normalizedSkill)) {
+        const reconocerVozPendientesSessionDir = parseReconocerVozPendientesCommand(text);
+        if (reconocerVozPendientesSessionDir) {
+          await this.runReconocerVozPendientesCommand(reconocerVozPendientesSessionDir);
+          return;
+        }
+
+        const reconocerVozSessionDir = parseReconocerVozCommand(text);
+        if (reconocerVozSessionDir) {
+          await this.runReconocerVozCommand(reconocerVozSessionDir);
+          return;
+        }
+
+        const actualizarHablantesSessionDir = parseActualizarHablantesCommand(text);
+        if (actualizarHablantesSessionDir) {
+          await this.runActualizarHablantesCommand(actualizarHablantesSessionDir);
+          return;
+        }
+      }
+
+      if (normalizedSkill === 'system-design') {
+        const optimizaSessionDir = parseOptimizaCommand(text);
+        if (optimizaSessionDir) {
+          await this.runOptimizaCommand(optimizaSessionDir);
+          return;
+        }
       }
 
       const hoyAllowed = this.isSiliaMode(normalizedSkill) ||
@@ -6066,6 +6236,474 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
       this.broadcastLLMError(friendlyMessage);
       this.emitCommandResult(friendlyMessage, { actualizaRagCommand: true, error: true });
     }
+  }
+
+  /**
+   * Comando /reconocerVoz <ruta a una carpeta de sesion Alt+S/Ctrl+5>.
+   * Reutiliza la diarizacion + audio ya generados por esa sesion para
+   * detectar hablantes (SPEAKER_XX) sin huella de voz conocida, y arranca
+   * un enrolamiento uno-por-uno via chat (ver resolvePendingVoiceEnrollment):
+   * abre el clip de cada hablante con el reproductor del sistema y pregunta
+   * su nombre en el chat antes de pasar al siguiente.
+   */
+  // Ubica la diarizacion de una sesion ya procesada, sea de Alt+S
+  // (final/speakers-full.json) o de un archivo subido por Ctrl+5
+  // (speakers/0001.json, ver processSecretariaAudioFileAsMeeting). Devuelve
+  // null si no se encuentra ninguna.
+  findSecretariaSpeakersPath(sessionDir) {
+    const candidates = [
+      path.join(sessionDir, 'final', 'speakers-full.json'),
+      path.join(sessionDir, 'speakers', '0001.json')
+    ];
+    return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+  }
+
+  // Mismo criterio que findSecretariaSpeakersPath, pero para los segments del
+  // transcript de whisper (con texto+timestamps, no la diarizacion).
+  findSecretariaTranscriptSegmentsPath(sessionDir) {
+    const candidates = [
+      path.join(sessionDir, 'final', 'full-transcript-segments.json'),
+      path.join(sessionDir, 'transcripts', '0001.segments.json')
+    ];
+    return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+  }
+
+  // El audio de una sesion de Alt+S siempre queda autocontenido en
+  // final/full-audio.wav; el de una sesion de Ctrl+5 sobre un archivo
+  // subido puede vivir fuera de la carpeta de la sesion, asi que se lee del
+  // manifest.
+  findSecretariaAudioPath(sessionDir) {
+    const liveAudioPath = path.join(sessionDir, 'final', 'full-audio.wav');
+    if (fs.existsSync(liveAudioPath)) return liveAudioPath;
+
+    const manifestPath = path.join(sessionDir, 'session.json');
+    if (fs.existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        if (manifest.sourceFilePath && fs.existsSync(manifest.sourceFilePath)) {
+          return manifest.sourceFilePath;
+        }
+      } catch (error) {
+        logger.warn('No se pudo leer session.json para ubicar el audio original', { error: error.message, sessionDir });
+      }
+    }
+    return null;
+  }
+
+  // Relabels every segment of speakerLabel in a session's diarization file
+  // in place (ver markSpeakerAsUnknown para el caso de "no identificado" y
+  // resolvePendingVoiceEnrollment para el caso de "recien enrolado").
+  relabelSessionSpeaker(speakersPath, speakerLabel, updates) {
+    const payload = JSON.parse(fs.readFileSync(speakersPath, 'utf8'));
+    const segments = Array.isArray(payload.segments) ? payload.segments : [];
+    let changed = false;
+    for (const segment of segments) {
+      if (segment.speaker === speakerLabel) {
+        Object.assign(segment, updates);
+        changed = true;
+      }
+    }
+    if (changed) {
+      fs.writeFileSync(speakersPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+    }
+    return changed;
+  }
+
+  // Marca un cluster como revisado-y-no-identificado: UNKNOWN_NN en vez de
+  // SPEAKER_NN, para poder retomarlo despues con /reconocerVozPendientes sin
+  // volver a ofrecer los que nunca se revisaron.
+  markSpeakerAsUnknown(speakersPath, speakerLabel, score) {
+    const suffix = speakerLabel.replace(/^(SPEAKER|UNKNOWN)_/, '');
+    this.relabelSessionSpeaker(speakersPath, speakerLabel, {
+      speaker: `UNKNOWN_${suffix}`,
+      status: 'UNKNOWN',
+      score: typeof score === 'number' ? score : null
+    });
+  }
+
+  // Labels de speakers con status "UNKNOWN" en una diarizacion ya hecha (ver
+  // markSpeakerAsUnknown), para que /reconocerVozPendientes sepa a cuales
+  // limitar el repaso.
+  findUnknownSpeakerLabels(speakersPath) {
+    try {
+      const payload = JSON.parse(fs.readFileSync(speakersPath, 'utf8'));
+      const segments = Array.isArray(payload.segments) ? payload.segments : [];
+      return [...new Set(segments.filter((s) => s.status === 'UNKNOWN').map((s) => s.speaker))];
+    } catch (error) {
+      logger.warn('No se pudo leer la diarizacion para buscar hablantes UNKNOWN', { error: error.message, speakersPath });
+      return [];
+    }
+  }
+
+  /**
+   * Regenera transcript-hablantes.txt/transcript-teams.txt de una sesion ya
+   * procesada a partir de su speakers-full.json actual (que puede haber
+   * cambiado por un enrolamiento nuevo o un /actualizarHablantes), y
+   * actualiza minuta.md en una sola pasada de LLM si ya existe (le pide
+   * sustituir nombres, no reescribir el resto). Compartido por
+   * /reconocerVoz, /reconocerVozPendientes y /actualizarHablantes.
+   */
+  async refreshSecretariaSpeakerArtifacts(sessionDir) {
+    const finalDir = path.join(sessionDir, 'final');
+    const speakersPath = this.findSecretariaSpeakersPath(sessionDir);
+    const segmentsPath = this.findSecretariaTranscriptSegmentsPath(sessionDir);
+    if (!speakersPath || !segmentsPath) {
+      return { ok: false, error: 'no se encontro diarizacion o transcript con timestamps para esta sesion' };
+    }
+
+    let transcriptSegments;
+    try {
+      transcriptSegments = JSON.parse(fs.readFileSync(segmentsPath, 'utf8'));
+    } catch (error) {
+      return { ok: false, error: `no se pudo leer ${segmentsPath}: ${error.message}` };
+    }
+
+    const speakerResult = await this.buildSecretariaSpeakerTranscript(transcriptSegments, speakersPath);
+    if (!speakerResult) {
+      return { ok: false, error: 'no se pudo reconstruir el transcript con hablantes' };
+    }
+
+    fs.mkdirSync(finalDir, { recursive: true });
+    if (speakerResult.hablantesText?.trim()) {
+      fs.writeFileSync(path.join(finalDir, 'transcript-hablantes.txt'), `${speakerResult.hablantesText.trim()}\n`, 'utf8');
+    }
+    if (speakerResult.teamsText?.trim()) {
+      fs.writeFileSync(path.join(finalDir, 'transcript-teams.txt'), `${speakerResult.teamsText.trim()}\n`, 'utf8');
+    }
+
+    const minutaPath = path.join(finalDir, 'minuta.md');
+    if (fs.existsSync(minutaPath) && speakerResult.hablantesText?.trim()) {
+      try {
+        const oldMinuta = fs.readFileSync(minutaPath, 'utf8');
+        const prompt = this.buildActualizarHablantesMinutaPrompt(oldMinuta, speakerResult.hablantesText);
+        const llmResult = await llmService.processTextWithSkill(prompt, 'secretaria', [], null);
+        fs.writeFileSync(minutaPath, `${llmResult.response.trim()}\n`, 'utf8');
+      } catch (error) {
+        logger.warn('No se pudo actualizar minuta.md con los nombres corregidos', { error: error.message, sessionDir });
+      }
+    }
+
+    return { ok: true, finalDir };
+  }
+
+  // Prompt liviano de una sola pasada: sustituye nombres en una minuta ya
+  // generada en vez de regenerarla desde cero (mas barato, y no arriesga
+  // cambiar contenido que no tiene que ver con los hablantes).
+  buildActualizarHablantesMinutaPrompt(oldMinuta, hablantesText) {
+    const transcriptForPrompt = hablantesText.length <= MEETING_FINAL_TRANSCRIPT_CHARS
+      ? hablantesText
+      : hablantesText.slice(0, MEETING_FINAL_TRANSCRIPT_CHARS);
+
+    return [
+      'La siguiente es una minuta ya generada de una reunion, y la transcripcion de esa misma reunion con los nombres reales de los hablantes ya identificados (antes podian aparecer como SPEAKER_00, UNKNOWN_01, PARTICIPANTE 1, etc).',
+      '',
+      'Actualiza la minuta para que use los nombres reales donde corresponda (Participantes, responsables de tareas, etc). No inventes informacion nueva ni cambies nada del contenido salvo los nombres de los hablantes.',
+      '',
+      'MINUTA ACTUAL:',
+      '"""',
+      oldMinuta.trim(),
+      '"""',
+      '',
+      'TRANSCRIPCION CON NOMBRES REALES:',
+      '"""',
+      transcriptForPrompt,
+      '"""',
+      '',
+      'Responde UNICAMENTE con la minuta actualizada completa (mismo formato Markdown), sin comentarios adicionales.'
+    ].join('\n');
+  }
+
+  /**
+   * Comando /actualizarHablantes <ruta a una carpeta de sesion>. Re-matchea
+   * la diarizacion ya existente contra el store de huellas de voz actual
+   * (sin re-clusterizar, ver diarize.py --rematch) y regenera los transcripts
+   * y la minuta de esa sesion con los nombres que se puedan haber resuelto
+   * desde que se proceso por primera vez.
+   */
+  async runActualizarHablantesCommand(rawSessionDirArg) {
+    const sessionDir = path.resolve(rawSessionDirArg);
+    logger.info('Comando /actualizarHablantes recibido', { skill: this.activeSkill, sessionDir });
+
+    const speakersPath = this.findSecretariaSpeakersPath(sessionDir);
+    const audioPath = this.findSecretariaAudioPath(sessionDir);
+    if (!speakersPath || !audioPath) {
+      this.emitCommandResult(
+        `No encuentro diarizacion o audio en "${sessionDir}". Revisa que sea la carpeta de una sesion ya procesada.`,
+        { actualizarHablantesCommand: true, error: true }
+      );
+      return;
+    }
+
+    try {
+      await this.runProcess(this.resolveSttPython(), [
+        DIARIZE_HELPER_PATH,
+        '--rematch', speakersPath,
+        audioPath,
+        '--output', speakersPath
+      ], { timeout: 10 * 60 * 1000, label: 'actualizarHablantes-rematch' });
+
+      // Cualquier cluster que siga sin nombre real tras el rematch se marca
+      // UNKNOWN (con el score que dejo el rematch), para poder retomarlo con
+      // /reconocerVozPendientes sin re-analizar la sesion entera. Los que ya
+      // estaban UNKNOWN de antes no necesitan esto -- diarize.py --rematch
+      // ya les actualizo el score in place.
+      const payload = JSON.parse(fs.readFileSync(speakersPath, 'utf8'));
+      const segments = Array.isArray(payload.segments) ? payload.segments : [];
+      const neverReviewed = new Map();
+      for (const segment of segments) {
+        if (/^SPEAKER_\d+$/.test(segment.speaker) && !neverReviewed.has(segment.speaker)) {
+          neverReviewed.set(segment.speaker, segment.score);
+        }
+      }
+      for (const [label, score] of neverReviewed) {
+        this.markSpeakerAsUnknown(speakersPath, label, score);
+      }
+
+      const refresh = await this.refreshSecretariaSpeakerArtifacts(sessionDir);
+      if (!refresh.ok) {
+        this.emitCommandResult(`Se re-matcheo la sesion pero no se pudieron regenerar los transcripts: ${refresh.error}`, { actualizarHablantesCommand: true, error: true });
+        return;
+      }
+
+      const finalPayload = JSON.parse(fs.readFileSync(speakersPath, 'utf8'));
+      const statusBySpeaker = new Map();
+      for (const segment of finalPayload.segments) {
+        if (!statusBySpeaker.has(segment.speaker)) statusBySpeaker.set(segment.speaker, segment.status || null);
+      }
+      const matchedCount = [...statusBySpeaker.values()].filter((status) => status === 'MATCHED').length;
+      const unknownCount = [...statusBySpeaker.values()].filter((status) => status === 'UNKNOWN').length;
+
+      this.emitCommandResult(
+        `Sesion actualizada: ${matchedCount} hablante(s) identificados, ${unknownCount} siguen sin identificar. Transcripts y minuta regenerados en ${refresh.finalDir}.`,
+        { actualizarHablantesCommand: true }
+      );
+    } catch (error) {
+      const friendlyMessage = `No se pudo actualizar los hablantes de la sesion: ${error.message}`;
+      logger.error('Fallo al ejecutar /actualizarHablantes', { error: error.message, sessionDir });
+      this.broadcastLLMError(friendlyMessage);
+      this.emitCommandResult(friendlyMessage, { actualizarHablantesCommand: true, error: true });
+    }
+  }
+
+  async runReconocerVozCommand(rawSessionDirArg) {
+    logger.info('Comando /reconocerVoz recibido', { skill: this.activeSkill, rawSessionDirArg });
+    await this.startVoiceEnrollmentFlow(path.resolve(rawSessionDirArg));
+  }
+
+  /**
+   * Comando /reconocerVozPendientes <ruta a una carpeta de sesion>. Mismo
+   * flujo que /reconocerVoz, pero acotado a los hablantes que una corrida
+   * anterior ya marco UNKNOWN_XX (ver markSpeakerAsUnknown) -- no vuelve a
+   * ofrecer los que nunca se revisaron ni los que ya tienen nombre.
+   */
+  async runReconocerVozPendientesCommand(rawSessionDirArg) {
+    logger.info('Comando /reconocerVozPendientes recibido', { skill: this.activeSkill, rawSessionDirArg });
+    const sessionDir = path.resolve(rawSessionDirArg);
+    const speakersFullPath = this.findSecretariaSpeakersPath(sessionDir);
+    if (!speakersFullPath) {
+      this.emitCommandResult(
+        `No encuentro una diarizacion en "${sessionDir}". Revisa que sea la carpeta de una sesion ya procesada.`,
+        { reconocerVozCommand: true, error: true }
+      );
+      return;
+    }
+
+    const unknownLabels = this.findUnknownSpeakerLabels(speakersFullPath);
+    if (!unknownLabels.length) {
+      this.emitCommandResult('No hay hablantes pendientes (UNKNOWN) en esta sesion.', { reconocerVozCommand: true });
+      return;
+    }
+
+    await this.startVoiceEnrollmentFlow(sessionDir, { onlySpeakers: unknownLabels });
+  }
+
+  /**
+   * Nucleo compartido de /reconocerVoz y /reconocerVozPendientes: prepara los
+   * clips+embeddings de los hablantes pendientes de una sesion (todos, o solo
+   * los que vienen en onlySpeakers) y arranca el enrolamiento uno-por-uno via
+   * chat (ver resolvePendingVoiceEnrollment).
+   */
+  async startVoiceEnrollmentFlow(sessionDir, { onlySpeakers = null } = {}) {
+    const normalizedSkill = this.getNormalizedSkill();
+    const finalDir = path.join(sessionDir, 'final');
+    const fullAudioPath = this.findSecretariaAudioPath(sessionDir);
+
+    if (!fullAudioPath) {
+      this.emitCommandResult(
+        `No encuentro el audio de "${sessionDir}" (ni final/full-audio.wav ni sourceFilePath en session.json). Revisa que sea la carpeta de una sesion ya procesada.`,
+        { reconocerVozCommand: true, error: true }
+      );
+      return;
+    }
+
+    let speakersFullPath = this.findSecretariaSpeakersPath(sessionDir);
+    try {
+      if (!speakersFullPath) {
+        speakersFullPath = path.join(finalDir, 'speakers-full.json');
+        logger.info('/reconocerVoz: no habia diarizacion, generandola', { speakersFullPath });
+        fs.mkdirSync(finalDir, { recursive: true });
+        await this.runSecretariaDiarization(fullAudioPath, speakersFullPath);
+      }
+
+      const scratchDir = path.join(finalDir, 'voiceprint-enroll');
+      fs.mkdirSync(scratchDir, { recursive: true });
+      const preparePath = path.join(scratchDir, 'prepare.json');
+      const embeddingsCachePath = path.join(scratchDir, 'embeddings.json');
+
+      const listJsonArgs = [
+        ENROLL_SPEAKER_HELPER_PATH,
+        '--list-json', speakersFullPath,
+        '--audio', fullAudioPath,
+        '--out', preparePath,
+        '--embeddings-cache', embeddingsCachePath
+      ];
+      if (onlySpeakers?.length) {
+        listJsonArgs.push('--only-speakers', onlySpeakers.join(','));
+      }
+
+      await this.runProcess(this.resolveSttPython(), listJsonArgs, { timeout: 10 * 60 * 1000, label: 'reconocerVoz-list' });
+
+      const prepared = JSON.parse(fs.readFileSync(preparePath, 'utf8'));
+      const clusters = Array.isArray(prepared.clusters) ? prepared.clusters : [];
+
+      if (!clusters.length) {
+        this.emitCommandResult('No hay hablantes nuevos por identificar en esta sesion.', { reconocerVozCommand: true });
+        return;
+      }
+
+      this.pendingVoiceEnrollment = {
+        clusters,
+        index: 0,
+        embeddingsCachePath,
+        speakersFullPath,
+        sessionDir,
+        skill: normalizedSkill,
+        enrolled: [],
+        skipped: []
+      };
+
+      this.promptCurrentVoiceEnrollmentCluster();
+    } catch (error) {
+      const friendlyMessage = `No se pudo preparar el reconocimiento de voz: ${error.message}`;
+      logger.error('Fallo al ejecutar /reconocerVoz', { error: error.message });
+      this.broadcastLLMError(friendlyMessage);
+      this.emitCommandResult(friendlyMessage, { reconocerVozCommand: true, error: true });
+    }
+  }
+
+  promptCurrentVoiceEnrollmentCluster() {
+    const pending = this.pendingVoiceEnrollment;
+    const cluster = pending.clusters[pending.index];
+
+    try {
+      shell.openPath(cluster.clip);
+    } catch (error) {
+      logger.warn('/reconocerVoz: no se pudo abrir el clip con el reproductor del sistema', { error: error.message, clip: cluster.clip });
+    }
+
+    const message = `Hablante ${cluster.speaker} (${cluster.duration}s, ${cluster.segments} segmentos). ` +
+      `Se abrio el clip en tu reproductor: ${cluster.clip}\n` +
+      `¿Nombre de esta persona? (responde "omitir" para saltarla)`;
+    this.emitCommandResult(message, { reconocerVozCommand: true, awaitingSpeakerName: cluster.speaker });
+  }
+
+  /**
+   * Consume la respuesta del chat para el hablante actual de
+   * this.pendingVoiceEnrollment (ver runReconocerVozCommand), y avanza al
+   * siguiente hasta agotar la cola.
+   */
+  async resolvePendingVoiceEnrollment(text) {
+    const pending = this.pendingVoiceEnrollment;
+    const cluster = pending.clusters[pending.index];
+    const answer = (typeof text === 'string' ? text.trim() : '');
+    const skipped = !answer || /^(omitir|skip)$/i.test(answer);
+
+    if (skipped) {
+      pending.skipped.push(cluster.speaker);
+      // Deja rastro de que ya se reviso este cluster y no se pudo
+      // identificar, para que /reconocerVozPendientes lo pueda retomar
+      // despues sin tener que re-ofrecer toda la sesion (ver Fase 3 del plan).
+      this.markSpeakerAsUnknown(pending.speakersFullPath, cluster.speaker, cluster.score);
+    } else {
+      try {
+        await this.runProcess(this.resolveSttPython(), [
+          ENROLL_SPEAKER_HELPER_PATH,
+          '--commit', pending.embeddingsCachePath,
+          '--speaker-label', cluster.speaker,
+          '--name', answer
+        ], { timeout: 30 * 1000, label: 'reconocerVoz-commit' });
+        // El commit solo actualiza el store global de huellas de voz; la
+        // propia sesion que se esta revisando tambien tiene que reflejar el
+        // nombre en su speakers-full.json para que refreshSecretariaSpeakerArtifacts
+        // (mas abajo) pueda regenerar sus transcripts con el nombre correcto.
+        this.relabelSessionSpeaker(pending.speakersFullPath, cluster.speaker, { speaker: answer, status: 'MATCHED', score: 1 });
+        pending.enrolled.push({ speaker: cluster.speaker, name: answer });
+      } catch (error) {
+        logger.error('/reconocerVoz: fallo al guardar el nombre', { error: error.message, speaker: cluster.speaker });
+        this.emitCommandResult(`No se pudo guardar el nombre para ${cluster.speaker}: ${error.message}`, { reconocerVozCommand: true, error: true });
+      }
+    }
+
+    pending.index += 1;
+    if (pending.index < pending.clusters.length) {
+      this.promptCurrentVoiceEnrollmentCluster();
+      return;
+    }
+
+    const enrolledSummary = pending.enrolled.length
+      ? pending.enrolled.map((e) => `${e.speaker} -> ${e.name}`).join(', ')
+      : 'ninguno';
+    const skippedSummary = pending.skipped.length ? pending.skipped.join(', ') : 'ninguno';
+    const sessionDir = pending.sessionDir;
+    const skill = pending.skill;
+    this.pendingVoiceEnrollment = null;
+
+    const refresh = await this.refreshSecretariaSpeakerArtifacts(sessionDir);
+    if (!refresh.ok) {
+      logger.warn('No se pudieron actualizar los transcripts de la sesion tras el reconocimiento de voz', { error: refresh.error, sessionDir });
+    }
+
+    const remainingUnknown = this.findUnknownSpeakerLabels(pending.speakersFullPath);
+    if (remainingUnknown.length) {
+      this.pendingReconocerVozChain = { sessionDir, skill, unknownLabels: remainingUnknown };
+      this.emitCommandResult(
+        `Reconocimiento de voz terminado. Enrolados: ${enrolledSummary}. Omitidos: ${skippedSummary}.\n` +
+        `Quedaron ${remainingUnknown.length} hablante(s) sin identificar. ¿Quieres intentar ahora con ellos? (si/no)`,
+        { reconocerVozCommand: true, awaitingChainConfirmation: true }
+      );
+      return;
+    }
+
+    this.emitCommandResult(
+      `Reconocimiento de voz terminado. Enrolados: ${enrolledSummary}. Omitidos: ${skippedSummary}.`,
+      { reconocerVozCommand: true }
+    );
+  }
+
+  clearPendingVoiceEnrollment() {
+    this.pendingVoiceEnrollment = null;
+  }
+
+  clearPendingReconocerVozChain() {
+    this.pendingReconocerVozChain = null;
+  }
+
+  /**
+   * Comando /optimiza <ruta a una carpeta de sesion Alt+S/Ctrl+5>, disponible
+   * en modo System Design. Corre el mismo analisis "posterior" que dispara
+   * automaticamente una sesion armada en ese modo (ver runOptimizaAnalysis),
+   * pero manual y sobre cualquier sesion ya terminada.
+   */
+  async runOptimizaCommand(rawSessionDirArg) {
+    const sessionDir = path.resolve(rawSessionDirArg);
+    logger.info('Comando /optimiza recibido', { skill: this.activeSkill, sessionDir });
+
+    const analysis = await this.runOptimizaAnalysis(sessionDir);
+    if (!analysis.ok) {
+      this.emitCommandResult(`No se pudo generar el analisis de optimizacion: ${analysis.error}`, { optimizaCommand: true, error: true });
+      return;
+    }
+    this.emitCommandResult(`Analisis de optimizacion generado en ${analysis.strategyPath}`, { optimizaCommand: true });
   }
 
   logIncidente(descripcion, prompt) {

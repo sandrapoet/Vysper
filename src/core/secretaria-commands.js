@@ -15,4 +15,50 @@ function parseActualizaRagCommand(text) {
   return /^\/actualizaRag$/i.test(normalize(text));
 }
 
-module.exports = { parseActualizaRagCommand };
+/**
+ * Parses "/reconocerVoz <ruta a una carpeta de sesion>", returning the raw
+ * path (quotes stripped) or null if the text doesn't match.
+ */
+function parseReconocerVozCommand(text) {
+  const match = normalize(text).match(/^\/reconocerVoz\s+(.+)$/i);
+  if (!match) return null;
+  return match[1].trim().replace(/^["']|["']$/g, '');
+}
+
+/**
+ * Parses "/optimiza <ruta a una carpeta de sesion>", returning the raw path
+ * (quotes stripped) or null if the text doesn't match.
+ */
+function parseOptimizaCommand(text) {
+  const match = normalize(text).match(/^\/optimiza\s+(.+)$/i);
+  if (!match) return null;
+  return match[1].trim().replace(/^["']|["']$/g, '');
+}
+
+/**
+ * Parses "/reconocerVozPendientes <ruta a una carpeta de sesion>", returning
+ * the raw path (quotes stripped) or null if the text doesn't match.
+ */
+function parseReconocerVozPendientesCommand(text) {
+  const match = normalize(text).match(/^\/reconocerVozPendientes\s+(.+)$/i);
+  if (!match) return null;
+  return match[1].trim().replace(/^["']|["']$/g, '');
+}
+
+/**
+ * Parses "/actualizarHablantes <ruta a una carpeta de sesion>", returning the
+ * raw path (quotes stripped) or null if the text doesn't match.
+ */
+function parseActualizarHablantesCommand(text) {
+  const match = normalize(text).match(/^\/actualizarHablantes\s+(.+)$/i);
+  if (!match) return null;
+  return match[1].trim().replace(/^["']|["']$/g, '');
+}
+
+module.exports = {
+  parseActualizaRagCommand,
+  parseReconocerVozCommand,
+  parseOptimizaCommand,
+  parseReconocerVozPendientesCommand,
+  parseActualizarHablantesCommand
+};

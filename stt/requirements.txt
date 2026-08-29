@@ -19,6 +19,10 @@ torchaudio>=2.1.0
 # Requires a Hugging Face token and accepting the model terms before first use.
 pyannote.audio>=3.3.0
 
+# Required by pyannote/embedding (voiceprint enrollment/matching, see
+# stt/voiceprint_store.py) to load its legacy hydra/omegaconf-based config.
+omegaconf>=2.3.0
+
 # Local text-to-speech for secretaria mode (Ctrl+3)
 piper-tts>=1.2.0
 edge-tts>=7.0.0

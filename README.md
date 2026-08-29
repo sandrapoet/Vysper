@@ -10,7 +10,7 @@ Ctrl+3	Secretaria: arma el siguiente envío del chat para convertirlo a MP3 (Edg
 Ctrl+4	Secretaria: subir archivo de audio para transcribir
 Alt+R	Iniciar / detener grabación; en secretaria graba audio crudo pendiente de transcripción
 Alt+S	Inicia / detiene una sesión de grabación larga (reunión) en segundo plano, desde cualquier modo; al detenerla genera transcripción completa + minuta (resumen) en minutas/
-Alt+O	Arma / desarma el modo optimización para la próxima sesión de Alt+S (fragmentos cortos + preguntas sugeridas), desde cualquier modo
+Alt+O	Arma / desarma el modo optimización para la próxima sesión de Alt+S, desde cualquier modo. Pregunta el modo: Tiempo real (fragmentos cortos + preguntas sugeridas en vivo, sigue bloqueando Alt+S hasta que termina) o Posterior (sin nada en vivo, genera el analisis automaticamente al terminar la sesion, sin bloquear la siguiente)
 Ctrl+5	Secretaria: sube un archivo de audio existente, lo transcribe completo en una sola pasada (como Ctrl+4, guardando en transcripciones/) y genera la minuta final a partir del texto, minimizando llamadas al LLM
 Ctrl+6	Secretaria: abrir un archivo en la ventana shadow translúcida para ver lo que hay debajo
 Ctrl+7	Secretaria: convierte una transcripción de texto existente ("Hablante: texto" por línea, sin timestamps) al formato Microsoft Teams, estimando tiempos por cantidad de palabras
@@ -49,6 +49,10 @@ Comandos de texto (en el chat o por voz):
 - /merge <numero-pr> --repo <owner/repo> [--merge]  Mergea un PR directo vía la API de GitHub, sin aprobar ni tocar Jira, con confirmación explícita en el chat (silia, system-design — ver sección "Modo Silia")
 - /actualizar-jira <texto>  Actualiza descripción/fecha/estado/story points de uno o varios tickets a partir de texto libre, con preview + confirmación antes de escribir (silia, system-design — ver sección "Modo Silia")
 - /script  Ejecuta cerebro/scripts/jira_transition.py (ruta fija, sin argumentos) — ver sección "Modo Silia"
+- /reconocerVoz <ruta-sesion>  Enrola huellas de voz nuevas desde una sesión ya procesada, uno por uno vía chat (solo secretaria — ver sección "Huellas de voz")
+- /reconocerVozPendientes <ruta-sesion>  Retoma solo los hablantes marcados UNKNOWN de una sesión, sin re-ofrecer los ya revisados (solo secretaria)
+- /actualizarHablantes <ruta-sesion>  Re-matchea una sesión vieja contra el store de huellas de voz actual y regenera sus transcripts + minuta (solo secretaria)
+- /optimiza <ruta-sesion>  Genera el análisis de optimización posterior sobre una sesión ya terminada (solo system-design)
 ###
 
 <p align="center">
@@ -299,7 +303,7 @@ Long-form recording with automatic transcription and a final summary ("minuta"),
 - `final/minuta.md` — the AI-generated summary (Resumen ejecutivo, Temas tratados, Decisiones, Tareas, Riesgos, Próximos pasos). If the LLM call fails, this falls back to pointing at the raw transcript instead of losing the session.
 - `session.json` — a manifest with timestamps and status history for the session.
 
-Consolidation time depends on meeting length and segment count (a few seconds to a couple of minutes) — the status moves through "PROCESANDO" → "FINALIZADO". While it's mid-stop (status `stopping`/`processing`/`finalizing`), pressing `Alt+S` again does nothing but report "OCUPADO" — wait for "FINALIZADO" instead of pressing repeatedly.
+Consolidation time depends on meeting length and segment count (a few seconds to a couple of minutes) — the status moves through "PROCESANDO" → "FINALIZADO". **You don't have to wait for it**: as soon as the recording itself stops, `Alt+S` is free again to start a brand-new session right away — transcription/diarization/minuta for the previous one keeps running in the background. The only exception is a session armed with the **real-time** Optimización mode (see below): that one still reports "OCUPADO" until its own strategy document finishes, exactly like before — it's the one case that still shares in-memory state that a second concurrent Optimización session could step on.
 
 **Related environment variables** (add to `.env`, see [Environment File](#environment-file) above):
 ```bash
@@ -318,11 +322,105 @@ VYSPER_PYANNOTE_MODEL=pyannote/speaker-diarization-community-1
 - The minuta is generated from the **full transcript in a single LLM call** whenever it fits under `VYSPER_MEETING_FINAL_TRANSCRIPT_CHARS` (the common case) — matching what you'd get pasting the whole transcript into Gemini yourself. Only if the transcript is longer than that limit does it fall back to summarizing a handful of large text blocks in sequence (each one aware of the previous block's summary) and consolidating them into one minuta — still far fewer LLM calls than one-per-5-minutes.
 - If Gemini's quota/billing limit is hit, the app now remembers that for a cooldown period (`llm.gemini.quotaCooldownMs`, default 10 min) and skips straight to the Anthropic fallback on subsequent calls instead of re-trying (and re-failing) Gemini every time.
 
-The same "OCUPADO" busy-guard applies: if a meeting session (live via `Alt+S`, or from a previous `Ctrl+5` upload) is already running, pressing `Ctrl+5` again just reports it's busy instead of starting a second one.
+Same non-blocking behavior as `Alt+S`: once a `Ctrl+5` run has read the file and kicked off processing, `Ctrl+5`/`Alt+S` are free again immediately — you don't need to wait for that file's transcription/diarization/minuta to finish before starting or uploading another one. "OCUPADO" only shows up while a session is still *actively recording* (or, for `Ctrl+5`, in the brief instant of reading the file) — never while it's just finishing up in the background.
 
 **Resuming after a failure.** If a `Ctrl+5` run gets interrupted (app closed, diarization dependency missing, etc.), the transcription and diarization stages are checkpointed to disk (`transcripts/0001.txt` + `0001.segments.json`, `speakers/0001.json`) so they don't need to be redone. Pick the same audio file again with `Ctrl+5` and, if an unfinished session for that exact file is found under `minutas/`, you'll get a prompt to resume it instead of starting over — transcription and diarization are reused if they already succeeded (diarization is always retried if it was the one that failed, since it's cheap compared to re-transcribing), and the minuta is only regenerated if it wasn't produced yet.
 
 **Already have a plain-text transcript from somewhere else?** `Ctrl/Cmd + 7` (secretaria mode only) opens a file picker for an existing `.txt` transcript in `Hablante: texto` format (one line per turn, no timestamps — e.g. one you already had lying around, not necessarily produced by Vysper) and converts it to the same Microsoft-Teams-style format as `transcript-teams.txt`, saved next to the original as `<archivo>-teams.txt`. Since there's no real audio to time against, timestamps are **estimated** from a ~150-words-per-minute reading pace, accumulated turn by turn from `00:00:00` — treat them as approximate, not exact. Consecutive same-speaker lines are merged into one turn (adding a period between sentences if one is missing); any label that isn't a generic `SPEAKER_NN`/`Hablante desconocido` pattern is treated as an already-identified real name and kept as-is (uppercased).
+
+### Huellas de voz (reconocimiento de hablantes entre sesiones)
+
+Por defecto, la diarización solo distingue *quién habló* dentro de **una**
+sesión (`SPEAKER_00`, `SPEAKER_01`...) — no sabe que el `SPEAKER_00` de la
+reunión de hoy es la misma persona que el `SPEAKER_01` de la de ayer. Las
+huellas de voz cierran esa brecha: una vez que enrolás a alguien, cualquier
+sesión futura (o pasada, con `/actualizarHablantes`) que reconozca su voz le
+pone el nombre real automáticamente, sin volver a depender de que se
+presente en el audio.
+
+El store vive en `~/.Vysper/voiceprints.json` (fuera del repo, nunca se
+commitea) — un embedding de voz por muestra enrolada, por persona. El
+matching (`stt/diarize.py`, similitud coseno contra
+`VYSPER_VOICEPRINT_THRESHOLD`) corre automáticamente en **cada** diarización
+normal de Alt+S/Ctrl+5 — si ya enrolaste a alguien, sus próximas reuniones
+salen con su nombre sin hacer nada más. Un cluster que no matchea nunca se
+marca solo como "desconocido" — eso es una decisión explícita de revisión
+(ver `/reconocerVoz` abajo), nunca del pipeline automático de cada reunión.
+
+**`/reconocerVoz <ruta a una carpeta de sesion>`** (solo secretaria) — el
+enrollment en sí: toma una sesión ya procesada por Alt+S/Ctrl+5 (con
+`final/full-audio.wav` y su diarización), y por cada hablante sin huella
+conocida, abre un clip de audio suyo con el reproductor del sistema y
+pregunta su nombre en el chat, uno a la vez:
+
+```
+/reconocerVoz minutas/reunion-2026-08-13-14-01-41
+```
+```
+Hablante SPEAKER_01 (1835.2s, 587 segmentos). Se abrio el clip en tu reproductor: ...
+¿Nombre de esta persona? (responde "omitir" para saltarla)
+```
+
+Responder con un nombre lo enrola (guarda su huella y actualiza esa sesión
+con el nombre real); responder "omitir" lo marca `UNKNOWN_NN` — revisado,
+pero no identificado, con el mejor score encontrado guardado para
+referencia — en vez de dejarlo como un `SPEAKER_NN` genérico sin rastro. Al
+terminar toda la cola, la sesión se refresca automáticamente
+(`transcript-hablantes.txt`/`transcript-teams.txt` regenerados, `minuta.md`
+actualizado si existía) y, si quedó algún `UNKNOWN`, el chat pregunta si
+querés intentar con ellos ya mismo — respondé "si" y continúa directo sin
+tener que escribir otro comando.
+
+**`/reconocerVozPendientes <ruta a una carpeta de sesion>`** (solo
+secretaria) — mismo flujo, pero acotado a los hablantes que una corrida
+anterior ya dejó marcados `UNKNOWN`, sin volver a ofrecer los que nunca se
+revisaron ni los que ya tienen nombre. Útil para retomar más tarde (por
+ejemplo, después de enrolar a más gente) sin repasar toda la sesión de
+nuevo.
+
+**`/actualizarHablantes <ruta a una carpeta de sesion>`** (solo secretaria)
+— para sesiones **viejas**: re-corre solo el matching contra el store actual
+(sin re-clusterizar, la parte lenta de diarizar) y regenera los transcripts
++ minuta de esa sesión con cualquier nombre que se haya podido resolver
+desde que se procesó por primera vez.
+
+```
+/actualizarHablantes minutas/reunion-2026-07-20-09-00-00
+```
+
+**Configuración** (`.env`):
+```bash
+VYSPER_VOICEPRINT_MODEL=pyannote/embedding    # requiere aceptar sus terminos en Hugging Face, igual que el modelo de diarizacion
+VYSPER_VOICEPRINT_THRESHOLD=0.75              # similitud coseno minima para considerar un match
+VYSPER_VOICEPRINTS_PATH=~/.Vysper/voiceprints.json
+```
+
+### Modo Optimización (`Alt+O`) — tiempo real vs. posterior
+
+`Alt+O` arma el análisis de optimización para la **próxima** sesión de
+`Alt+S` — hay que armarlo antes de empezar a grabar, porque el modo tiempo
+real necesita fragmentos cortos desde el arranque (no se puede activar
+después). Al presionarlo (sin una sesión ya armada), pregunta el modo:
+
+- **Tiempo real**: sugiere preguntas durante la reunión, en fragmentos de
+  `VYSPER_OPTIMIZACION_SEGMENT_SEC`s (default `15`) y con
+  `VYSPER_OPTIMIZACION_SILENCE_SEC`s de silencio (default `6`) como gatillo —
+  igual que siempre. Guarda su resumen/sugerencias en memoria compartida
+  (no por sesión), así que esta es la única sesión que **sigue bloqueando**
+  `Alt+S` hasta que termina de generar su documento final — ver la nota en
+  [Meeting Recording & Auto-Summary](#meeting-recording--auto-summary-any-skill).
+- **Posterior**: no interviene en vivo — usa el fragmento normal, y al
+  terminar la sesión genera automáticamente `final/optimizacion-estrategia.md`
+  a partir de la transcripción ya terminada, sin pedir nada más y sin
+  bloquear la siguiente sesión.
+
+**`/optimiza <ruta a una carpeta de sesion>`** (solo **system-design**) —
+corre manualmente el mismo análisis "posterior" sobre cualquier sesión ya
+terminada (con o sin Optimización armada en su momento):
+
+```
+/optimiza minutas/reunion-2026-08-13-14-01-41
+```
 
 ## Modo Silia (líder de proyecto interino)
 
