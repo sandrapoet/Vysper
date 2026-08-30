@@ -455,7 +455,7 @@ class OCRService {
 
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
       try {
-        return await this.captureAndCropDisplay(display, cropRect);
+        return await this.captureSettledCroppedDisplay(display, cropRect);
       } catch (error) {
         lastError = error;
         const retryableMessages = [
@@ -479,6 +479,38 @@ class OCRService {
     }
 
     throw lastError;
+  }
+
+  // desktopCapturer only grabs whatever pixels are on screen at the instant it's called; if the
+  // target page is still mid-render (e.g. a lazy-loaded quiz option) the crop can come out cut off.
+  // Re-capture a couple of times a short interval apart and only accept the frame once two
+  // consecutive captures are pixel-identical, so a still-painting page gets waited out instead of
+  // frozen mid-paint.
+  async captureSettledCroppedDisplay(display, cropRect, { settleIntervalMs = 150, maxSettleChecks = 4 } = {}) {
+    let previous = await this.captureAndCropDisplay(display, cropRect);
+
+    for (let i = 0; i < maxSettleChecks; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, settleIntervalMs));
+      const next = await this.captureAndCropDisplay(display, cropRect);
+
+      if (this.imagesMatch(previous, next)) {
+        return next;
+      }
+
+      logger.debug('Regional capture still changing, waiting for render to settle', {
+        attempt: i + 1,
+        maxSettleChecks
+      });
+      previous = next;
+    }
+
+    return previous;
+  }
+
+  imagesMatch(imageA, imageB) {
+    const bufferA = imageA.toPNG();
+    const bufferB = imageB.toPNG();
+    return bufferA.length === bufferB.length && bufferA.equals(bufferB);
   }
 
   async captureAndCropDisplay(display, cropRect) {
