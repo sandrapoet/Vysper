@@ -13,6 +13,7 @@ class LLMService {
     this.requestCount = 0;
     this.errorCount = 0;
     this.primaryQuotaExhaustedUntil = 0;
+    this.secondaryQuotaExhaustedUntil = 0;
 
     this.initializeClient();
   }
@@ -609,10 +610,31 @@ class LLMService {
     };
   }
 
+  // Claude (Anthropic) es el proveedor PRINCIPAL en toda la app -- Gemini
+  // queda como respaldo. Se intenta primero acá (si hay clave configurada y
+  // no esta en cooldown por un fallo reciente de cuota/disponibilidad); si
+  // falla, el resto del metodo (el flujo historico con Gemini de primero)
+  // corre igual que antes como red de respaldo. claudeAttempted evita que,
+  // si Gemini tambien falla despues, el codigo de mas abajo intente volver
+  // a Claude de nuevo (ya sabemos que fallo en esta misma llamada).
   async processTextWithSkill(text, activeSkill, sessionMemory = [], programmingLanguage = null) {
+    let claudeAttempted = false;
+    if (this.hasSecondaryTextModel() && !this.isSecondaryQuotaExhausted()) {
+      claudeAttempted = true;
+      try {
+        return await this.processTextWithSecondaryTextModel(text, activeSkill, sessionMemory, programmingLanguage);
+      } catch (claudeError) {
+        this.markSecondaryQuotaExhausted(claudeError);
+        logger.warn('Claude (proveedor principal) fallo, probando Gemini como respaldo', {
+          error: claudeError.message,
+          activeSkill
+        });
+      }
+    }
+
     if (!this.isInitialized) {
       const initError = new Error('LLM service not initialized. Check Gemini API key configuration.');
-      if (this.shouldFallbackToSecondaryTextModel(initError)) {
+      if (!claudeAttempted && this.shouldFallbackToSecondaryTextModel(initError)) {
         return this.processTextWithSecondaryTextFallback(
           text,
           activeSkill,
@@ -624,7 +646,7 @@ class LLMService {
       throw initError;
     }
 
-    if (this.isPrimaryQuotaExhausted() && this.hasSecondaryTextModel()) {
+    if (!claudeAttempted && this.isPrimaryQuotaExhausted() && this.hasSecondaryTextModel()) {
       return this.processTextWithSecondaryTextFallback(
         text,
         activeSkill,
@@ -724,7 +746,7 @@ class LLMService {
         requestId: this.requestCount
       });
 
-      if (this.shouldFallbackToSecondaryTextModel(error)) {
+      if (!claudeAttempted && this.shouldFallbackToSecondaryTextModel(error)) {
         this.markPrimaryQuotaExhausted(error);
         return this.processTextWithSecondaryTextFallback(text, activeSkill, sessionMemory, programmingLanguage, error, startTime);
       }
@@ -742,7 +764,14 @@ class LLMService {
       return this.processTextWithSkill(text, activeSkill, sessionMemory, programmingLanguage);
     }
 
-    return this.processTextWithSecondaryTextModel(text, activeSkill, sessionMemory, programmingLanguage);
+    try {
+      return await this.processTextWithSecondaryTextModel(text, activeSkill, sessionMemory, programmingLanguage);
+    } catch (claudeError) {
+      this.markSecondaryQuotaExhausted(claudeError);
+      logger.warn('Claude (coding, principal) fallo, probando Gemini como respaldo', { error: claudeError.message });
+      if (!this.isInitialized) throw claudeError;
+      return this.processTextWithSkill(text, activeSkill, sessionMemory, programmingLanguage);
+    }
   }
 
   async processTextWithSecondaryTextModel(text, activeSkill, sessionMemory = [], programmingLanguage = null, options = {}) {
@@ -866,6 +895,86 @@ class LLMService {
     return this.getSecondaryTextModelApiKeys().length > 0;
   }
 
+  // Claude (Anthropic) tambien es el proveedor principal para funcionalidad
+  // multimodal (analisis de imagenes) -- este es el equivalente a
+  // processTextWithSecondaryTextModel pero con contenido mixto texto+imagen.
+  // Reutiliza executeSecondaryTextRequest tal cual: la Messages API de
+  // Anthropic acepta "content" como string O como array de content blocks,
+  // asi que basta con pasarle el array en vez del string de siempre.
+  async processImageWithSecondaryModel(imageBuffers, activeSkill, promptText, programmingLanguage = null, options = {}) {
+    if (!this.hasSecondaryTextModel()) {
+      throw new Error('Secondary text model is not configured. Set ANTHROPIC_API_KEY or ANTHROPIC_FALLBACK_API_KEY in .env.');
+    }
+
+    const buffers = (Array.isArray(imageBuffers) ? imageBuffers : [imageBuffers])
+      .filter((buffer) => Buffer.isBuffer(buffer) && buffer.length > 0)
+      .slice(-12);
+    if (!buffers.length) {
+      throw new Error('Invalid image buffer(s) provided for multimodal processing');
+    }
+
+    const startTime = Date.now();
+    this.requestCount++;
+    const apiKeys = this.getSecondaryTextModelApiKeys();
+    let lastAccountError = null;
+
+    const userMessageText = this.buildSecondaryTextUserMessage(promptText, activeSkill, options);
+    const content = [
+      { type: 'text', text: userMessageText },
+      ...buffers.map((buffer) => ({
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: buffer.toString('base64') }
+      }))
+    ];
+
+    for (let accountIndex = 0; accountIndex < apiKeys.length; accountIndex++) {
+      const accountLabel = accountIndex === 0 ? 'primary_anthropic' : 'fallback_anthropic';
+      try {
+        logger.info('Processing image with secondary (Claude) model', {
+          activeSkill,
+          imageCount: buffers.length,
+          accountLabel,
+          requestId: this.requestCount
+        });
+
+        const response = await this.executeSecondaryTextRequest(content, activeSkill, programmingLanguage, apiKeys[accountIndex], options);
+
+        return {
+          response,
+          metadata: {
+            skill: activeSkill,
+            programmingLanguage,
+            imageCount: buffers.length,
+            processingTime: Date.now() - startTime,
+            requestId: this.requestCount,
+            usedFallback: false,
+            secondaryModelUsed: true,
+            isImageResponse: true,
+            secondaryAccountIndex: accountIndex + 1,
+            secondaryFallbackAccountUsed: accountIndex > 0
+          }
+        };
+      } catch (error) {
+        lastAccountError = error;
+        const hasNextAccount = accountIndex < apiKeys.length - 1;
+        logger.error('Secondary image processing failed', {
+          error: error.message,
+          activeSkill,
+          accountLabel,
+          retryingWithFallbackAccount: hasNextAccount,
+          requestId: this.requestCount
+        });
+        if (!hasNextAccount) {
+          this.errorCount++;
+          throw error;
+        }
+      }
+    }
+
+    this.errorCount++;
+    throw lastAccountError || new Error('Secondary image model failed for all configured Anthropic accounts.');
+  }
+
   async processTextWithSecondaryCodingFallback(text, activeSkill, sessionMemory, programmingLanguage, primaryError, startTime = Date.now()) {
     return this.processTextWithSecondaryTextFallback(text, activeSkill, sessionMemory, programmingLanguage, primaryError, startTime);
   }
@@ -908,13 +1017,32 @@ class LLMService {
   async processProgrammingFinalization(text, programmingLanguage = null, imageBuffers = []) {
     const hasImages = Array.isArray(imageBuffers) && imageBuffers.some((buffer) => Buffer.isBuffer(buffer) && buffer.length > 0);
 
+    let claudeAttempted = false;
+    if (this.hasSecondaryTextModel() && !this.isSecondaryQuotaExhausted()) {
+      claudeAttempted = true;
+      try {
+        if (hasImages) {
+          const result = await this.processImageWithSecondaryModel(imageBuffers, 'programming', text, programmingLanguage, { isFinalizationResponse: true });
+          result.metadata.isFinalizationResponse = true;
+          return result;
+        }
+        return await this.processTextWithSecondaryTextModel(text, 'programming', [], programmingLanguage);
+      } catch (claudeError) {
+        this.markSecondaryQuotaExhausted(claudeError);
+        logger.warn('Claude (finalizacion programming, principal) fallo, probando Gemini como respaldo', {
+          error: claudeError.message,
+          hasImages
+        });
+      }
+    }
+
     if (!this.isInitialized) {
       if (hasImages) {
-        throw new Error('No se puede finalizar con imagenes porque Gemini no esta disponible. Activa Gemini o usa captura con OCR.');
+        throw new Error('No se puede finalizar con imagenes: ni Claude ni Gemini estan disponibles. Activa alguno de los dos o usa captura con OCR.');
       }
 
       const initError = new Error('LLM service not initialized. Check Gemini API key configuration.');
-      if (this.hasSecondaryTextModel()) {
+      if (!claudeAttempted && this.hasSecondaryTextModel()) {
         return this.processTextWithSecondaryCodingFallback(
           text,
           'programming',
@@ -992,9 +1120,15 @@ class LLMService {
         requestId: this.requestCount
       });
 
-      if (this.isPrimaryQuotaOrBillingError(error)) {
+      if (claudeAttempted && hasImages) {
+        // Ya se intento Claude (soporta imagenes) y ahora Gemini tambien
+        // fallo: no queda nada mas que intentar.
+        throw error;
+      }
+
+      if (!claudeAttempted && this.isPrimaryQuotaOrBillingError(error)) {
         if (hasImages) {
-          throw new Error('Gemini no pudo procesar la finalizacion multimodal y el fallback no soporta imagenes. Reintenta con Gemini activo o usa OCR para enviar texto.');
+          throw new Error('Gemini no pudo procesar la finalizacion multimodal y Claude no esta configurado. Configura ANTHROPIC_API_KEY o usa OCR para enviar texto.');
         }
 
         return this.processTextWithSecondaryCodingFallback(
@@ -1023,9 +1157,24 @@ class LLMService {
   async analyzeDumpingDeCerebro(dumpingText) {
     const systemInstruction = this.buildDumpingAnalysisSystemInstruction();
 
+    let claudeAttempted = false;
+    if (this.hasSecondaryTextModel() && !this.isSecondaryQuotaExhausted()) {
+      claudeAttempted = true;
+      try {
+        return await this.processTextWithSecondaryTextModel(dumpingText, 'dumping-analysis', [], null, {
+          customSystemInstruction: systemInstruction
+        });
+      } catch (claudeError) {
+        this.markSecondaryQuotaExhausted(claudeError);
+        logger.warn('Claude (dumping-analysis, principal) fallo, probando Gemini como respaldo', {
+          error: claudeError.message
+        });
+      }
+    }
+
     if (!this.isInitialized) {
       const initError = new Error('LLM service not initialized. Check Gemini API key configuration.');
-      if (this.hasSecondaryTextModel()) {
+      if (!claudeAttempted && this.hasSecondaryTextModel()) {
         return this.processTextWithSecondaryTextModel(dumpingText, 'dumping-analysis', [], null, {
           customSystemInstruction: systemInstruction
         });
@@ -1080,7 +1229,7 @@ class LLMService {
         requestId: this.requestCount
       });
 
-      if (this.isPrimaryQuotaOrBillingError(error) && this.hasSecondaryTextModel()) {
+      if (!claudeAttempted && this.isPrimaryQuotaOrBillingError(error) && this.hasSecondaryTextModel()) {
         return this.processTextWithSecondaryTextModel(dumpingText, 'dumping-analysis', [], null, {
           customSystemInstruction: systemInstruction
         });
@@ -1176,6 +1325,30 @@ Nota: los tickets/nombres de los ejemplos de arriba son ilustrativos del formato
   }
 
   async processSkillFinalization(text, activeSkill, sessionMemory = [], programmingLanguage = null, imageBuffers = []) {
+    const hasImages = Array.isArray(imageBuffers) && imageBuffers.some((buffer) => Buffer.isBuffer(buffer) && buffer.length > 0);
+
+    let claudeAttempted = false;
+    if (this.hasSecondaryTextModel() && !this.isSecondaryQuotaExhausted()) {
+      claudeAttempted = true;
+      try {
+        if (hasImages) {
+          const result = await this.processImageWithSecondaryModel(imageBuffers, activeSkill, text, programmingLanguage);
+          result.metadata.isFinalizationResponse = true;
+          return result;
+        }
+        const result = await this.processTextWithSecondaryTextModel(text, activeSkill, sessionMemory, programmingLanguage);
+        result.metadata.isFinalizationResponse = true;
+        return result;
+      } catch (claudeError) {
+        this.markSecondaryQuotaExhausted(claudeError);
+        logger.warn('Claude (skill finalization, principal) fallo, probando Gemini como respaldo', {
+          error: claudeError.message,
+          activeSkill,
+          hasImages
+        });
+      }
+    }
+
     if (!this.isInitialized) {
       throw new Error('LLM service not initialized. Check Gemini API key configuration.');
     }
@@ -1240,12 +1413,26 @@ Nota: los tickets/nombres de los ejemplos de arriba son ilustrativos del formato
   }
 
   async processImageWithSkill(imageBuffer, activeSkill, sessionMemory = [], programmingLanguage = null, promptText = 'Analiza la imagen adjunta y responde segun el modo activo.') {
-    if (!this.isInitialized) {
-      throw new Error('LLM service not initialized. Check Gemini API key configuration.');
-    }
-
     if (!Buffer.isBuffer(imageBuffer) || imageBuffer.length === 0) {
       throw new Error('Invalid image buffer provided for multimodal processing');
+    }
+
+    let claudeAttempted = false;
+    if (this.hasSecondaryTextModel() && !this.isSecondaryQuotaExhausted()) {
+      claudeAttempted = true;
+      try {
+        return await this.processImageWithSecondaryModel([imageBuffer], activeSkill, promptText, programmingLanguage);
+      } catch (claudeError) {
+        this.markSecondaryQuotaExhausted(claudeError);
+        logger.warn('Claude (imagen, principal) fallo, probando Gemini como respaldo', {
+          error: claudeError.message,
+          activeSkill
+        });
+      }
+    }
+
+    if (!this.isInitialized) {
+      throw new Error('LLM service not initialized. Check Gemini API key configuration.');
     }
 
     const startTime = Date.now();
@@ -1330,9 +1517,25 @@ Nota: los tickets/nombres de los ejemplos de arriba son ilustrativos del formato
   }
 
   async processTranscriptionWithIntelligentResponse(text, activeSkill, sessionMemory = [], programmingLanguage = null) {
+    let claudeAttempted = false;
+    if (this.hasSecondaryTextModel() && !this.isSecondaryQuotaExhausted()) {
+      claudeAttempted = true;
+      try {
+        return await this.processTextWithSecondaryTextModel(text, activeSkill, sessionMemory, programmingLanguage, {
+          isTranscriptionResponse: true
+        });
+      } catch (claudeError) {
+        this.markSecondaryQuotaExhausted(claudeError);
+        logger.warn('Claude (transcripcion, principal) fallo, probando Gemini como respaldo', {
+          error: claudeError.message,
+          activeSkill
+        });
+      }
+    }
+
     if (!this.isInitialized) {
       const initError = new Error('LLM service not initialized. Check Gemini API key configuration.');
-      if (this.shouldFallbackToSecondaryTextModel(initError)) {
+      if (!claudeAttempted && this.shouldFallbackToSecondaryTextModel(initError)) {
         return this.processTextWithSecondaryTextFallback(
           text,
           activeSkill,
@@ -1346,7 +1549,7 @@ Nota: los tickets/nombres de los ejemplos de arriba son ilustrativos del formato
       throw initError;
     }
 
-    if (this.isPrimaryQuotaExhausted() && this.hasSecondaryTextModel()) {
+    if (!claudeAttempted && this.isPrimaryQuotaExhausted() && this.hasSecondaryTextModel()) {
       return this.processTextWithSecondaryTextFallback(
         text,
         activeSkill,
@@ -1451,7 +1654,7 @@ Nota: los tickets/nombres de los ejemplos de arriba son ilustrativos del formato
         requestId: this.requestCount
       });
 
-      if (this.shouldFallbackToSecondaryTextModel(error)) {
+      if (!claudeAttempted && this.shouldFallbackToSecondaryTextModel(error)) {
         this.markPrimaryQuotaExhausted(error);
         return this.processTextWithSecondaryTextFallback(
           text,
@@ -1880,6 +2083,52 @@ Remember: the transcript block is the source of truth for the user's current req
       message.includes('resource_exhausted') ||
       message.includes('429') ||
       message.includes('403');
+  }
+
+  // Equivalentes a isPrimaryQuotaOrBillingError/markPrimaryQuotaExhausted/
+  // isPrimaryQuotaExhausted, pero para Claude (ahora el proveedor principal
+  // -- ver processTextWithSkill y el resto de los metodos publicos). Se
+  // usan para no reintentar Claude en cada llamada durante un cooldown
+  // conocido (mismo motivo por el que ya existia el de Gemini: evitar
+  // pagar la latencia de un fallo repetido cuando ya se sabe que el
+  // proveedor esta caido/sin cupo).
+  isSecondaryQuotaOrBillingError(error) {
+    const message = String(error?.message || '').toLowerCase();
+    return message.includes('quota') ||
+      message.includes('billing') ||
+      message.includes('credit balance') ||
+      message.includes('insufficient') ||
+      message.includes('rate_limit') ||
+      message.includes('429') ||
+      message.includes('403');
+  }
+
+  isSecondaryAvailabilityError(error) {
+    const message = String(error?.message || '').toLowerCase();
+    return message.includes('anthropic') ||
+      message.includes('overloaded') ||
+      message.includes('not configured') ||
+      message.includes('fetch failed') ||
+      message.includes('timeout') ||
+      message.includes('econnreset') ||
+      message.includes('socket hang up') ||
+      message.includes('empty content') ||
+      message.includes('failed for all configured');
+  }
+
+  markSecondaryQuotaExhausted(error) {
+    if (!this.isSecondaryQuotaOrBillingError(error)) return;
+
+    const cooldownMs = config.get('llm.anthropic.quotaCooldownMs') || 10 * 60 * 1000;
+    this.secondaryQuotaExhaustedUntil = Date.now() + cooldownMs;
+    logger.warn('Claude marcado como agotado en cuota; se salta como principal durante el cooldown', {
+      cooldownMs,
+      resumesAt: new Date(this.secondaryQuotaExhaustedUntil).toISOString()
+    });
+  }
+
+  isSecondaryQuotaExhausted() {
+    return this.secondaryQuotaExhaustedUntil > Date.now();
   }
 
   buildSecondaryCodingSystemInstruction(activeSkill, programmingLanguage) {

@@ -196,6 +196,32 @@ VYSPER_STT_PREROLL_MS=900
 VYSPER_STT_WARM_PREROLL_MS=1500
 ```
 
+### LLM provider priority (Claude primary, Gemini fallback)
+
+Every LLM-backed feature in the app — chat/skill responses, code
+finalization, image/vision analysis, transcription responses, `/hoy`'s
+dumping analysis — tries **Claude (Anthropic) first**, automatically
+falling back to **Gemini** if Claude is unavailable, over quota/billing, or
+not configured at all (`src/services/llm.service.js`). If neither is
+configured, the affected call throws a clear "not configured" error instead
+of failing silently.
+
+- **Cooldowns, in both directions**: after a quota/billing-style failure
+  from either provider, that provider is skipped for subsequent calls
+  during a cooldown window (`ANTHROPIC_QUOTA_COOLDOWN_MS`/
+  `GEMINI_QUOTA_COOLDOWN_MS`, default 10 min each) instead of retrying (and
+  re-failing) it on every single request — this is what protects you from
+  hammering a provider that's already hit its monthly spending cap.
+- **Vision/images too**: image analysis (OCR-free screenshot capture,
+  finalization with attached images) also tries Claude first — Vysper
+  builds the multimodal request directly against Anthropic's Messages API
+  (base64 image content blocks), not just for text.
+- **Multiple Anthropic accounts**: if `ANTHROPIC_API_KEY` fails, Vysper
+  tries `ANTHROPIC_FALLBACK_API_KEY` and `ANTHROPIC_SECONDARY_API_KEY` (in
+  that order) before giving up on Claude and moving to Gemini.
+- This priority is currently hardcoded (not a config toggle) — swapping it
+  back would mean editing `src/services/llm.service.js` directly.
+
 ## ⌨️ Essential Shortcuts
 
 ### Core Functions
@@ -319,8 +345,8 @@ VYSPER_PYANNOTE_MODEL=pyannote/speaker-diarization-community-1
 **Already have a recording?** `Ctrl/Cmd + 5` (secretaria mode only) opens the same file picker as `Ctrl+4` and accepts the same formats (wav, mp3, m4a, aac, flac, ogg, opus, webm, mp4, mpeg), but instead of leaving you to generate the summary by hand, it produces the same `final/transcript-full.txt`, `final/transcript-hablantes.txt`, `final/transcript-teams.txt`, `final/minuta.md`, and `session.json` as `Alt+S`, under a new `minutas/reunion-<timestamp>/` folder — with a cheaper pipeline built specifically for a file that already exists in full (unlike `Alt+S`, which must process incrementally because it's still recording):
 - The whole file is transcribed in **one local Whisper pass** (same as `Ctrl+4` — no LLM cost at all) and also saved to `transcripciones/`, exactly like `Ctrl+4` does.
 - Speaker diarization (if `VYSPER_PYANNOTE_TOKEN` is configured) also runs **once** on the full file instead of per-chunk, which is both cheaper and more accurate since it has the whole conversation for context — and, unlike `Alt+S`'s per-segment diarization, speaker labels stay consistent across the whole file since there's only one diarization pass.
-- The minuta is generated from the **full transcript in a single LLM call** whenever it fits under `VYSPER_MEETING_FINAL_TRANSCRIPT_CHARS` (the common case) — matching what you'd get pasting the whole transcript into Gemini yourself. Only if the transcript is longer than that limit does it fall back to summarizing a handful of large text blocks in sequence (each one aware of the previous block's summary) and consolidating them into one minuta — still far fewer LLM calls than one-per-5-minutes.
-- If Gemini's quota/billing limit is hit, the app now remembers that for a cooldown period (`llm.gemini.quotaCooldownMs`, default 10 min) and skips straight to the Anthropic fallback on subsequent calls instead of re-trying (and re-failing) Gemini every time.
+- The minuta is generated from the **full transcript in a single LLM call** whenever it fits under `VYSPER_MEETING_FINAL_TRANSCRIPT_CHARS` (the common case) — matching what you'd get pasting the whole transcript into Claude yourself. Only if the transcript is longer than that limit does it fall back to summarizing a handful of large text blocks in sequence (each one aware of the previous block's summary) and consolidating them into one minuta — still far fewer LLM calls than one-per-5-minutes.
+- Claude (Anthropic) is the primary LLM for the minuta; if it's unavailable or over quota/billing, Vysper falls back to Gemini automatically (see [LLM provider priority](#llm-provider-priority-claude-primary-gemini-fallback) below) — no separate config needed for this specific flow.
 
 Same non-blocking behavior as `Alt+S`: once a `Ctrl+5` run has read the file and kicked off processing, `Ctrl+5`/`Alt+S` are free again immediately — you don't need to wait for that file's transcription/diarization/minuta to finish before starting or uploading another one. "OCUPADO" only shows up while a session is still *actively recording* (or, for `Ctrl+5`, in the brief instant of reading the file) — never while it's just finishing up in the background.
 
@@ -937,12 +963,11 @@ Jefe de Proyecto Técnico (`llmService.analyzeDumpingDeCerebro`, en
 secciones: **Tablero de Acción Inmediata** (qué hacer hoy, priorizado),
 **Plan de Desbloqueo Semanal** (cómo resolver los bloqueadores
 estructurales) y **Preguntas Pendientes** (para la próxima daily). Ese plan
-—no el markdown crudo— es lo que se muestra en el chat. Usa Gemini con
-fallback automático a Claude/Anthropic si Gemini falla por cuota/billing
-(mismo mecanismo que el resto de Vysper — ver `ANTHROPIC_API_KEY` /
-`ANTHROPIC_FALLBACK_API_KEY` en `env.example`); si el paso de análisis
-falla por completo, se muestra el dumping crudo con una advertencia en vez
-de perder la corrida.
+—no el markdown crudo— es lo que se muestra en el chat. Usa Claude con
+fallback automático a Gemini si Claude falla por cuota/billing/disponibilidad
+(mismo mecanismo que el resto de Vysper — ver [LLM provider priority](#llm-provider-priority-claude-primary-gemini-fallback)
+más abajo); si el paso de análisis falla por completo, se muestra el
+dumping crudo con una advertencia en vez de perder la corrida.
 
 **Ejemplos:**
 ```

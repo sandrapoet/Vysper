@@ -56,7 +56,8 @@ class ConfigManager {
           behavioralMaxTokens: Number(process.env.ANTHROPIC_BEHAVIORAL_MAX_TOKENS || 900),
           transcriptionMaxTokens: Number(process.env.ANTHROPIC_TRANSCRIPTION_MAX_TOKENS || 1400),
           maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES || 3),
-          timeout: Number(process.env.ANTHROPIC_TIMEOUT || 120000)
+          timeout: Number(process.env.ANTHROPIC_TIMEOUT || 120000),
+          quotaCooldownMs: Number(process.env.ANTHROPIC_QUOTA_COOLDOWN_MS || 10 * 60 * 1000)
         }
       },
 
