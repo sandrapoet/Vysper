@@ -448,6 +448,201 @@ terminada (con o sin Optimización armada en su momento):
 /optimiza minutas/reunion-2026-08-13-14-01-41
 ```
 
+## Acceso remoto por Tailscale (audio desde el celular)
+
+`vys.sh --server` habilita un servidor HTTP embebido en la propia app
+Electron (`stt/http_server.js`) para subir audio desde el celular (por
+ejemplo notas de voz de WhatsApp en formato `.opus`) y procesarlo con el
+mismo pipeline que usan Ctrl+4 (transcribir), Ctrl+5 (minuta) y Alt+9
+(síntesis de optimización) — no hay un servicio Python separado ni se corre
+`setup_vysper_stt.sh` por archivo: la lógica de transcripción/diarización/
+LLM ya vive dentro de la app y este servidor la llama directamente.
+
+Solo escucha en `0.0.0.0:8080`, pensado para ser alcanzado exclusivamente a
+través de la IP de Tailscale del equipo (nunca expuesto a internet).
+
+### Configuración
+
+En `Vysper/.env`:
+
+```bash
+VYSPER_HTTP_USER=tu_usuario
+VYSPER_HTTP_PASSWORD=una_contrasena_fuerte
+# Opcionales (tienen default):
+# VYSPER_HTTP_PORT=8080
+# VYSPER_HTTP_UPLOAD_DIR=/tmp/vysper_audio
+# VYSPER_HTTP_LOG=/media/san/Miscosas6/log/vysper_http.log
+# VYSPER_HTTP_MAX_MB=200
+```
+
+Requisitos previos (una sola vez):
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up          # abre el link que imprime y autentica desde el navegador
+tailscale ip -4             # esta es la IP fija del equipo dentro del tailnet
+```
+
+Instala Tailscale también en el celular (misma cuenta) para poder alcanzar
+esa IP desde la red móvil sin abrir nada a internet. Para que la IP nunca
+cambie, desactiva "key expiry" para este equipo en
+https://login.tailscale.com/admin/machines.
+
+### Arrancar
+
+```bash
+/home/san/vys.sh --server
+```
+
+Si Tailscale no está instalado o no está activo, se muestra una advertencia
+y Vysper arranca igual en modo local (sin el servidor HTTP). Si el puerto
+8080 ya está ocupado, la app sigue funcionando normalmente y el error queda
+en el log (`VYSPER_HTTP_LOG`).
+
+### Uso (ejemplos con curl)
+
+Subir un archivo de audio (solo se aceptan `.opus`, `.ogg`, `.m4a`, `.wav`;
+límite 200MB por defecto):
+
+```bash
+curl -u tu_usuario:una_contrasena_fuerte \
+  -F "archivo=@nota-de-voz.opus" \
+  http://100.x.y.z:8080/upload
+# {"ok":true,"archivo":"1735599999999-nota-de-voz.opus","size":48213}
+```
+
+Usa el `archivo` que devuelve `/upload` (el servidor le agrega un prefijo
+para evitar colisiones) para pedir que se procese:
+
+```bash
+# Transcripción simple
+curl -u tu_usuario:una_contrasena_fuerte \
+  -H "Content-Type: application/json" \
+  -d '{"comando": "transcribir", "archivo": "1735599999999-nota-de-voz.opus"}' \
+  http://100.x.y.z:8080/process
+
+# Minuta (transcribe + diariza + genera minuta.md, igual que Ctrl+5)
+curl -u tu_usuario:una_contrasena_fuerte \
+  -H "Content-Type: application/json" \
+  -d '{"comando": "minuta", "archivo": "1735599999999-nota-de-voz.opus"}' \
+  http://100.x.y.z:8080/process
+
+# Optimizacion (sintesis de estrategia sobre el audio completo, igual que Alt+9)
+curl -u tu_usuario:una_contrasena_fuerte \
+  -H "Content-Type: application/json" \
+  -d '{"comando": "optimizar", "archivo": "1735599999999-nota-de-voz.opus"}' \
+  http://100.x.y.z:8080/process
+```
+
+La respuesta es JSON: `{"ok": true, "resultado": "<texto>", ...}` en éxito,
+o `{"ok": false, "error": "..."}` con status 400/401/413/500 según el caso
+(archivo/comando inválido, credenciales inválidas, archivo demasiado grande,
+o fallo durante la transcripción/generación).
+
+### Notas
+
+- El comando `optimizar` no corresponde 1:1 a la entrevista en vivo de Alt+O
+  (que vigila silencios en tiempo real): sobre un audio ya grabado corre la
+  misma síntesis retroactiva de Alt+9 (áreas de oportunidad + estrategia)
+  tratando el audio completo como una sesión ya terminada.
+- Cada archivo procesado crea una sesión nueva en `minutas/` (mismo formato
+  que Ctrl+5), con `final/transcript-full.txt`, `final/minuta.md` y, si el
+  comando fue `optimizar`, `final/optimizacion-estrategia.md`.
+- La conversión de formato (a WAV 16kHz mono 16-bit) se hace con `ffmpeg`
+  antes de transcribir; requiere tenerlo instalado (`sudo apt install
+  ffmpeg`, ya lo instala `setup_vysper_stt.sh`).
+
+### Comandos de chat desde el celular (`/comando`)
+
+Además del pipeline de audio, `POST /comando` manda un mensaje de texto por
+el mismo camino que la caja de chat de la app — sirve para disparar
+comandos como `/actualizaRag`, `/hoy`, `/optimiza <ruta>`, `/silia daily`,
+etc. sin escribirlos en la PC:
+
+```bash
+curl -u TU_USUARIO:TU_PASSWORD \
+  -H "Content-Type: application/json" \
+  -d '{"comando": "/actualizaRag"}' \
+  http://100.83.125.94:8080/comando
+# {"ok":true,"comando":"/actualizaRag","resultado":"<texto de la respuesta>"}
+```
+
+Importante:
+
+- El comando se ejecuta con el **modo/skill activo en ese momento en la PC**
+  (`secretaria`, `silia`, `system-design`, etc.) — igual que si lo hubieras
+  escrito ahí mismo. Comandos como `/actualizaRag` o `/hoy` solo responden
+  si la app ya está en uno de los modos que los habilita; si no, no pasa
+  nada visible (revisa el modo activo en la app antes de mandarlo).
+- Es seguro usarlo aunque haya una grabación en vivo (Alt+S/Alt+O) corriendo
+  al mismo tiempo en la PC: la respuesta se correlaciona con el comando que
+  la originó (via `AsyncLocalStorage`, ver `runChatCommandHeadless` en
+  `main.js`), así que una notificación incremental de esa sesión nunca se
+  confunde con la respuesta real de tu comando.
+- Un comando que deja una confirmación pendiente (sí/no) se puede resolver
+  mandando un segundo `/comando` con `"sí"` o `"no"` como texto — es la
+  misma conversación, solo que por HTTP en vez del chat local.
+
+### Reunión en vivo desde el celular por segmentos (`/stream/*`)
+
+Para capturar una reunión **mientras ocurre** (en vez de grabarla entera y
+subirla al final), el celular graba clips cortos (~30s) y los va subiendo a
+medida que se generan. No es streaming de audio en vivo por WebSocket — cada
+segmento es un archivo completo que sube por HTTP, con reintento si falla —
+pero permite empezar a transcribir sin esperar a que termine la reunión, y
+reutiliza el mismo pipeline que usa Alt+S para sesiones largas (transcribe
+cada fragmento al vuelo; al cerrar, concatena todo el audio, diariza **una
+sola vez** sobre la reunión completa —no por fragmento, para no perder
+consistencia de hablantes— y genera la minuta).
+
+**Flujo:**
+
+```bash
+# 1. Iniciar el stream
+curl -u TU_USUARIO:TU_PASSWORD -X POST \
+  -H "Content-Type: application/json" -d '{"segmentSec": 30}' \
+  http://100.83.125.94:8080/stream/start
+# {"ok":true,"streamId":"a1b2c3d4","sessionDir":"minutas/reunion-..."}
+
+# 2. Subir cada segmento (con su numero de secuencia; el orden de llegada
+#    no importa, se ensambla siempre por "seq")
+curl -u TU_USUARIO:TU_PASSWORD -X POST \
+  -F "archivo=@segmento-0001.m4a" -F "seq=1" -F "durationSec=30.1" \
+  http://100.83.125.94:8080/stream/a1b2c3d4/segmento
+# {"ok":true,"seq":1,"status":"transcrito"}
+
+# 3. (Opcional) consultar progreso sin esperar a que termine la reunion
+curl -u TU_USUARIO:TU_PASSWORD http://100.83.125.94:8080/stream/a1b2c3d4/estado
+
+# 4. Cerrar la reunion: concatena, diariza una vez y genera la minuta
+curl -u TU_USUARIO:TU_PASSWORD -X POST \
+  -H "Content-Type: application/json" -d '{"graceMs": 20000}' \
+  http://100.83.125.94:8080/stream/a1b2c3d4/finish
+# {"ok":true,"resultado":"<minuta.md>","sessionDir":"...","segmentosPerdidos":[]}
+```
+
+**Script de referencia para Termux**: [scripts/termux/stream-meeting.sh](scripts/termux/stream-meeting.sh)
+graba en loop con `termux-microphone-record`, sube cada segmento con
+reintento, mantiene `termux-wake-lock` activo, y muestra una notificación
+persistente con un botón "Terminar reunión" — tocarlo (o Ctrl+C en la
+terminal) dispara el mismo cierre: para la grabación, llama `/finish`, guarda
+la minuta en `~/vysper-stream/` y te notifica cuando está lista. Requiere el
+paquete `termux-api` (`pkg install termux-api`, más la app Termux:API) y
+`ffmpeg` (`pkg install ffmpeg`, para medir la duración de cada segmento).
+Antes de correrlo, exportá `VYSPER_HTTP_USER`/`VYSPER_HTTP_PASSWORD` (o
+editá el script) y ajustá `VYSPER_HOST` a tu IP de Tailscale.
+
+**Qué pasa si un segmento se pierde**: el cliente reintenta el mismo `seq`
+hasta 5 veces (configurable). Si de verdad no llega, `/finish` lo marca como
+hueco en la minuta final (`[HUECO: segmento N no disponible...]`) en vez de
+omitirlo en silencio — es una nota de que ese tramo de audio no se pudo
+recuperar, no que el sistema haya "arreglado" la pérdida.
+
+**Conflicto con Alt+O**: `/stream/start` responde 409 si hay una entrevista
+de Optimización (Alt+O) activa en ese momento en la PC — evita mezclar el
+texto de dos sesiones distintas, ya que esa bandera es global a la app, no
+por sesión.
+
 ## Modo Silia (líder de proyecto interino)
 
 El modo **Silia** delega el razonamiento a [Cerebro](/media/san/Miscosas6/Desarrollo/Cerebro),
