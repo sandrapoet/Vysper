@@ -369,6 +369,24 @@ function parseMergeCommand(text) {
 }
 
 /**
+ * Returns {folderPath} if text is "/contexto <ruta-carpeta>" -- el unico
+ * parametro es la carpeta cuyo contenido (archivos .md/.txt/.json de primer
+ * nivel, sin recursividad) se debe cargar como contexto persistente para la
+ * evaluacion/conversacion en curso del modo dsa. {error} si no se dio ruta.
+ * Otherwise null. La ruta viaja tal cual (sin tokenizar, como
+ * /actualizar-jira) para admitir carpetas con espacios sin comillas.
+ */
+function parseContextoCommand(text) {
+  const normalized = normalize(text);
+  const match = normalized.match(/^\/contexto(?:\s+([\s\S]+))?$/i);
+  if (!match) return null;
+
+  const folderPath = (match[1] || '').trim();
+  if (!folderPath) return { error: 'Uso: /contexto <ruta-carpeta>' };
+  return { folderPath };
+}
+
+/**
  * Returns true if text is exactly "/script" (sin argumentos -- el comando
  * SIEMPRE ejecuta el mismo script fijo del lado de Cerebro, ver
  * _SCRIPT_PATH en cerebro/cli.py; no acepta nombre para que nunca se
@@ -418,4 +436,5 @@ module.exports = {
   parseScriptCommand,
   parseMergeCommand,
   parseConfirmationResponse,
+  parseContextoCommand,
 };
