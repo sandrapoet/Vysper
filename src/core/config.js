@@ -91,7 +91,11 @@ class ConfigManager {
         // este seteado en el .env de cada entorno (pedido explicito para no
         // bloquear "/silia daily" mientras tanto).
         siliaAssignee: process.env.VYSPER_SILIA_ASSIGNEE || 'davidaleman@slia.com',
-        siliaDefaultProject: process.env.VYSPER_SILIA_DEFAULT_PROJECT || ''
+        // TODO: quitar este fallback hardcodeado una vez que
+        // VYSPER_SILIA_DEFAULT_PROJECT este seteado en el .env de cada
+        // entorno -- "AGE" (equipo "agentes") es el default historico de
+        // "/silia retro" mientras tanto, igual que siliaAssignee arriba.
+        siliaDefaultProject: process.env.VYSPER_SILIA_DEFAULT_PROJECT || 'AGE'
       },
 
       sandraRag: {

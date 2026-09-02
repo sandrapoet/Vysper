@@ -6249,11 +6249,11 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     return filePath;
   }
 
-  async runRevisarCommand({ url, mode, diablo }, metadata = {}) {
-    logger.info('Comando /revisar recibido', { url, mode, diablo });
+  async runRevisarCommand({ url, mode, diablo, force }, metadata = {}) {
+    logger.info('Comando /revisar recibido', { url, mode, diablo, force });
 
     try {
-      const result = await this.cerebroService.runRevisar(url, { mode, diablo });
+      const result = await this.cerebroService.runRevisar(url, { mode, diablo, force });
 
       let reportPath = null;
       try {
@@ -7194,7 +7194,7 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     const retroComparar = parseSiliaRetroCompararCommand(text);
     if (retroComparar) {
       logger.info('Comando /silia retro comparar recibido', retroComparar);
-      const projectKey = config.get('cerebro.siliaDefaultProject');
+      const projectKey = retroComparar.dominio || config.get('cerebro.siliaDefaultProject');
       const result = await this.cerebroService.runCompararRetro(
         projectKey,
         retroComparar.sprintA,
@@ -7213,7 +7213,7 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     const retroCommand = parseSiliaRetroCommand(text);
     if (retroCommand) {
       logger.info('Comando /silia retro recibido', retroCommand);
-      const projectKey = config.get('cerebro.siliaDefaultProject');
+      const projectKey = retroCommand.dominio || config.get('cerebro.siliaDefaultProject');
       const result = await this.cerebroService.runSprintRetro(projectKey, { sprint: retroCommand.sprintRef });
       this.emitSiliaResult(formatSprintRetro(result.retro), { ...baseMetadata, siliaCommand: 'retro' });
       return true;

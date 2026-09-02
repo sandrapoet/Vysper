@@ -44,6 +44,7 @@ Comandos de texto (en el chat o por voz):
 - /detalle [dominio]  Vuelca el análisis de /hoy ya persistido a un .md (secretaria, silia, system-design)
 - /jira, /notion, /github <consulta>  Acota una consulta libre a esa sola fuente (secretaria, silia, system-design)
 - /silia daily [identificador]  Actividades del último día hábil (Jira/GitHub/Notion/minutas locales) + checkpoint de riesgo abierto (silia, system-design — ver sección "Modo Silia")
+- /silia retro [--dominio <alias>] [sprint_ref], /silia retro [--dominio <alias>] comparar <sprint_a> <sprint_b>  Retrospectiva estructurada de un sprint (Jira Agile API + métricas + Notion/RAG + incidentes del SMC), default "agentes", o diff entre dos retros ya generadas (silia, system-design — ver sección "Modo Silia")
 - /revisar <url-pr> [--profundo|--arq|--security] [--diablo] [--merge] [--release]  Revisión automatizada de PR: conflictos + matriz de cumplimiento ponderada (silia, system-design — ver sección "Modo Silia")
 - /crear-pr <rama> [--draft|--publish] [--labels a,b,c] [--ticket AGE-123], /cancelar-pr <url-pr>, /aprobar-pr <url-pr> [--revisar] [--merge] [--tag]  Creación/cancelación/aprobación de PRs (silia, system-design — ver sección "Modo Silia")
 - /merge <numero-pr> --repo <owner/repo> [--merge]  Mergea un PR directo vía la API de GitHub, sin aprobar ni tocar Jira, con confirmación explícita en el chat (silia, system-design — ver sección "Modo Silia")
@@ -719,6 +720,48 @@ reemplaza a la otra. `[identificador]` es opcional; Cerebro
 ```
 ```
 /silia daily https://github.com/org/repo/pull/123
+```
+
+**`/silia retro [--dominio <alias>] [sprint_ref]`** — retrospectiva
+estructurada de un sprint: trae el sprint via la Agile API de Jira
+(nunca con JQL libre), calcula las métricas en Python (nunca las inventa
+el LLM), suma notas de reunión relevantes de Notion/RAG e incidentes del
+SMC correlacionados por fecha, y cierra con una síntesis del LLM sólo
+para la parte narrativa (resumen/riesgos/recomendaciones). Las
+recomendaciones quedan como propuestas pendientes en el sistema de mejora
+continua — revisalas después con `/optimizaciones`.
+
+- **`--dominio <alias>`** (opcional) — elige el equipo/proyecto para esta
+  corrida, resolviendo el alias contra `equiv.yaml` (sección `dominios:`,
+  raíz de Cerebro), igual que `/hoy <dominio>`. Si se omite, usa el
+  proyecto default configurado en `VYSPER_SILIA_DEFAULT_PROJECT` (por
+  default, si no está seteada, el equipo "agentes"/`AGE`).
+- **`sprint_ref`** (opcional) — un id de sprint, un número simple, o un
+  nombre/substring (p. ej. `"Sprint 7"`); si se omite, usa el sprint
+  activo (o el cerrado más reciente si no hay ninguno activo). ⚠️ Un
+  número suelto como `7` también se compara como substring contra el
+  nombre del sprint — si tu proyecto tiene sprints como `"Sprint 7"` y
+  `"Sprint 17"` a la vez, escribí el nombre completo para evitar
+  ambigüedad.
+- **`/silia retro [--dominio <alias>] comparar <sprint_a> <sprint_b>`** —
+  diff aritmético (sin LLM) entre dos retrospectivas ya generadas para ese
+  proyecto; ambos sprints deben haberse corrido antes con `/silia retro`.
+
+**Ejemplos:**
+```
+/silia retro 7
+```
+```
+/silia retro --dominio agentes 7
+```
+```
+/silia retro
+```
+```
+/silia retro comparar 5 6
+```
+```
+/silia retro --dominio ventas comparar 5 6
 ```
 
 **`/incidente <descripción>`** — pipeline de diagnóstico de incidentes,

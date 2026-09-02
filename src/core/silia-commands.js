@@ -76,29 +76,50 @@ function parsePropuestaDecidirCommand(text) {
 }
 
 /**
- * Returns {sprintRef} if text is "/silia retro" (sprintRef: null, uses the
- * active sprint) or "/silia retro <sprint_ref>" (id, number or name),
- * otherwise null. The project comes from Vysper config
+ * If `rest` starts with "--dominio <valor>", strips it and returns
+ * {dominio: valor, rest: <lo que queda>}; otherwise {dominio: null, rest}
+ * unchanged. Shared by parseSiliaRetroCommand and
+ * parseSiliaRetroCompararCommand so "--dominio" can appear before either
+ * a bare sprint_ref or "comparar <a> <b>".
+ */
+function _extractRetroDominio(rest) {
+  const match = rest.match(/^--dominio\s+(\S+)\s*/i);
+  if (!match) return { dominio: null, rest };
+  return { dominio: match[1], rest: rest.slice(match[0].length).trim() };
+}
+
+/**
+ * Returns {sprintRef, dominio} if text is "/silia retro [--dominio
+ * <alias>] [sprint_ref]" (sprintRef: null if omitted, uses the active
+ * sprint; id, number or name otherwise), otherwise null. `dominio` is
+ * null unless "--dominio <alias>" is given, in which case it overrides
+ * the project for this one call — resolved against equiv.yaml
+ * (dominios:) on the Cerebro side, same alias set as "/hoy <dominio>".
+ * Without "--dominio", the project comes from Vysper config
  * (VYSPER_SILIA_DEFAULT_PROJECT), same pattern as "/silia daily"'s
  * assignee — never parsed out of the chat text.
  */
 function parseSiliaRetroCommand(text) {
   const normalized = normalize(text);
-  const match = normalized.match(/^\/silia\s+retro(?:\s+(?!comparar\b)([\s\S]+))?$/i);
+  const match = normalized.match(/^\/silia\s+retro(?:\s+([\s\S]+))?$/i);
   if (!match) return null;
-  const sprintRef = (match[1] || '').trim();
-  return { sprintRef: sprintRef.length > 0 ? sprintRef : null };
+  const { dominio, rest } = _extractRetroDominio((match[1] || '').trim());
+  if (/^comparar\b/i.test(rest)) return null;
+  return { sprintRef: rest.length > 0 ? rest : null, dominio };
 }
 
 /**
- * Returns {sprintA, sprintB} if text is
- * "/silia retro comparar <sprint_a> <sprint_b>", otherwise null.
+ * Returns {sprintA, sprintB, dominio} if text is "/silia retro [--dominio
+ * <alias>] comparar <sprint_a> <sprint_b>", otherwise null.
  */
 function parseSiliaRetroCompararCommand(text) {
   const normalized = normalize(text);
-  const match = normalized.match(/^\/silia\s+retro\s+comparar\s+(\S+)\s+(\S+)$/i);
+  const match = normalized.match(/^\/silia\s+retro\s+([\s\S]+)$/i);
   if (!match) return null;
-  return { sprintA: match[1], sprintB: match[2] };
+  const { dominio, rest } = _extractRetroDominio(match[1].trim());
+  const compararMatch = rest.match(/^comparar\s+(\S+)\s+(\S+)$/i);
+  if (!compararMatch) return null;
+  return { sprintA: compararMatch[1], sprintB: compararMatch[2], dominio };
 }
 
 /**
@@ -153,16 +174,19 @@ function parseToolScopedCommand(text) {
 }
 
 const REVISAR_DEPTH_FLAGS = ['--profundo', '--arq', '--security'];
-const REVISAR_KNOWN_FLAGS = [...REVISAR_DEPTH_FLAGS, '--diablo', '--merge', '--release'];
+const REVISAR_KNOWN_FLAGS = [...REVISAR_DEPTH_FLAGS, '--diablo', '--merge', '--release', '--force'];
 
 /**
- * Returns {url, mode, diablo, merge, release} if text is
+ * Returns {url, mode, diablo, merge, release, force} if text is
  * "/revisar <url> [--profundo|--arq|--security] [--diablo] [--merge]
- * [--release]", or {error} if flags of profundidad se combinan o hay un
- * flag desconocido (nunca silencioso). Otherwise null. `mode` is one of
- * 'basico'|'profundo'|'arq'|'security' — 'basico' (sin flags) es solo
- * conflictos+formato, sin la matriz de cumplimiento completa (ver
- * CerebroService.runRevisar / Orchestrator.run_pr_review).
+ * [--release] [--force]", or {error} if flags of profundidad se combinan o
+ * hay un flag desconocido (nunca silencioso). Otherwise null. `mode` is
+ * one of 'basico'|'profundo'|'arq'|'security' — 'basico' (sin flags) es
+ * solo conflictos+formato, sin la matriz de cumplimiento completa (ver
+ * CerebroService.runRevisar / Orchestrator.run_pr_review). `force` ignora
+ * la revision cacheada para el sha actual y re-evalua desde cero -- util
+ * cuando el reporte cacheado quedo desactualizado aunque el PR siga en el
+ * mismo commit.
  */
 function parseRevisarCommand(text) {
   const normalized = normalize(text);
@@ -189,6 +213,7 @@ function parseRevisarCommand(text) {
     diablo: flags.includes('--diablo'),
     merge: flags.includes('--merge'),
     release: flags.includes('--release'),
+    force: flags.includes('--force'),
   };
 }
 

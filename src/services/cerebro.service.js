@@ -72,10 +72,11 @@ class CerebroService {
    * que el default: clonar historial completo de un repo real via SSH
    * puede tardar bastante mas que las llamadas normales a Jira/Notion.
    */
-  runRevisar(url, { mode = 'basico', diablo = false, persona = 'silia', timeoutMs = 300000 } = {}) {
+  runRevisar(url, { mode = 'basico', diablo = false, force = false, persona = 'silia', timeoutMs = 300000 } = {}) {
     const args = ['revisar', url];
     if (mode && mode !== 'basico') args.push(`--${mode}`);
     if (diablo) args.push('--diablo');
+    if (force) args.push('--force');
     args.push('--persona', persona);
     return this._runCli(args, { timeoutMs });
   }

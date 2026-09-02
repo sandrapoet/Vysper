@@ -142,20 +142,29 @@ describe('parsePropuestaDecidirCommand', () => {
 
 describe('parseSiliaRetroCommand', () => {
   test('matches "/silia retro" with no sprint ref (uses active sprint)', () => {
-    expect(parseSiliaRetroCommand('/silia retro')).toEqual({ sprintRef: null });
+    expect(parseSiliaRetroCommand('/silia retro')).toEqual({ sprintRef: null, dominio: null });
   });
 
   test('matches "/silia retro <ref>" and captures the ref', () => {
-    expect(parseSiliaRetroCommand('/silia retro 5')).toEqual({ sprintRef: '5' });
-    expect(parseSiliaRetroCommand('/silia retro AGE Sprint 5')).toEqual({ sprintRef: 'AGE Sprint 5' });
+    expect(parseSiliaRetroCommand('/silia retro 5')).toEqual({ sprintRef: '5', dominio: null });
+    expect(parseSiliaRetroCommand('/silia retro AGE Sprint 5')).toEqual({ sprintRef: 'AGE Sprint 5', dominio: null });
   });
 
   test('is case-insensitive and tolerates surrounding whitespace', () => {
-    expect(parseSiliaRetroCommand('  /SILIA RETRO  ')).toEqual({ sprintRef: null });
+    expect(parseSiliaRetroCommand('  /SILIA RETRO  ')).toEqual({ sprintRef: null, dominio: null });
   });
 
   test('does not swallow "/silia retro comparar ..." (handled separately)', () => {
     expect(parseSiliaRetroCommand('/silia retro comparar 5 6')).toBeNull();
+  });
+
+  test('parses "--dominio <alias>" and overrides the project for this call', () => {
+    expect(parseSiliaRetroCommand('/silia retro --dominio ventas')).toEqual({ sprintRef: null, dominio: 'ventas' });
+    expect(parseSiliaRetroCommand('/silia retro --dominio ventas 7')).toEqual({ sprintRef: '7', dominio: 'ventas' });
+  });
+
+  test('does not swallow "--dominio ... comparar ..." (handled separately)', () => {
+    expect(parseSiliaRetroCommand('/silia retro --dominio ventas comparar 5 6')).toBeNull();
   });
 
   test('rejects unrelated text', () => {
@@ -170,14 +179,24 @@ describe('parseSiliaRetroCompararCommand', () => {
   test('parses two sprint refs', () => {
     expect(parseSiliaRetroCompararCommand('/silia retro comparar 11 12')).toEqual({
       sprintA: '11',
-      sprintB: '12'
+      sprintB: '12',
+      dominio: null
     });
   });
 
   test('is case-insensitive', () => {
     expect(parseSiliaRetroCompararCommand('/SILIA RETRO COMPARAR 11 12')).toEqual({
       sprintA: '11',
-      sprintB: '12'
+      sprintB: '12',
+      dominio: null
+    });
+  });
+
+  test('parses "--dominio <alias>" before "comparar"', () => {
+    expect(parseSiliaRetroCompararCommand('/silia retro --dominio ventas comparar 11 12')).toEqual({
+      sprintA: '11',
+      sprintB: '12',
+      dominio: 'ventas'
     });
   });
 
@@ -277,13 +296,13 @@ describe('parseRevisarCommand', () => {
 
   test('parses a bare url with no flags as modo basico', () => {
     expect(parseRevisarCommand(`/revisar ${url}`)).toEqual({
-      url, mode: 'basico', diablo: false, merge: false, release: false
+      url, mode: 'basico', diablo: false, merge: false, release: false, force: false
     });
   });
 
   test('parses --profundo', () => {
     expect(parseRevisarCommand(`/revisar ${url} --profundo`)).toEqual({
-      url, mode: 'profundo', diablo: false, merge: false, release: false
+      url, mode: 'profundo', diablo: false, merge: false, release: false, force: false
     });
   });
 
@@ -297,7 +316,7 @@ describe('parseRevisarCommand', () => {
 
   test('parses --diablo and --merge together, order-independent', () => {
     expect(parseRevisarCommand(`/revisar ${url} --merge --diablo`)).toEqual({
-      url, mode: 'basico', diablo: true, merge: true, release: false
+      url, mode: 'basico', diablo: true, merge: true, release: false, force: false
     });
   });
 
