@@ -198,14 +198,41 @@ def _cmd_commit(args) -> int:
     import numpy as np
 
     store = vp.load_store()
-    vp.upsert_voiceprint(store, args.name, np.array(embedding, dtype="float32"))
+
+    # A typo-only variant of an already-enrolled name (e.g. "Bryan Camilo
+    # Mosquera Mateus" vs "Brayan Camilo Mosquera Mateus") used to silently
+    # fork a brand new 1-sample voiceprint instead of strengthening the
+    # person's existing entry -- that fragmentation is what made later
+    # matching unreliable. An exact match (modulo case/accents) is folded in
+    # automatically; a fuzzy-but-not-exact one is flagged back to the caller
+    # (this call is non-interactive, so we don't silently merge two possibly
+    # different people) but still commits under the name given.
+    exact_match = vp.find_exact_name(store, args.name)
+    canonical_name = exact_match or args.name
+    # Only worth checking for a fuzzy near-duplicate when there was no exact
+    # match at all -- comparing canonical_name to args.name doesn't work for
+    # this because they're trivially equal both when there's no exact match
+    # (canonical_name falls back to args.name) AND when the exact match found
+    # happens to be spelled identically to args.name (the common case of
+    # re-enrolling someone under the same name), which used to misfire this
+    # warning on a plain, correct re-enrollment.
+    similar = [] if exact_match else vp.find_similar_names(store, args.name)
+
+    vp.upsert_voiceprint(store, canonical_name, np.array(embedding, dtype="float32"))
     vp.save_store(store)
 
-    print(json.dumps({
+    result = {
         "speaker": args.speaker_label,
-        "name": args.name,
-        "totalSamples": len(store[args.name]["embeddings"]),
-    }))
+        "name": canonical_name,
+        "totalSamples": len(store[canonical_name]["embeddings"]),
+    }
+    if similar:
+        result["warning"] = (
+            f"'{args.name}' se parece a un nombre ya enrolado ({', '.join(similar)}). "
+            "Se guardo como entrada nueva -- revisa si es la misma persona y fusiona las huellas si corresponde."
+        )
+        result["similarTo"] = similar
+    print(json.dumps(result, ensure_ascii=False))
     return 0
 
 
@@ -245,6 +272,18 @@ def _cmd_interactive(args) -> int:
         name = input(f"Nombre para {speaker_label} (Enter para omitir): ").strip()
         if not name:
             continue
+
+        exact = vp.find_exact_name(store, name)
+        if exact:
+            name = exact
+        else:
+            similar = vp.find_similar_names(store, name)
+            if similar:
+                choice = input(
+                    f"  ¿Es la misma persona que {similar[0]!r}? "
+                    "(Enter para usar ese nombre, o escribe otro nombre para crear una entrada nueva): "
+                ).strip()
+                name = choice if choice else similar[0]
 
         import numpy as np
         vp.upsert_voiceprint(store, name, np.array(cluster["embedding"], dtype="float32"))

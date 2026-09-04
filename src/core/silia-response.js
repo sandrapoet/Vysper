@@ -151,6 +151,7 @@ function formatCrearPrResult(result) {
   if (result && result.already_exists) {
     const lines = [result.message || `Ya existe un PR abierto para esta rama: ${result.pr_url}`];
     if (result.untracked_files_warning) lines.push(`\n⚠️ ${result.untracked_files_warning}`);
+    if (result.other_branch_uncommitted_note) lines.push(`\nℹ️ ${result.other_branch_uncommitted_note}`);
     return lines.join('\n');
   }
   if (!result || !result.pr_url) return 'No se pudo crear el PR.';
@@ -161,6 +162,9 @@ function formatCrearPrResult(result) {
   if (Array.isArray(result.reviewers) && result.reviewers.length) lines.push(`Reviewers: ${result.reviewers.join(', ')}`);
   if (result.milestone) lines.push(`Milestone: ${result.milestone}`);
   if (result.untracked_files_warning) lines.push(`\n⚠️ ${result.untracked_files_warning}`);
+  // Puramente informativo -- ver docstring de Orchestrator.run_crear_pr:
+  // no afecta el PR, el push, ni ningun otro comentario/mensaje publicado.
+  if (result.other_branch_uncommitted_note) lines.push(`\nℹ️ ${result.other_branch_uncommitted_note}`);
   return lines.join('\n');
 }
 

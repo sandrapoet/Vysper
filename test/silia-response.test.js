@@ -139,6 +139,30 @@ describe('formatCrearPrResult', () => {
     expect(result).toContain("Ya existe un PR abierto para la rama 'feature/x'");
     expect(result).toContain('⚠️ Hay 1 archivo(s) sin trackear en /repo que NO se incluyen en este PR: a.log.');
   });
+
+  test('appends the other-branch-uncommitted note as informational only, not an error', () => {
+    const result = formatCrearPrResult({
+      pr_url: 'https://github.com/org/repo/pull/9',
+      draft: true,
+      other_branch_uncommitted_note: "La rama actualmente activa en /repo ('fix/AGE-166', distinta a "
+        + "'fix/AGE-164') tiene cambios sin commitear: test_x.py. Es solo informativo, no bloquea este PR.",
+    });
+    expect(result).toContain('PR (draft) creado: https://github.com/org/repo/pull/9');
+    expect(result).toContain("ℹ️ La rama actualmente activa en /repo ('fix/AGE-166', distinta a 'fix/AGE-164')");
+    expect(result).not.toContain('No se pudo crear el PR');
+  });
+
+  test('shows the other-branch-uncommitted note on the already-exists path too', () => {
+    const result = formatCrearPrResult({
+      already_exists: true,
+      pr_url: 'https://github.com/org/repo/pull/133',
+      message: "Ya existe un PR abierto para la rama 'feature/x': https://github.com/org/repo/pull/133",
+      other_branch_uncommitted_note: "La rama actualmente activa en /repo ('fix/AGE-166', distinta a "
+        + "'feature/x') tiene cambios sin commitear: test_x.py. Es solo informativo, no bloquea este PR.",
+    });
+    expect(result).toContain("Ya existe un PR abierto para la rama 'feature/x'");
+    expect(result).toContain('ℹ️ La rama actualmente activa en /repo');
+  });
 });
 
 describe('formatCancelarPrResult', () => {

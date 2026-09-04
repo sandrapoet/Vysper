@@ -112,6 +112,7 @@ const MEETING_FINAL_TRANSCRIPT_CHARS = Number(process.env.VYSPER_MEETING_FINAL_T
 const MEETING_STARTUP_TIMEOUT_MS = Number(process.env.VYSPER_MEETING_STARTUP_TIMEOUT_MS || 25000);
 const DIARIZE_HELPER_PATH = path.join(__dirname, 'stt', 'diarize.py');
 const ENROLL_SPEAKER_HELPER_PATH = path.join(__dirname, 'stt', 'enroll_speaker.py');
+const MERGE_VOICEPRINTS_HELPER_PATH = path.join(__dirname, 'stt', 'merge_voiceprints.py');
 
 // Modo Optimizacion (Alt+O): entrevista dirigida en paralelo a una sesion Alt+S.
 // Arma el modo ANTES de Alt+S: la sesion arranca con fragmentos cortos
@@ -3287,6 +3288,20 @@ class ApplicationController {
     // misma funcion sirve tanto para una corrida nueva como para retomar una
     // que quedo a mitad de camino (ver findResumableSecretariaMeetingSession).
     const session = existingSession || this.createSecretariaMeetingSessionState('uploadedFile');
+
+    // El archivo subido puede vivir en cualquier carpeta que el usuario haya
+    // elegido (Descargas, un pendrive, etc.). Si mas adelante se mueve o se
+    // borra, /actualizarHablantes, /reconocerVozPendientes y cualquier otro
+    // comando que necesite volver a tocar el audio original quedan inutiles
+    // para siempre en esta sesion (a diferencia de Alt+S, que ya se graba
+    // directo a final/full-audio.wav). Por eso se copia una vez a la carpeta
+    // propia de la sesion y de ahi en adelante se trabaja sobre esa copia.
+    const ownedAudioPath = path.join(session.sessionDir, 'audio', path.basename(filePath));
+    if (!fs.existsSync(ownedAudioPath)) {
+      fs.copyFileSync(filePath, ownedAudioPath);
+    }
+    filePath = ownedAudioPath;
+
     session.sourceFilePath = filePath;
     session.sourceType = session.sourceType || 'uploadedFile';
     this.secretariaMeetingSession = session;
@@ -5749,6 +5764,16 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         this.clearPendingVoiceEnrollment();
       }
 
+      if (this.pendingVoiceprintMerge) {
+        if (this.pendingVoiceprintMerge.skill === normalizedSkill) {
+          await this.resolvePendingVoiceprintMerge(text);
+          return;
+        }
+        // El modo cambio a mitad de la confirmacion de fusion: se descarta
+        // en vez de seguir preguntando en un modo distinto.
+        this.clearPendingVoiceprintMerge();
+      }
+
       if (this.pendingReconocerVozChain) {
         const pending = this.pendingReconocerVozChain;
         this.pendingReconocerVozChain = null;
@@ -6714,6 +6739,16 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     const liveAudioPath = path.join(sessionDir, 'final', 'full-audio.wav');
     if (fs.existsSync(liveAudioPath)) return liveAudioPath;
 
+    // Sesiones de archivo subido (Ctrl+5) guardan su propia copia en
+    // audio/ desde que se creo la sesion (ver processSecretariaAudioFileAsMeeting) --
+    // se revisa antes que el manifest porque esa copia sobrevive aunque el
+    // archivo original que eligio el usuario se mueva o se borre despues.
+    const ownedAudioDir = path.join(sessionDir, 'audio');
+    if (fs.existsSync(ownedAudioDir)) {
+      const owned = fs.readdirSync(ownedAudioDir).find((name) => !name.startsWith('.'));
+      if (owned) return path.join(ownedAudioDir, owned);
+    }
+
     const manifestPath = path.join(sessionDir, 'session.json');
     if (fs.existsSync(manifestPath)) {
       try {
@@ -6766,7 +6801,15 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     try {
       const payload = JSON.parse(fs.readFileSync(speakersPath, 'utf8'));
       const segments = Array.isArray(payload.segments) ? payload.segments : [];
-      return [...new Set(segments.filter((s) => s.status === 'UNKNOWN').map((s) => s.speaker))];
+      // Un hablante pendiente es tanto uno ya revisado y marcado UNKNOWN_XX
+      // (via /actualizarHablantes o al omitirlo en un enrolamiento anterior)
+      // como uno que nunca paso por ninguna revision -- diarize.py deja esos
+      // como SPEAKER_XX con status null/ausente (ver _apply_voiceprint_matches,
+      // que deliberadamente nunca marca UNKNOWN por si solo). Si solo se
+      // buscara status === 'UNKNOWN', una sesion recien grabada que nunca
+      // paso por /actualizarHablantes no tendria nada que ofrecerle a
+      // /reconocerVozPendientes aunque le queden hablantes sin identificar.
+      return [...new Set(segments.filter((s) => s.status === 'UNKNOWN' || /^SPEAKER_\d+$/.test(s.speaker)).map((s) => s.speaker))];
     } catch (error) {
       logger.warn('No se pudo leer la diarizacion para buscar hablantes UNKNOWN', { error: error.message, speakersPath });
       return [];
@@ -7064,7 +7107,7 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
       this.markSpeakerAsUnknown(pending.speakersFullPath, cluster.speaker, cluster.score);
     } else {
       try {
-        await this.runProcess(this.resolveSttPython(), [
+        const commitResult = await this.runProcess(this.resolveSttPython(), [
           ENROLL_SPEAKER_HELPER_PATH,
           '--commit', pending.embeddingsCachePath,
           '--speaker-label', cluster.speaker,
@@ -7076,6 +7119,19 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         // (mas abajo) pueda regenerar sus transcripts con el nombre correcto.
         this.relabelSessionSpeaker(pending.speakersFullPath, cluster.speaker, { speaker: answer, status: 'MATCHED', score: 1 });
         pending.enrolled.push({ speaker: cluster.speaker, name: answer });
+
+        try {
+          const parsed = JSON.parse(commitResult.stdout);
+          if (parsed.warning) pending.warnings = [...(pending.warnings || []), parsed.warning];
+          if (parsed.similarTo?.length) {
+            pending.mergeCandidates = [
+              ...(pending.mergeCandidates || []),
+              { name: answer, existing: parsed.similarTo[0] }
+            ];
+          }
+        } catch (parseError) {
+          logger.warn('/reconocerVoz: no se pudo interpretar la salida de enroll_speaker.py --commit', { error: parseError.message });
+        }
       } catch (error) {
         logger.error('/reconocerVoz: fallo al guardar el nombre', { error: error.message, speaker: cluster.speaker });
         this.emitCommandResult(`No se pudo guardar el nombre para ${cluster.speaker}: ${error.message}`, { reconocerVozCommand: true, error: true });
@@ -7094,18 +7150,50 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     const skippedSummary = pending.skipped.length ? pending.skipped.join(', ') : 'ninguno';
     const sessionDir = pending.sessionDir;
     const skill = pending.skill;
+    const speakersFullPath = pending.speakersFullPath;
+    const mergeCandidates = pending.mergeCandidates || [];
     this.pendingVoiceEnrollment = null;
 
+    if (mergeCandidates.length) {
+      // Un nombre recien enrolado se parecio (pero no exactamente) a uno ya
+      // existente en el store -- en vez de solo avisar por texto y dejar la
+      // posible duplicidad ahi (ver enroll_speaker.py _cmd_commit), se
+      // pregunta explicitamente antes de seguir; fusionar o no queda a
+      // criterio del usuario, nunca automatico (podrian ser dos personas
+      // distintas con nombres parecidos).
+      this.pendingVoiceprintMerge = {
+        queue: mergeCandidates,
+        index: 0,
+        skill,
+        sessionDir,
+        speakersFullPath,
+        enrolledSummary,
+        skippedSummary
+      };
+      this.promptCurrentVoiceprintMergeCandidate();
+      return;
+    }
+
+    await this.finishReconocerVozFlow({ sessionDir, skill, speakersFullPath, enrolledSummary, skippedSummary });
+  }
+
+  /**
+   * Etapas finales compartidas por resolvePendingVoiceEnrollment (sin
+   * duplicidades que confirmar) y resolvePendingVoiceprintMerge (una vez
+   * resueltas): regenera transcripts/minuta y encadena a
+   * /reconocerVozPendientes si quedan hablantes sin identificar.
+   */
+  async finishReconocerVozFlow({ sessionDir, skill, speakersFullPath, enrolledSummary, skippedSummary, extraNotice = '' }) {
     const refresh = await this.refreshSecretariaSpeakerArtifacts(sessionDir);
     if (!refresh.ok) {
       logger.warn('No se pudieron actualizar los transcripts de la sesion tras el reconocimiento de voz', { error: refresh.error, sessionDir });
     }
 
-    const remainingUnknown = this.findUnknownSpeakerLabels(pending.speakersFullPath);
+    const remainingUnknown = this.findUnknownSpeakerLabels(speakersFullPath);
     if (remainingUnknown.length) {
       this.pendingReconocerVozChain = { sessionDir, skill, unknownLabels: remainingUnknown };
       this.emitCommandResult(
-        `Reconocimiento de voz terminado. Enrolados: ${enrolledSummary}. Omitidos: ${skippedSummary}.\n` +
+        `Reconocimiento de voz terminado. Enrolados: ${enrolledSummary}. Omitidos: ${skippedSummary}.${extraNotice}\n` +
         `Quedaron ${remainingUnknown.length} hablante(s) sin identificar. ¿Quieres intentar ahora con ellos? (si/no)`,
         { reconocerVozCommand: true, awaitingChainConfirmation: true }
       );
@@ -7113,13 +7201,77 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     }
 
     this.emitCommandResult(
-      `Reconocimiento de voz terminado. Enrolados: ${enrolledSummary}. Omitidos: ${skippedSummary}.`,
+      `Reconocimiento de voz terminado. Enrolados: ${enrolledSummary}. Omitidos: ${skippedSummary}.${extraNotice}`,
       { reconocerVozCommand: true }
     );
   }
 
+  promptCurrentVoiceprintMergeCandidate() {
+    const pending = this.pendingVoiceprintMerge;
+    const candidate = pending.queue[pending.index];
+    this.emitCommandResult(
+      `'${candidate.name}' se parece a un nombre ya enrolado ('${candidate.existing}'). ¿Es la misma persona? (si/no)`,
+      { reconocerVozCommand: true, awaitingMergeConfirmation: true }
+    );
+  }
+
+  /**
+   * Consume la respuesta si/no del chat para el candidato actual de
+   * this.pendingVoiceprintMerge (ver resolvePendingVoiceEnrollment), fusiona
+   * las huellas de voz si corresponde, y avanza al siguiente hasta agotar la
+   * cola -- al terminar retoma finishReconocerVozFlow donde quedo pendiente.
+   */
+  async resolvePendingVoiceprintMerge(text) {
+    const pending = this.pendingVoiceprintMerge;
+    const candidate = pending.queue[pending.index];
+    const confirmation = parseConfirmationResponse(text);
+
+    if (confirmation === null) {
+      this.emitCommandResult('Responde "si" o "no": ¿son la misma persona?', { reconocerVozCommand: true, awaitingMergeConfirmation: true });
+      return;
+    }
+
+    pending.mergeNotices = pending.mergeNotices || [];
+
+    if (confirmation) {
+      try {
+        await this.runProcess(this.resolveSttPython(), [
+          MERGE_VOICEPRINTS_HELPER_PATH,
+          '--into', candidate.existing,
+          candidate.existing, candidate.name
+        ], { timeout: 30 * 1000, label: 'merge-voiceprints' });
+        // El nombre que quedo escrito en la sesion (ver resolvePendingVoiceEnrollment)
+        // fue el que tipeo el usuario -- si la fusion lo unifico bajo la
+        // ortografia ya existente en el store, el transcript de esta sesion
+        // tiene que reflejar esa misma ortografia.
+        this.relabelSessionSpeaker(pending.speakersFullPath, candidate.name, { speaker: candidate.existing, status: 'MATCHED', score: 1 });
+        pending.mergeNotices.push(`Fusionado '${candidate.name}' en '${candidate.existing}'.`);
+      } catch (error) {
+        logger.error('No se pudo fusionar huellas de voz', { error: error.message, candidate });
+        pending.mergeNotices.push(`No se pudo fusionar '${candidate.name}' con '${candidate.existing}': ${error.message}`);
+      }
+    } else {
+      pending.mergeNotices.push(`'${candidate.name}' y '${candidate.existing}' quedan como personas distintas.`);
+    }
+
+    pending.index += 1;
+    if (pending.index < pending.queue.length) {
+      this.promptCurrentVoiceprintMergeCandidate();
+      return;
+    }
+
+    const { sessionDir, skill, speakersFullPath, enrolledSummary, skippedSummary, mergeNotices } = pending;
+    this.pendingVoiceprintMerge = null;
+    const extraNotice = mergeNotices.length ? `\n\n${mergeNotices.join('\n')}` : '';
+    await this.finishReconocerVozFlow({ sessionDir, skill, speakersFullPath, enrolledSummary, skippedSummary, extraNotice });
+  }
+
   clearPendingVoiceEnrollment() {
     this.pendingVoiceEnrollment = null;
+  }
+
+  clearPendingVoiceprintMerge() {
+    this.pendingVoiceprintMerge = null;
   }
 
   clearPendingReconocerVozChain() {

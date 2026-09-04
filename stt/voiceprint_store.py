@@ -8,8 +8,10 @@ never triggers a heavy load before diarize.py has had a chance to set the
 CPU thread caps (see diarize.py's _CPU_THREAD_CAP comment).
 """
 
+import difflib
 import json
 import os
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,7 +19,7 @@ import numpy as np
 
 DEFAULT_STORE_PATH = Path.home() / ".Vysper" / "voiceprints.json"
 DEFAULT_EMBEDDING_MODEL = "pyannote/embedding"
-DEFAULT_THRESHOLD = 0.75
+DEFAULT_THRESHOLD = 0.60
 MAX_ENROLL_SECONDS = 20.0
 
 
@@ -58,6 +60,41 @@ def upsert_voiceprint(store: dict, name: str, embedding: np.ndarray) -> dict:
     entry["embeddings"].append(embedding.tolist())
     entry["updated"] = datetime.now(timezone.utc).isoformat()
     return store
+
+
+def _normalize_name(name: str) -> str:
+    """Case/accent/whitespace-insensitive key, so 'Bryan' and 'Brayan' aren't
+    treated as unrelated just because of casing or accents."""
+    stripped = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    return " ".join(stripped.lower().split())
+
+
+def find_exact_name(store: dict, name: str) -> str:
+    """Returns the existing store key that matches `name` once case/accents/
+    whitespace are normalized away, or None. Used so re-enrolling 'sandra' vs
+    'Sandra' doesn't fork a second entry for the same person."""
+    target = _normalize_name(name)
+    for existing in store:
+        if _normalize_name(existing) == target:
+            return existing
+    return None
+
+
+def find_similar_names(store: dict, name: str, cutoff: float = 0.82, limit: int = 3) -> list:
+    """Returns existing store keys that are a close-but-not-exact spelling of
+    `name` (e.g. 'Brayam Camilo Mosquera Mateus' vs 'Bryan Camilo Mosquera
+    Mateus'), most similar first. A typo here used to silently fork a brand
+    new 1-sample voiceprint instead of adding a sample to the person's
+    existing entry -- this lets callers catch that before it happens."""
+    target = _normalize_name(name)
+    candidates = {existing: _normalize_name(existing) for existing in store}
+    close = difflib.get_close_matches(target, candidates.values(), n=limit, cutoff=cutoff)
+    ordered = []
+    for normalized in close:
+        for existing, existing_normalized in candidates.items():
+            if existing_normalized == normalized and existing not in ordered:
+                ordered.append(existing)
+    return ordered
 
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
