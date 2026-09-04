@@ -1022,7 +1022,16 @@ tocar stdin del proceso de Cerebro:
   checks de CI, aquí cualquier check en rojo bloquea, sin el margen del 90%
   que usa `/revisar`) antes de aprobar. Los tags siempre son anotados con
   mensaje detallado; Jira pasa a la transición equivalente a "Done" (ej.
-  "Listo") solo si hubo merge real.
+  "Listo") solo si hubo merge real. Si el PR es de la misma cuenta de
+  GitHub que usa Cerebro para escribir, no intenta auto-aprobarse (GitHub
+  no lo permite) — mergea igual si ya hay una aprobación humana real en
+  GitHub, o corta con un error claro si no hay ninguna.
+  - **`Silia-mx/Agent`**: mergear a `staging` o `main` dispara además,
+    automáticamente, una PR de bump del puntero del submódulo Agent en
+    `Silia-mx/silia` (independiente para cada rama — no es una promoción
+    en cadena) y un pedido de revisión en Slack para esa PR. Ver el detalle
+    completo en el README de Cerebro, sección
+    "Release de `Silia-mx/Agent` en 3 etapas".
   - **Confirmación de `--merge`/`--tag`**: nunca se ejecutan en la misma
     corrida que la aprobación. Vysper primero corre `/aprobar-pr` **sin**
     esos flags (aprueba el PR y, si pediste `--revisar`, corre la revisión
