@@ -692,12 +692,18 @@ por sesión.
 ## Modo Silia (líder de proyecto interino)
 
 El modo **Silia** delega el razonamiento a [Cerebro](/media/san/Miscosas6/Desarrollo/Cerebro),
-un orquestador Python que combina Ollama/Nemotron con Jira, Notion, GitHub y
+un orquestador Python que combina Claude (Anthropic) con Jira, Notion, GitHub y
 un RAG de transcripciones (LightRAG + Sandra RAG). A diferencia de los demás
-modos, no llama a Gemini/Anthropic directamente: cada mensaje se pasa a
-`python -m cerebro.cli` como subproceso (`src/services/cerebro.service.js`) y
-la respuesta JSON (`summary`, `citations`, `action_items`) se muestra en el
-chat.
+modos de Vysper, no llama a Gemini/Anthropic directamente desde acá: cada
+mensaje se pasa a `python -m cerebro.cli` como subproceso
+(`src/services/cerebro.service.js`) y la respuesta JSON (`summary`,
+`citations`, `action_items`) se muestra en el chat. Cerebro tiene su propia
+cadena de fallback de LLM independiente de la de Vysper (Claude/DeepSeek →
+OpenRouter → un modelo local via Ollama como último recurso sin costo) —
+ver [`LLMRouter` en el README de Cerebro](/media/san/Miscosas6/Desarrollo/Cerebro/README.md#motor-de-razonamiento-claude--anthropic)
+si algún comando de Silia falla con "No se pudo generar una respuesta
+final: fallo la llamada al modelo" (típicamente ambas cuentas sin
+crédito).
 
 **Activación:** Settings → Active Skill → `Silia (Lider de Proyecto)`.
 
