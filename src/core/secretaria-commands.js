@@ -55,10 +55,27 @@ function parseActualizarHablantesCommand(text) {
   return match[1].trim().replace(/^["']|["']$/g, '');
 }
 
+/**
+ * Parses "/reidentificarMinutas --carpeta <ruta>" or
+ * "/reidentificarMinutas --sesion <ruta>" (re-matchea contra el store de
+ * huellas actual y sustituye texto en los transcripts/minuta sin LLM, ver
+ * stt/reidentify_minutas.py). Returns { mode: 'carpeta' | 'sesion', path }
+ * (quotes stripped) or null if the text doesn't match either form.
+ */
+function parseReidentificarMinutasCommand(text) {
+  const match = normalize(text).match(/^\/reidentificarMinutas\s+--(carpeta|sesion)\s+(.+)$/i);
+  if (!match) return null;
+  return {
+    mode: match[1].toLowerCase(),
+    path: match[2].trim().replace(/^["']|["']$/g, '')
+  };
+}
+
 module.exports = {
   parseActualizaRagCommand,
   parseReconocerVozCommand,
   parseOptimizaCommand,
   parseReconocerVozPendientesCommand,
-  parseActualizarHablantesCommand
+  parseActualizarHablantesCommand,
+  parseReidentificarMinutasCommand
 };

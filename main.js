@@ -42,7 +42,8 @@ const {
   parseReconocerVozCommand,
   parseOptimizaCommand,
   parseReconocerVozPendientesCommand,
-  parseActualizarHablantesCommand
+  parseActualizarHablantesCommand,
+  parseReidentificarMinutasCommand
 } = require("./src/core/secretaria-commands");
 const {
   formatCerebroFinalAnswer,
@@ -113,6 +114,7 @@ const MEETING_STARTUP_TIMEOUT_MS = Number(process.env.VYSPER_MEETING_STARTUP_TIM
 const DIARIZE_HELPER_PATH = path.join(__dirname, 'stt', 'diarize.py');
 const ENROLL_SPEAKER_HELPER_PATH = path.join(__dirname, 'stt', 'enroll_speaker.py');
 const MERGE_VOICEPRINTS_HELPER_PATH = path.join(__dirname, 'stt', 'merge_voiceprints.py');
+const REIDENTIFY_MINUTAS_HELPER_PATH = path.join(__dirname, 'stt', 'reidentify_minutas.py');
 
 // Modo Optimizacion (Alt+O): entrevista dirigida en paralelo a una sesion Alt+S.
 // Arma el modo ANTES de Alt+S: la sesion arranca con fragmentos cortos
@@ -5864,6 +5866,12 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
           await this.runActualizarHablantesCommand(actualizarHablantesSessionDir);
           return;
         }
+
+        const reidentificarMinutasCommand = parseReidentificarMinutasCommand(text);
+        if (reidentificarMinutasCommand) {
+          await this.runReidentificarMinutasCommand(reidentificarMinutasCommand.mode, reidentificarMinutasCommand.path);
+          return;
+        }
       }
 
       if (normalizedSkill === 'system-design') {
@@ -6963,6 +6971,48 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
       logger.error('Fallo al ejecutar /actualizarHablantes', { error: error.message, sessionDir });
       this.broadcastLLMError(friendlyMessage);
       this.emitCommandResult(friendlyMessage, { actualizarHablantesCommand: true, error: true });
+    }
+  }
+
+  /**
+   * Comando /reidentificarMinutas --carpeta <ruta> | --sesion <ruta>: corre
+   * stt/reidentify_minutas.py, que re-matchea (sin re-clusterizar, igual que
+   * /actualizarHablantes) contra el store de huellas actual y sustituye texto
+   * directamente en transcript-hablantes.txt/transcript-teams.txt/minuta.md
+   * -- SIN pasar por ningun LLM (a diferencia de /actualizarHablantes, que
+   * reescribe minuta.md con una pasada de LLM). Pensado para reprocesar en
+   * lote muchas sesiones ya identificadas a mano en el chat, sin gastar
+   * cuota de LLM en algo que ya se sabe. --carpeta recorre recursivamente;
+   * --sesion apunta a una sola carpeta de sesion.
+   */
+  async runReidentificarMinutasCommand(mode, rawTargetPath) {
+    const targetPath = path.resolve(rawTargetPath);
+    logger.info('Comando /reidentificarMinutas recibido', { skill: this.activeSkill, mode, targetPath });
+
+    if (!fs.existsSync(targetPath)) {
+      this.emitCommandResult(`No encuentro "${targetPath}".`, { reidentificarMinutasCommand: true, error: true });
+      return;
+    }
+
+    const flag = mode === 'sesion' ? '--session' : '--root';
+    // Recorrer una carpeta entera (--carpeta) implica re-matchear audio +
+    // modelo de embeddings sesion por sesion; una sola sesion (--sesion) es
+    // mucho mas rapido.
+    const timeout = mode === 'sesion' ? 5 * 60 * 1000 : 30 * 60 * 1000;
+
+    try {
+      const result = await this.runProcess(this.resolveSttPython(), [
+        REIDENTIFY_MINUTAS_HELPER_PATH,
+        flag, targetPath
+      ], { timeout, label: 'reidentificarMinutas' });
+
+      const report = result.stdout.trim() || 'Termino sin salida (revisa si habia sesiones para procesar).';
+      this.emitCommandResult(report, { reidentificarMinutasCommand: true });
+    } catch (error) {
+      const friendlyMessage = `No se pudo reidentificar minutas: ${error.message}`;
+      logger.error('Fallo al ejecutar /reidentificarMinutas', { error: error.message, mode, targetPath });
+      this.broadcastLLMError(friendlyMessage);
+      this.emitCommandResult(friendlyMessage, { reidentificarMinutasCommand: true, error: true });
     }
   }
 

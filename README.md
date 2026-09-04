@@ -51,8 +51,9 @@ Comandos de texto (en el chat o por voz):
 - /actualizar-jira <texto>  Actualiza descripción/fecha/estado/story points de uno o varios tickets a partir de texto libre, con preview + confirmación antes de escribir (silia, system-design — ver sección "Modo Silia")
 - /script  Ejecuta cerebro/scripts/jira_transition.py (ruta fija, sin argumentos) — ver sección "Modo Silia"
 - /reconocerVoz <ruta-sesion>  Enrola huellas de voz nuevas desde una sesión ya procesada, uno por uno vía chat (solo secretaria — ver sección "Huellas de voz")
-- /reconocerVozPendientes <ruta-sesion>  Retoma solo los hablantes marcados UNKNOWN de una sesión, sin re-ofrecer los ya revisados (solo secretaria)
-- /actualizarHablantes <ruta-sesion>  Re-matchea una sesión vieja contra el store de huellas de voz actual y regenera sus transcripts + minuta (solo secretaria)
+- /reconocerVozPendientes <ruta-sesion>  Retoma solo los hablantes sin identificar de una sesión (marcados UNKNOWN o nunca revisados), sin re-ofrecer los que ya tienen nombre (solo secretaria)
+- /actualizarHablantes <ruta-sesion>  Re-matchea una sesión vieja contra el store de huellas de voz actual y regenera sus transcripts + minuta con una pasada de LLM (solo secretaria)
+- /reidentificarMinutas --carpeta <ruta> | --sesion <ruta>  Igual que /actualizarHablantes pero en lote y sin LLM: re-matchea y sustituye texto directo en los transcripts/minuta (solo secretaria — ver sección "Huellas de voz")
 - /optimiza <ruta-sesion>  Genera el análisis de optimización posterior sobre una sesión ya terminada (solo system-design)
 ###
 
@@ -348,6 +349,7 @@ VYSPER_PYANNOTE_MODEL=pyannote/speaker-diarization-community-1
 - Speaker diarization (if `VYSPER_PYANNOTE_TOKEN` is configured) also runs **once** on the full file instead of per-chunk, which is both cheaper and more accurate since it has the whole conversation for context — and, unlike `Alt+S`'s per-segment diarization, speaker labels stay consistent across the whole file since there's only one diarization pass.
 - The minuta is generated from the **full transcript in a single LLM call** whenever it fits under `VYSPER_MEETING_FINAL_TRANSCRIPT_CHARS` (the common case) — matching what you'd get pasting the whole transcript into Claude yourself. Only if the transcript is longer than that limit does it fall back to summarizing a handful of large text blocks in sequence (each one aware of the previous block's summary) and consolidating them into one minuta — still far fewer LLM calls than one-per-5-minutes.
 - Claude (Anthropic) is the primary LLM for the minuta; if it's unavailable or over quota/billing, Vysper falls back to Gemini automatically (see [LLM provider priority](#llm-provider-priority-claude-primary-gemini-fallback) below) — no separate config needed for this specific flow.
+- The uploaded file is copied into the session's own `audio/` folder as soon as processing starts, instead of only remembering its original path — so if you later move, rename, or delete the original file, the session (and any later `/actualizarHablantes`/`/reconocerVozPendientes`/`/reidentificarMinutas` on it) keeps working.
 
 Same non-blocking behavior as `Alt+S`: once a `Ctrl+5` run has read the file and kicked off processing, `Ctrl+5`/`Alt+S` are free again immediately — you don't need to wait for that file's transcription/diarization/minuta to finish before starting or uploading another one. "OCUPADO" only shows up while a session is still *actively recording* (or, for `Ctrl+5`, in the brief instant of reading the file) — never while it's just finishing up in the background.
 
@@ -366,13 +368,23 @@ pone el nombre real automáticamente, sin volver a depender de que se
 presente en el audio.
 
 El store vive en `~/.Vysper/voiceprints.json` (fuera del repo, nunca se
-commitea) — un embedding de voz por muestra enrolada, por persona. El
+commitea) — uno o más embeddings de voz por persona (re-enrolar a alguien ya
+existente le suma otra muestra, en vez de crear una entrada nueva). El
 matching (`stt/diarize.py`, similitud coseno contra
 `VYSPER_VOICEPRINT_THRESHOLD`) corre automáticamente en **cada** diarización
 normal de Alt+S/Ctrl+5 — si ya enrolaste a alguien, sus próximas reuniones
 salen con su nombre sin hacer nada más. Un cluster que no matchea nunca se
 marca solo como "desconocido" — eso es una decisión explícita de revisión
 (ver `/reconocerVoz` abajo), nunca del pipeline automático de cada reunión.
+
+Enrolar un nombre que ya existe en el store (con distinta capitalización o
+acentos) se fusiona automáticamente en esa misma entrada. Un nombre que se
+parece pero no es idéntico (típicamente un typo, p.ej. "Bryan" vs "Brayan"
+Camilo Mosquera Mateus) **no** se fusiona solo — el chat pregunta
+explícitamente "¿es la misma persona? (si/no)" antes de fusionar las huellas
+(`stt/merge_voiceprints.py`, con respaldo automático del store antes de
+escribir), para no arriesgarse a mezclar a dos personas distintas por una
+coincidencia de nombre.
 
 **`/reconocerVoz <ruta a una carpeta de sesion>`** (solo secretaria) — el
 enrollment en sí: toma una sesión ya procesada por Alt+S/Ctrl+5 (con
@@ -399,28 +411,61 @@ querés intentar con ellos ya mismo — respondé "si" y continúa directo sin
 tener que escribir otro comando.
 
 **`/reconocerVozPendientes <ruta a una carpeta de sesion>`** (solo
-secretaria) — mismo flujo, pero acotado a los hablantes que una corrida
-anterior ya dejó marcados `UNKNOWN`, sin volver a ofrecer los que nunca se
-revisaron ni los que ya tienen nombre. Útil para retomar más tarde (por
-ejemplo, después de enrolar a más gente) sin repasar toda la sesión de
-nuevo.
+secretaria) — mismo flujo, pero acotado a los hablantes sin identificar: los
+que una corrida anterior ya dejó marcados `UNKNOWN_NN` **y** los que nunca
+pasaron por ninguna revisión (siguen como `SPEAKER_NN` crudo, típico de una
+sesión recién grabada que todavía no pasó por `/actualizarHablantes` ni por
+este mismo comando) — sin volver a ofrecer los que ya tienen nombre. Útil
+para retomar más tarde (por ejemplo, después de enrolar a más gente) sin
+repasar toda la sesión de nuevo.
 
 **`/actualizarHablantes <ruta a una carpeta de sesion>`** (solo secretaria)
 — para sesiones **viejas**: re-corre solo el matching contra el store actual
 (sin re-clusterizar, la parte lenta de diarizar) y regenera los transcripts
 + minuta de esa sesión con cualquier nombre que se haya podido resolver
-desde que se procesó por primera vez.
+desde que se procesó por primera vez. Regenerar `minuta.md` pasa por una
+llamada a LLM (sustituye nombres en la minuta ya generada, no la reescribe
+de cero) — si el proveedor principal falla, cae a Gemini como respaldo (ver
+sección de LLM más abajo); no rompe el resto del comando si igual falla, solo
+deja `minuta.md` como estaba.
 
 ```
 /actualizarHablantes minutas/reunion-2026-07-20-09-00-00
 ```
 
+**`/reidentificarMinutas --carpeta <ruta> | --sesion <ruta>`** (solo
+secretaria) — la versión en lote y **sin LLM** de lo anterior
+(`stt/reidentify_minutas.py`), para reprocesar muchas sesiones ya
+identificadas a mano sin gastar cuota de LLM en algo que ya se sabe: re-matchea
+cada sesión contra el store actual (igual que `/actualizarHablantes`) y
+sustituye el texto de las etiquetas genéricas por el nombre real directo en
+`transcript-hablantes.txt`/`transcript-teams.txt` (reemplazo exacto, anclado
+a inicio de línea) y, en `minuta.md`, con un reemplazo de texto best-effort
+(sin garantía de cobertura total, porque ahí los nombres los escribió un LLM
+al generar la minuta original — puede haber redacciones que no calcen).
+`--carpeta` recorre recursivamente (puede tardar, hasta 30 min de timeout);
+`--sesion` apunta a una sola carpeta.
+
+```
+/reidentificarMinutas --carpeta /media/san/Miscosas6/Creai/minutas
+/reidentificarMinutas --sesion "minutas/reunion-2026-07-20-09-00-00"
+```
+
 **Configuración** (`.env`):
 ```bash
 VYSPER_VOICEPRINT_MODEL=pyannote/embedding    # requiere aceptar sus terminos en Hugging Face, igual que el modelo de diarizacion
-VYSPER_VOICEPRINT_THRESHOLD=0.75              # similitud coseno minima para considerar un match
+VYSPER_VOICEPRINT_THRESHOLD=0.60              # similitud coseno minima para considerar un match -- ver nota abajo
 VYSPER_VOICEPRINTS_PATH=~/.Vysper/voiceprints.json
 ```
+
+`VYSPER_VOICEPRINT_THRESHOLD=0.60` (default) viene de auditar coincidencias
+reales en decenas de sesiones: un match genuino cae consistentemente entre
+0.60 y 0.79 (la misma persona puede scorear 0.62 en una sesión y 0.74 en
+otra), mientras que los emparejamientos espurios se concentran debajo de
+~0.55. Con 0.75 quedaban afuera identificaciones correctas sistemáticamente.
+Bajarlo mucho más (por debajo de ~0.55) empieza a traer falsos positivos —
+en pruebas, una sola persona llegó a "matchear" 3 clusters distintos de la
+misma reunión al mismo tiempo, algo imposible.
 
 ### Modo Optimización (`Alt+O`) — tiempo real vs. posterior
 

@@ -3,7 +3,8 @@ const {
   parseReconocerVozCommand,
   parseOptimizaCommand,
   parseReconocerVozPendientesCommand,
-  parseActualizarHablantesCommand
+  parseActualizarHablantesCommand,
+  parseReidentificarMinutasCommand
 } = require('../src/core/secretaria-commands');
 
 describe('parseActualizaRagCommand', () => {
@@ -111,5 +112,36 @@ describe('parseActualizarHablantesCommand', () => {
     expect(parseActualizarHablantesCommand('actualizarHablantes /ruta')).toBeNull();
     expect(parseActualizarHablantesCommand('')).toBeNull();
     expect(parseActualizarHablantesCommand(undefined)).toBeNull();
+  });
+});
+
+describe('parseReidentificarMinutasCommand', () => {
+  test('extracts --carpeta as { mode: "carpeta", path }', () => {
+    expect(parseReidentificarMinutasCommand('/reidentificarMinutas --carpeta /media/san/Creai/minutas'))
+      .toEqual({ mode: 'carpeta', path: '/media/san/Creai/minutas' });
+  });
+
+  test('extracts --sesion as { mode: "sesion", path }', () => {
+    expect(parseReidentificarMinutasCommand('/reidentificarMinutas --sesion /ruta/a/una/sesion'))
+      .toEqual({ mode: 'sesion', path: '/ruta/a/una/sesion' });
+  });
+
+  test('is case-insensitive and trims surrounding whitespace', () => {
+    expect(parseReidentificarMinutasCommand('  /REIDENTIFICARMINUTAS   --CARPETA   /ruta  '))
+      .toEqual({ mode: 'carpeta', path: '/ruta' });
+  });
+
+  test('strips a single pair of surrounding quotes', () => {
+    expect(parseReidentificarMinutasCommand('/reidentificarMinutas --sesion "/ruta con espacios/sesion"'))
+      .toEqual({ mode: 'sesion', path: '/ruta con espacios/sesion' });
+  });
+
+  test('returns null without --carpeta/--sesion, without a path, or for unrelated text', () => {
+    expect(parseReidentificarMinutasCommand('/reidentificarMinutas /ruta')).toBeNull();
+    expect(parseReidentificarMinutasCommand('/reidentificarMinutas --carpeta')).toBeNull();
+    expect(parseReidentificarMinutasCommand('/reidentificarMinutas --otraflag /ruta')).toBeNull();
+    expect(parseReidentificarMinutasCommand('reidentificarMinutas --carpeta /ruta')).toBeNull();
+    expect(parseReidentificarMinutasCommand('')).toBeNull();
+    expect(parseReidentificarMinutasCommand(undefined)).toBeNull();
   });
 });
