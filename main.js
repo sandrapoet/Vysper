@@ -3701,7 +3701,18 @@ class ApplicationController {
   }
 
   async resolveSecretariaSpeakerNames(speakerLabeledText) {
-    const speakerLabels = [...new Set((speakerLabeledText.match(/^\S+(?=:)/gm) || []))];
+    // Antes se armaba con /^\S+(?=:)/gm (cualquier etiqueta de una sola
+    // palabra) sin filtrar, asi que una sesion ya totalmente identificada
+    // por huella de voz (ej. tras /actualizarHablantes) igual mandaba el
+    // transcript completo al LLM solo para "confirmar" nombres que ya
+    // estaban resueltos -- si ademas alguien esta enrolado con un nombre
+    // de una sola palabra, ese caso ni siquiera necesitaba resolverse.
+    // Filtrar a SOLO etiquetas genericas (SPEAKER_NN/UNKNOWN_NN/etc) hace
+    // que esta llamada se salte por completo cuando ya no queda nadie sin
+    // nombre real, sin perder la deteccion de autopresentacion para los
+    // que si siguen genericos.
+    const allLabels = [...new Set((speakerLabeledText.match(/^\S+(?=:)/gm) || []))];
+    const speakerLabels = allLabels.filter((label) => SECRETARIA_GENERIC_SPEAKER_PATTERN.test(label));
     if (!speakerLabels.length) return {};
 
     const prompt = [
