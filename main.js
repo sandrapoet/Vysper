@@ -6542,8 +6542,18 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
       const text = formatCrearPrResult(result);
       if (result.slack_message) {
         clipboard.writeText(result.slack_message);
+        // slack_publish_error ausente = dry_run, nunca se intento publicar
+        // (mensaje solo generado para preview); presente (null u otro
+        // string) = SI se intento -- ver runRevisarCommand, mismo patron.
+        // Bug real, visto en vivo: antes esto decia siempre "no se envio
+        // automaticamente", falso en el caso normal (Cerebro ya lo publica
+        // solo) -- si el usuario le creia y lo pegaba a mano, duplicaba el
+        // post en el canal real de Slack.
+        const clipboardNote = result.slack_publish_error === undefined
+          ? 'Mensaje para Slack copiado al portapapeles -- listo para pegar, no se envio automaticamente.'
+          : 'Mensaje también copiado al portapapeles de esta PC por si lo necesitas ahí.';
         this.emitSiliaResult(
-          `${text}\n\n_(Mensaje para Slack copiado al portapapeles -- listo para pegar, no se envio automaticamente.)_`,
+          `${text}\n\n_(${clipboardNote})_`,
           { ...metadata, siliaCommand: 'crear-pr', copiedToClipboard: true }
         );
       } else {
