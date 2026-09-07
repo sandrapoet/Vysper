@@ -14,7 +14,8 @@ const {
   parseCancelarPrCommand,
   parseAprobarPrCommand,
   parseActualizarJiraCommand,
-  parseConfirmationResponse
+  parseConfirmationResponse,
+  parseModoCommand
 } = require('../src/core/silia-commands');
 
 describe('parseSiliaDailyCommand', () => {
@@ -542,5 +543,28 @@ describe('parseConfirmationResponse', () => {
     expect(parseConfirmationResponse('/hoy agentes')).toBeNull();
     expect(parseConfirmationResponse('')).toBeNull();
     expect(parseConfirmationResponse(undefined)).toBeNull();
+  });
+});
+
+describe('parseModoCommand', () => {
+  test('returns the target skill for a valid /modo command', () => {
+    expect(parseModoCommand('/modo silia')).toEqual({ skill: 'silia' });
+    expect(parseModoCommand('/modo system-design')).toEqual({ skill: 'system-design' });
+  });
+
+  test('is case-insensitive and tolerates surrounding whitespace', () => {
+    expect(parseModoCommand('  /MODO Silia  ')).toEqual({ skill: 'silia' });
+  });
+
+  test('errors on an unknown skill', () => {
+    const result = parseModoCommand('/modo inventado');
+    expect(result.error).toMatch(/Skill desconocido: inventado/);
+  });
+
+  test('returns null for unrelated or malformed text', () => {
+    expect(parseModoCommand('/modo')).toBeNull();
+    expect(parseModoCommand('/modo silia extra')).toBeNull();
+    expect(parseModoCommand('/revisar https://github.com/x/y/pull/1')).toBeNull();
+    expect(parseModoCommand('')).toBeNull();
   });
 });

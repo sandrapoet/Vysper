@@ -296,6 +296,7 @@ function startRemoteAudioServer(controller, speechService) {
     streamUpload.single('archivo')(req, res, async (error) => {
       const streamState = controller.getSecretariaStreamSession(req.params.id);
       if (!streamState) {
+        log.warn('Stream no encontrado (404 en /segmento)', { streamId: req.params.id, seq: req.body?.seq, ip: req.ip });
         if (req.file) fs.unlink(req.file.path, () => {});
         return res.status(404).json({ ok: false, error: 'stream no encontrado (¿ya se cerro con /finish?)' });
       }
@@ -338,6 +339,7 @@ function startRemoteAudioServer(controller, speechService) {
   app.get('/stream/:id/estado', (req, res) => {
     const streamState = controller.getSecretariaStreamSession(req.params.id);
     if (!streamState) {
+      log.warn('Stream no encontrado (404 en /estado)', { streamId: req.params.id, ip: req.ip });
       return res.status(404).json({ ok: false, error: 'stream no encontrado' });
     }
     const segments = [...streamState.segments.values()].sort((a, b) => a.seq - b.seq);
@@ -347,6 +349,7 @@ function startRemoteAudioServer(controller, speechService) {
   app.post('/stream/:id/finish', async (req, res) => {
     const streamState = controller.getSecretariaStreamSession(req.params.id);
     if (!streamState) {
+      log.warn('Stream no encontrado (404 en /finish)', { streamId: req.params.id, ip: req.ip });
       return res.status(404).json({ ok: false, error: 'stream no encontrado (¿ya se finalizo antes?)' });
     }
     const graceMs = Number(req.body?.graceMs) || 20000;

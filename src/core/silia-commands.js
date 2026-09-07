@@ -441,6 +441,34 @@ function parseConfirmationResponse(text) {
   return null;
 }
 
+// Debe coincidir con el array que usa navigateSkill() en main.js para ciclar
+// skills con el atajo Ctrl/Cmd+Arriba/Abajo -- son los unicos nombres validos
+// para /modo.
+const VALID_SKILLS = [
+  'programming', 'dsa', 'system-design', 'behavioral',
+  'secretaria', 'silia', 'labelling', 'traductor',
+];
+
+/**
+ * Returns the target skill name if text is "/modo <skill>", or {error} if
+ * el skill no es uno de VALID_SKILLS. Otherwise null. A diferencia de
+ * /revisar, /hoy, etc., este comando debe reconocerse y ejecutarse sin
+ * importar el skill activo -- si no, no habria forma de cambiar A silia
+ * por control remoto cuando la PC esta en otro modo (el problema del huevo
+ * y la gallina que /modo existe justamente para resolver).
+ */
+function parseModoCommand(text) {
+  const normalized = normalize(text);
+  const match = normalized.match(/^\/modo\s+(\S+)\s*$/i);
+  if (!match) return null;
+
+  const skill = match[1].toLowerCase();
+  if (!VALID_SKILLS.includes(skill)) {
+    return { error: `Skill desconocido: ${skill}. Validos: ${VALID_SKILLS.join(', ')}` };
+  }
+  return { skill };
+}
+
 module.exports = {
   parseSiliaDailyCommand,
   parseSiliaDailyArgument,
@@ -462,4 +490,6 @@ module.exports = {
   parseMergeCommand,
   parseConfirmationResponse,
   parseContextoCommand,
+  parseModoCommand,
+  VALID_SKILLS,
 };

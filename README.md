@@ -16,7 +16,7 @@ Ctrl+6	Secretaria: abrir un archivo en la ventana shadow translúcida para ver l
 Ctrl+7	Secretaria: convierte una transcripción de texto existente ("Hablante: texto" por línea, sin timestamps) al formato Microsoft Teams, estimando tiempos por cantidad de palabras
 Ctrl+Shift+L	Liberar todo el buffer en cualquier modo (secretaria: buffer de dictado; resto: contexto + imágenes acumuladas, equivale a °°°). También cancela un pegado/copiado en curso
 Ctrl+Shift+B	Copiar selección con el mouse, sin teclazos (sigiloso): pulsa, selecciona, y al soltar el mouse copia al portapapeles. Funciona en todos los modos
-Ctrl+Shift+V	Pegar el portapapeles en el cursor, tecleado por "cubetazos" (simula escritura humana). Funciona en todos los modos; cancelable con Ctrl+Shift+L
+Ctrl+Shift+V	Pegar el portapapeles en el cursor, tecleado tecla a tecla (la app destino ve teclas reales, no un evento de pegado). Funciona en todos los modos; cancelable con Ctrl+Shift+L. Para pegado normal y instantáneo usa el Ctrl+V del sistema
 Alt+,	Escribe el símbolo < en el cursor (todos los modos)
 Alt+.	Escribe el símbolo > en el cursor (todos los modos)
 Ctrl+Shift+Z	Ocultar / mostrar todas las ventanas (incluye ventana gris)
@@ -250,7 +250,41 @@ of failing silently.
 | Shortcut | Action |
 |----------|--------|
 | `Ctrl/Cmd + Shift + B` | Arm copy: select with the mouse; on release it copies the selection |
-| `Ctrl/Cmd + Shift + V` | Paste clipboard at cursor, typed in chunks (human-like); cancel with `Ctrl+Shift+L` |
+| `Ctrl/Cmd + Shift + V` | Paste clipboard at cursor, typed key by key (the target app sees real key events, not a `paste`); cancel with `Ctrl+Shift+L` |
+
+On Linux/X11 the typed paste sends **keysyms that already exist in your active
+keymap** (`xdotool key`), reaching accented letters through the layout's own
+dead keys (`dead_acute` + `a` = `á`). This matters: `xdotool type` can only
+type a character whose keysym is in the keymap, and otherwise **remaps a free
+keycode on the fly** — which makes the X server broadcast `MappingNotify` to
+every connected client and makes GNOME reapply the layout. On a `latam` layout
+`aacute`, `eacute`, etc. are *not* in the keymap, so Spanish text used to
+trigger one desktop-wide keymap reload per accent, freezing the whole desktop.
+It also mistyped accented capitals (typing `ÁN` produced `áN`).
+
+Measured on a 600-character Spanish text: **91 ms and exact text** with
+keysyms, vs **3570 ms** with the old per-chunk `xdotool type`.
+
+The remaining limit is not Vysper: XTEST injects into the global input stream,
+so the keyboard belongs to the paste while it runs, and the target app
+translates keycode→character *when it processes the event*. Send keys faster
+than the app consumes them and it drops or duplicates characters. Against a
+slow sink, 4 ms/key is the floor for byte-exact text; 1-2 ms fails
+occasionally. So a long paste still takes time — expect roughly 5 ms per
+character — and `Ctrl+Shift+L` cancels it.
+
+```bash
+VYSPER_PASTE_KEY_DELAY_MS=4     # ms per key. Lower = faster but may drop characters
+VYSPER_PASTE_BATCH_TOKENS=200   # keys per xdotool call: cancel/progress granularity
+VYSPER_PASTE_TRANSLITERATE=1    # 0 keeps — … “ ” verbatim (slower, may drop them)
+VYSPER_PASTE_MODE=keys          # `type` forces the old xdotool type path (diagnostics)
+```
+
+Typographic characters with no keysym in the keymap (`—` `–` `…` `“` `”` `•`,
+non-breaking and zero-width spaces) are transliterated to their ASCII
+equivalent so they never need a remap. Anything genuinely unrepresentable
+(emoji, CJK) still goes through `xdotool type` — now a rare exception instead
+of once per accent.
 
 ### Session Management
 | Shortcut | Action |
@@ -619,7 +653,33 @@ Importante:
   (`secretaria`, `silia`, `system-design`, etc.) — igual que si lo hubieras
   escrito ahí mismo. Comandos como `/actualizaRag` o `/hoy` solo responden
   si la app ya está en uno de los modos que los habilita; si no, no pasa
-  nada visible (revisa el modo activo en la app antes de mandarlo).
+  nada visible.
+- Para no depender de revisar manualmente el modo activo en la PC, usa
+  `/modo <skill>` para cambiarlo primero por control remoto — a diferencia
+  de los demás comandos, `/modo` se reconoce sin importar el skill activo:
+
+  ```bash
+  curl -u TU_USUARIO:TU_PASSWORD \
+    -H "Content-Type: application/json" \
+    -d '{"comando": "/modo silia"}' \
+    http://100.83.125.94:8080/comando
+  # {"ok":true,"comando":"/modo silia","resultado":"Modo cambiado: system-design -> silia"}
+  ```
+
+  Skills válidos: `programming`, `dsa`, `system-design`, `behavioral`,
+  `secretaria`, `silia`, `labelling`, `traductor`. Un skill desconocido
+  responde con `{"ok":false,"error":"Skill desconocido: ..."}` en vez de
+  fallar en silencio.
+- **Script de referencia para Termux**: [scripts/termux/revisar-pr.sh](scripts/termux/revisar-pr.sh)
+  corre `/modo silia` y después `/revisar` sin escribir nada del comando a
+  mano — pensado para usarse manejando: sin argumentos muestra un menú de
+  elección rápida (repo, número de PR, profundidad, `--diablo`) donde cada
+  paso es un solo tap de número (ENTER solo toma la opción marcada con
+  `*`; el número de PR es el único que sí necesita Enter). También admite
+  modo no interactivo con argumentos (`./revisar-pr.sh agent:42 --profundo`)
+  para un widget/atajo de Termux con el texto ya armado. Requiere `python3`
+  (Termux no lo trae por defecto — `pkg install python -y`) para armar y
+  parsear el JSON de forma segura.
 - Es seguro usarlo aunque haya una grabación en vivo (Alt+S/Alt+O) corriendo
   al mismo tiempo en la PC: la respuesta se correlaciona con el comando que
   la originó (via `AsyncLocalStorage`, ver `runChatCommandHeadless` en
@@ -683,6 +743,16 @@ hasta 5 veces (configurable). Si de verdad no llega, `/finish` lo marca como
 hueco en la minuta final (`[HUECO: segmento N no disponible...]`) en vez de
 omitirlo en silencio — es una nota de que ese tramo de audio no se pudo
 recuperar, no que el sistema haya "arreglado" la pérdida.
+
+**Para un archivo de audio ya grabado** (no una reunión en vivo), el script
+[scripts/termux/upload-audio.sh](scripts/termux/upload-audio.sh) usa el mismo
+pipeline de `/stream/*` como un solo segmento: te pide copiar el archivo a
+`/sdcard/Download/vysper_temp/`, lo sube, y hace exactamente lo mismo que
+Alt+S en la PC (transcribe + diariza + genera la minuta) sin preguntar nada
+más — el servidor no distingue "transcribir" de "minuta" para este endpoint.
+Manda la duración real del audio si tenés `ffprobe` instalado
+(`pkg install ffmpeg`); si no, manda `0` (solo se pierde ese dato
+informativo). También requiere `python3` (`pkg install python -y`).
 
 **Conflicto con Alt+O**: `/stream/start` responde 409 si hay una entrevista
 de Optimización (Alt+O) activa en ese momento en la PC — evita mezclar el
@@ -920,12 +990,24 @@ re-evalúa únicamente las observaciones pendientes, no la matriz completa.
 
 El reporte completo se guarda en `apoyos/revision-pr-<numero>.md`, y Cerebro
 además genera un resumen en texto plano (sintaxis mrkdwn de Slack:
-`*negrita*`, bullets `•`) que Vysper copia automáticamente al
-portapapeles, listo para pegar directo en un mensaje de Slack — nunca se
-envía solo, no hay integración real con Slack. (Deliberadamente texto
-plano, no JSON de Block Kit: pegado como texto en un canal normal, el JSON
-se ve crudo y feo — Block Kit solo se renderiza vía la API de Slack o el
-Workflow Builder.)
+`*negrita*`, bullets `•`) que Vysper copia automáticamente al portapapeles.
+(Deliberadamente texto plano, no JSON de Block Kit: pegado como texto en un
+canal normal, el JSON se ve crudo y feo — Block Kit solo se renderiza vía la
+API de Slack o el Workflow Builder.)
+
+Si el resultado es `APPROVED` ese resumen se queda solo en el portapapeles
+(no hay nada que explicarle a nadie). Si es `CONDITIONAL_APPROVED` o
+`BLOCKED_CONFLICTS`, Cerebro además lo **publica automáticamente** en el
+canal de Slack `SLACK_DEFAULT_CHANNEL` (`.env` de Cerebro) — necesario
+porque copiar al portapapeles solo sirve si corriste `/revisar` en la PC:
+corriéndolo desde el celular por `/comando` (ver más abajo), el
+portapapeles al que escribe Vysper es el de la PC, no el del celular, así
+que sin esto no habría forma de llevar el motivo del rechazo hasta un
+comentario en el PR del compañero. La publicación es *fail-soft*: si
+`SLACK_BOT_TOKEN` no está configurado o falla, no tumba `/revisar` — el
+reporte y el comentario en GitHub ya se generaron; el motivo del fallo de
+Slack queda anotado en el reporte (`⚠️ No se pudo publicar el resumen en
+Slack: ...`).
 
 **Ejemplos:**
 ```
