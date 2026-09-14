@@ -1,4 +1,11 @@
+const fs = require('fs');
+const path = require('path');
 const {
+  PUNCT_KEYSYMS,
+  LATIN1_KEYSYMS,
+  COMBINING_TO_DEAD,
+  DEAD_KEYSYMS,
+  TRANSLITERATIONS,
   keysymName,
   parseKeymapKeysyms,
   charToKeysyms,
@@ -196,5 +203,147 @@ describe('batchRuns', () => {
     const plan = planTypedPaste('abc', LATAM);
     expect(batchRuns(plan.runs, 0)).toHaveLength(1);
     expect(batchRuns(plan.runs, -5)).toHaveLength(1);
+  });
+});
+
+
+// ============================================================
+// Fidelidad: lo que se teclea tiene que ser el texto de entrada
+// ============================================================
+// Los tests de arriba comprueban la FORMA del plan (que agrupe, que no
+// remapee, cuantos tokens salen). Ninguno comprobaba lo unico que de
+// verdad importa: que al otro lado aparezca el mismo texto. Estos
+// decodifican el plan de vuelta a texto y lo comparan con la entrada, que
+// es la propiedad que se rompe en silencio -- un caracter perdido no falla
+// ningun assert de forma.
+
+// keysym -> caracter, invirtiendo las mismas tablas que usa el modulo.
+const INVERSE = new Map();
+for (const [ch, ks] of Object.entries(PUNCT_KEYSYMS)) if (!INVERSE.has(ks)) INVERSE.set(ks, ch);
+for (const [ch, ks] of Object.entries(LATIN1_KEYSYMS)) if (!INVERSE.has(ks)) INVERSE.set(ks, ch);
+const DEAD_TO_COMBINING = {};
+for (const [comb, dead] of Object.entries(COMBINING_TO_DEAD)) DEAD_TO_COMBINING[dead] = comb;
+
+function decodeTokens(tokens) {
+  let out = '';
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (DEAD_TO_COMBINING[token]) {
+      const next = tokens[++i];
+      if (next === undefined) return `${out}<dead-suelta:${token}>`;
+      const base = INVERSE.has(next) ? INVERSE.get(next) : next;
+      out += (base + DEAD_TO_COMBINING[token]).normalize('NFC');
+      continue;
+    }
+    if (INVERSE.has(token)) { out += INVERSE.get(token); continue; }
+    if (/^[A-Za-z0-9]$/.test(token)) { out += token; continue; }
+    out += `<desconocido:${token}>`;
+  }
+  return out;
+}
+
+// Decodifica el plan completo. Acepta los lotes de batchRuns o los tramos
+// crudos, para poder comprobar que el batching no altera el resultado.
+function decode(runs) {
+  return runs.map((run) => (run.kind === 'keys' ? decodeTokens(run.tokens) : run.text)).join('');
+}
+
+// El texto que se espera ver: normalizacion de saltos, mas las
+// transliteraciones que el plan reporta haber aplicado (y solo esas -- un
+// caracter que el keymap si tiene debe llegar intacto aunque figure en la
+// tabla de transliteracion).
+function expected(text, plan) {
+  const pending = new Map();
+  for (const ch of plan.transliterated) pending.set(ch, (pending.get(ch) || 0) + 1);
+  let out = '';
+  for (const ch of String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n')) {
+    if (pending.get(ch)) {
+      pending.set(ch, pending.get(ch) - 1);
+      out += TRANSLITERATIONS[ch];
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+function roundTrip(text, present = LATAM, batchTokens = null) {
+  const plan = planTypedPaste(text, present);
+  const runs = batchTokens === null ? plan.runs : batchRuns(plan.runs, batchTokens);
+  return { got: decode(runs), want: expected(text, plan), plan };
+}
+
+describe('fidelidad del plan (round-trip)', () => {
+  test.each([
+    ['ascii', 'Hello, world! 123'],
+    ['espanol con acentos', 'Aquí está la minuta: ¿qué pasó? ¡Sí! Ñoño, güero, Ángel'],
+    ['mayusculas acentuadas', 'ÁÉÍÓÚ ÑÜ ÀÈÌÒÙ'],
+    ['puntuacion de shell', 'x="${VAR:-http://a.b:8080}"; [ "$a" != \'000\' ] && printf \'%s\\n\' ok'],
+    ['saltos y tabs', 'linea 1\n\tsangrada\nlinea 3\n'],
+    ['crlf', 'uno\r\ndos\rtres'],
+    ['tipografia de LLM', 'Un guion —largo— y puntos… con “comillas” y ‘simples’'],
+    ['vacio', '']
+  ])('%s llega intacto', (_nombre, texto) => {
+    const { got, want } = roundTrip(texto);
+    expect(got).toBe(want);
+  });
+
+  test('el texto no pierde ni un caracter al partirse en lotes', () => {
+    const texto = 'Áéíóú ñÑ ¿qué? '.repeat(40);
+    // Tamanos deliberadamente hostiles: 1 y 2 caen justo encima de los pares
+    // dead_acute + letra, que son dos tokens de un solo caracter.
+    for (const size of [1, 2, 3, 5, 7, 13, 200]) {
+      const { got, want } = roundTrip(texto, LATAM, size);
+      expect(got).toBe(want);
+    }
+  });
+
+  test('los scripts de Termux se pegan sin perder nada', () => {
+    // Corpus real: es exactamente lo que se pega al celular, y donde un
+    // caracter perdido deja un script que falla de forma desconcertante.
+    const dir = path.join(__dirname, '..', 'scripts', 'termux');
+    const scripts = fs.readdirSync(dir).filter((f) => f.endsWith('.sh'));
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const nombre of scripts) {
+      const texto = fs.readFileSync(path.join(dir, nombre), 'utf8');
+      const { got, want } = roundTrip(texto, LATAM, 200);
+      expect(got).toBe(want);
+    }
+  });
+});
+
+describe('batchRuns no parte un caracter en dos lotes', () => {
+  test('ningun lote termina en una dead key', () => {
+    // Separar dead_acute de su letra los manda en dos invocaciones distintas
+    // de xdotool, con el acento pendiente cruzando de un proceso al otro; y
+    // entre lote y lote es justo donde se atiende la cancelacion, que dejaria
+    // el acento colgado para la siguiente tecla del usuario.
+    const plan = planTypedPaste('áéíóúñ '.repeat(50), LATAM);
+    for (const size of [1, 2, 3, 5, 7, 13, 200]) {
+      for (const batch of batchRuns(plan.runs, size)) {
+        if (batch.kind !== 'keys') continue;
+        expect(DEAD_KEYSYMS.has(batch.tokens[batch.tokens.length - 1])).toBe(false);
+      }
+    }
+  });
+
+  test('no se pierde ni se duplica ningun token al lotear', () => {
+    const plan = planTypedPaste('áéíóú abc ñ 123', LATAM);
+    for (const size of [1, 2, 3, 5, 200]) {
+      const loteados = batchRuns(plan.runs, size)
+        .filter((b) => b.kind === 'keys')
+        .flatMap((b) => b.tokens);
+      const original = plan.runs.filter((r) => r.kind === 'keys').flatMap((r) => r.tokens);
+      expect(loteados).toEqual(original);
+    }
+  });
+
+  test('llevarse la base al lote no lo pasa de tamano por mas de un token', () => {
+    const plan = planTypedPaste('áéíóúñ '.repeat(20), LATAM);
+    for (const size of [1, 2, 3, 5, 7]) {
+      for (const batch of batchRuns(plan.runs, size)) {
+        expect(batch.tokens.length).toBeLessThanOrEqual(size + 1);
+      }
+    }
   });
 });

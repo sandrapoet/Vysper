@@ -354,7 +354,7 @@ describe('CerebroService', () => {
     const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
 
     const promise = service.runCrearPr('feature/AGE-123', {
-      draft: false, labels: ['bug-fix', 'backend'], ticket: 'AGE-123'
+      draft: false, labels: ['bug-fix', 'backend'], tickets: ['AGE-123']
     });
     child.stdout.emit('data', Buffer.from(JSON.stringify({ pr_url: 'https://github.com/org/repo/pull/9' })));
     child.emit('close', 0);
@@ -367,13 +367,50 @@ describe('CerebroService', () => {
     );
   });
 
+  test('runCrearPr manda un --ticket REPETIDO por cada ticket', async () => {
+    // Repetido y no "AGE-233,AGE-234" en un solo flag: es el formato que
+    // el CLI de Cerebro toma nativamente, y degrada mejor si el chat
+    // quedara con un Cerebro viejo (ahi --ticket era un str y se queda con
+    // el ultimo, en vez de recibir una "clave" inexistente con comas).
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runCrearPr('feature/x', {
+      labels: [], tickets: ['AGE-233', 'AGE-234', 'AGE-236'],
+    });
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ pr_url: 'u' })));
+    child.emit('close', 0);
+
+    await promise;
+    const args = spawnFn.mock.calls[0][1];
+    expect(args.filter((a) => a === '--ticket')).toHaveLength(3);
+    expect(args).toContain('AGE-233');
+    expect(args).toContain('AGE-234');
+    expect(args).toContain('AGE-236');
+    expect(args.join(' ')).not.toContain('AGE-233,AGE-234');
+  });
+
+  test('runCrearPr sin tickets no manda ningun --ticket', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runCrearPr('feature/x', { labels: [] });
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ pr_url: 'u' })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn.mock.calls[0][1]).not.toContain('--ticket');
+  });
+
   test('runCrearPr passes --base and --repo-dir when given', async () => {
     const child = makeFakeChild();
     const spawnFn = jest.fn(() => child);
     const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
 
     const promise = service.runCrearPr('feature/AGE-309', {
-      ticket: 'AGE-309', labels: ['age-309'], base: 'develop', repoDir: '/media/san/repo/Agent'
+      tickets: ['AGE-309'], labels: ['age-309'], base: 'develop', repoDir: '/media/san/repo/Agent'
     });
     child.stdout.emit('data', Buffer.from(JSON.stringify({ pr_url: 'https://github.com/org/repo/pull/9' })));
     child.emit('close', 0);
@@ -441,6 +478,24 @@ describe('CerebroService', () => {
       ['-m', 'cerebro.cli', 'aprobar-pr', 'https://github.com/org/repo/pull/9', '--merge', '--tag', '--tag-mensaje', 'release 1.2.3', '--confirmar'],
       expect.any(Object)
     );
+  });
+
+  test('runAprobarPr with evaluar sends --merge --evaluar and NEVER --confirmar', async () => {
+    // Turno 1: corre el merge gate y devuelve su evidencia sin mergear.
+    // --evaluar y --confirmar juntos serian mergear sin que nadie confirme.
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runAprobarPr('https://github.com/org/repo/pull/9', { merge: true, evaluar: true });
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ approved: true })));
+    child.emit('close', 0);
+
+    await promise;
+    const args = spawnFn.mock.calls[0][1];
+    expect(args).toContain('--merge');
+    expect(args).toContain('--evaluar');
+    expect(args).not.toContain('--confirmar');
   });
 
   test('runActualizarJira without confirmar sends --texto and never a --plan', async () => {

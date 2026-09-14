@@ -75,6 +75,10 @@ const COMBINING_TO_DEAD = {
   '̊': 'dead_abovering'
 };
 
+// Las dead keys que puede emitir charToKeysyms. Se derivan de la tabla de
+// arriba para que no se puedan desincronizar.
+const DEAD_KEYSYMS = new Set(Object.values(COMBINING_TO_DEAD));
+
 // Tipografia que suele venir en texto de LLM y que casi ningun keymap tiene.
 // Se translitera a su equivalente ASCII para que no haya que remapear (ver
 // cabecera): la alternativa medida es que el caracter se pierda a mitad del
@@ -237,10 +241,23 @@ function batchRuns(runs, batchTokens = 200) {
       // Los tokens no llevan cuenta propia de caracteres, asi que se reparte
       // proporcionalmente: es solo para la barra de progreso.
       const total = run.tokens.length;
-      for (let i = 0; i < total; i += size) {
-        const slice = run.tokens.slice(i, i + size);
+      let i = 0;
+      while (i < total) {
+        let end = Math.min(i + size, total);
+        // Nunca cortar entre una dead key y la letra que compone: 'a' con
+        // dead_acute son DOS tokens de un solo caracter, y separarlos en dos
+        // lotes los manda en invocaciones distintas de xdotool, con el
+        // acento pendiente cruzando de un proceso al otro. Peor: entre lote
+        // y lote es justo donde se atiende la cancelacion (Ctrl+Shift+L), y
+        // cancelar ahi deja el acento colgado, listo para componerse con la
+        // siguiente tecla que escriba el usuario. Se lleva la base al mismo
+        // lote aunque eso lo pase por un token del tamano pedido: ese tamano
+        // solo gradua cada cuanto se puede cancelar e informar progreso.
+        if (end < total && DEAD_KEYSYMS.has(run.tokens[end - 1])) end += 1;
+        const slice = run.tokens.slice(i, end);
         const chars = Math.round(run.chars * (slice.length / total));
         batches.push({ kind: 'keys', tokens: slice, chars });
+        i = end;
       }
     } else {
       for (let i = 0; i < run.text.length; i += size) {
@@ -254,6 +271,7 @@ function batchRuns(runs, batchTokens = 200) {
 
 module.exports = {
   PUNCT_KEYSYMS,
+  DEAD_KEYSYMS,
   LATIN1_KEYSYMS,
   COMBINING_TO_DEAD,
   TRANSLITERATIONS,

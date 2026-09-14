@@ -18,12 +18,16 @@
  *   VYSPER_HTTP_PORT         puerto, default 8080
  *   VYSPER_HTTP_USER         usuario para Basic Auth (requerido)
  *   VYSPER_HTTP_PASSWORD     contrasena para Basic Auth (requerido)
- *   VYSPER_HTTP_UPLOAD_DIR   carpeta temporal de audio, default /tmp/vysper_audio
+ *   VYSPER_HTTP_UPLOAD_DIR   carpeta temporal de audio, default <repo>/tmp/http-uploads
  *   VYSPER_HTTP_LOG          archivo de log, default /media/san/Miscosas6/log/vysper_http.log
  *   VYSPER_HTTP_MAX_MB       limite de tamano de archivo en MB, default 200
+ *   VYSPER_HTTP_REQUEST_TIMEOUT_MS  tope para recibir el cuerpo de una request,
+ *                            default 7200000 (2h) -- el default de Node son 5 min,
+ *                            insuficiente para subir una reunion por datos moviles
  */
 
 const fs = require('fs');
+const http = require('http');
 const path = require('path');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
@@ -117,9 +121,15 @@ function startRemoteAudioServer(controller, speechService) {
   }
 
   const port = Number(process.env.VYSPER_HTTP_PORT || 8080);
-  const uploadDir = process.env.VYSPER_HTTP_UPLOAD_DIR || '/tmp/vysper_audio';
+  // Default en <repo>/tmp (mismo volumen que apoyos/ y minutas/), no
+  // os.tmpdir() -- la raiz del sistema puede ser un disco mucho mas chico
+  // que donde vive el repo, y este directorio recibe audio potencialmente
+  // grande (ver /upload, /stream/*/segmento). Confirmado en vivo: la raiz
+  // se quedo sin espacio por archivos acumulados aca.
+  const uploadDir = process.env.VYSPER_HTTP_UPLOAD_DIR || path.join(__dirname, '..', 'tmp', 'http-uploads');
   const logPath = process.env.VYSPER_HTTP_LOG || '/media/san/Miscosas6/log/vysper_http.log';
   const maxMb = Number(process.env.VYSPER_HTTP_MAX_MB || 200);
+  const requestTimeoutMs = Number(process.env.VYSPER_HTTP_REQUEST_TIMEOUT_MS || 2 * 60 * 60 * 1000);
   const user = process.env.VYSPER_HTTP_USER;
   const password = process.env.VYSPER_HTTP_PASSWORD;
 
@@ -192,8 +202,16 @@ function startRemoteAudioServer(controller, speechService) {
 
     log.info('Procesando', { comando, archivo });
 
+    // El .wav convertido (y, para minuta/optimizar, tambien el original) ya
+    // quedan copiados dentro de la sesion propia por
+    // processSecretariaAudioFileAsMeeting (ver ese comentario), o ya se
+    // consumieron por completo (transcribir no copia nada a ningun lado) --
+    // nada de esto necesita persistir en uploadDir despues de esta request.
+    // Sin limpiarlo, cada /process dejaba 2 archivos completos (el subido +
+    // su .converted.wav) para siempre en uploadDir, acumulando sin limite.
+    let wavPath = null;
     try {
-      const wavPath = await convertToWav(inputPath, log);
+      wavPath = await convertToWav(inputPath, log);
 
       if (comando === 'transcribir') {
         const text = await speechService.transcribeFile(wavPath);
@@ -228,6 +246,9 @@ function startRemoteAudioServer(controller, speechService) {
     } catch (error) {
       log.error('Fallo al procesar', { comando, archivo, error: error.message });
       return res.status(500).json({ ok: false, error: error.message });
+    } finally {
+      fs.unlink(inputPath, () => {});
+      if (wavPath && wavPath !== inputPath) fs.unlink(wavPath, () => {});
     }
   });
 
@@ -241,13 +262,77 @@ function startRemoteAudioServer(controller, speechService) {
     log.info('Comando de texto recibido', { comando: text });
 
     try {
-      const resultado = await controller.runChatCommandHeadless(text);
-      log.info('Comando de texto resuelto', { comando: text });
-      return res.json({ ok: true, comando: text, resultado });
+      const { resultado, fallo } = await controller.runChatCommandHeadless(text);
+      // ok:true = el comando llego y se ejecuto; fallo:true = se ejecuto pero
+      // su resultado es un error (Cerebro devolvio codigo != 0, etc). Son dos
+      // cosas distintas y el cliente necesita ambas: colapsarlas en `ok` fue
+      // el bug que hacia decir "Revision completada" sobre un fallo.
+      log.info('Comando de texto resuelto', { comando: text, fallo: fallo === true });
+      return res.json({ ok: true, comando: text, resultado, fallo: fallo === true });
     } catch (error) {
       log.error('Comando de texto fallo', { comando: text, error: error.message });
       return res.status(500).json({ ok: false, error: error.message });
     }
+  });
+
+  // ── GET /scripts[/:nombre]: descarga de los scripts de Termux ────────────
+  // Existe para no pegar el script a mano en el celular. Un pegado truncado
+  // deja un archivo que falla de formas muy confusas -- se vio uno que
+  // arrancaba a mitad de curl_with_retries: "local: can only be used in a
+  // function", $CONNECT_TIMEOUT vacio, "sleep: missing operand" -- y el
+  // script no puede detectarlo por si mismo, porque lo que falta es
+  // justamente el encabezado donde iria cualquier chequeo. Con esto,
+  // actualizar el celular es un curl. Va detras del Basic Auth global como
+  // todo lo demas.
+  const scriptsDir = path.join(__dirname, '..', 'scripts', 'termux');
+
+  function listTermuxScripts() {
+    return fs.readdirSync(scriptsDir).filter((f) => f.endsWith('.sh')).sort();
+  }
+
+  app.get('/scripts', (req, res) => {
+    try {
+      // Se publica el md5 y el tamano de cada script, no solo el nombre: es
+      // lo que deja al cliente verificar que la descarga llego entera antes
+      // de instalarla. Comprobar la estructura no alcanza -- un script
+      // cortado por abajo en una frontera limpia (los primeros KB son
+      // comentarios y asignaciones) tiene shebang y pasa `bash -n`, asi que
+      // se instalaria como bueno.
+      const scripts = listTermuxScripts().map((name) => {
+        const contenido = fs.readFileSync(path.join(scriptsDir, name));
+        return {
+          name,
+          bytes: contenido.length,
+          md5: crypto.createHash('md5').update(contenido).digest('hex')
+        };
+      });
+      res.json({ ok: true, scripts });
+    } catch (error) {
+      log.error('No se pudo listar scripts/termux', { error: error.message });
+      res.status(500).json({ ok: false, error: 'no se pudo listar los scripts' });
+    }
+  });
+
+  app.get('/scripts/:nombre', (req, res) => {
+    // Allowlist por igualdad exacta contra lo que hay en el directorio: el
+    // nombre pedido no se concatena a ninguna ruta hasta despues de pasar
+    // por aca, asi que no hay manera de salirse de scripts/termux (ni con
+    // "..", ni con una ruta absoluta).
+    let allowed;
+    try {
+      allowed = listTermuxScripts();
+    } catch (error) {
+      log.error('No se pudo listar scripts/termux', { error: error.message });
+      return res.status(500).json({ ok: false, error: 'no se pudo listar los scripts' });
+    }
+    if (!allowed.includes(req.params.nombre)) {
+      log.warn('Script no permitido', { nombre: req.params.nombre, ip: req.ip });
+      return res.status(404).json({ ok: false, error: `no existe "${req.params.nombre}"; disponibles: ${allowed.join(', ')}` });
+    }
+    log.info('Script descargado', { nombre: req.params.nombre, ip: req.ip });
+    // text/plain para que curl -o lo guarde tal cual, sin que nada lo
+    // interprete como HTML ni lo reescriba.
+    res.type('text/plain; charset=utf-8').sendFile(path.join(scriptsDir, req.params.nombre));
   });
 
   // ── /stream/*: reunion en vivo por segmentos cortos (Termux) ─────────────
@@ -269,7 +354,13 @@ function startRemoteAudioServer(controller, speechService) {
         cb(null, `stream-${Date.now()}-${crypto.randomBytes(4).toString('hex')}${ext}`);
       }
     }),
-    limits: { fileSize: 30 * 1024 * 1024 },
+    // Mismo limite que /upload (VYSPER_HTTP_MAX_MB) en vez de un techo fijo
+    // de 30MB: ese valor asumia que cada POST era un chunk corto de una
+    // reunion en vivo, pero scripts/termux/upload-audio.sh sube la sesion
+    // completa como un unico segmento seq=1 -- con eso, cualquier grabacion
+    // de mas de 30MB (~2h de Opus a 32kbps, o mucho menos sin comprimir)
+    // moria con un 400 "File too large" a mitad de la subida.
+    limits: { fileSize: maxMb * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
       const ext = path.extname(file.originalname).toLowerCase();
       if (!ALLOWED_EXTENSIONS.has(ext)) {
@@ -299,6 +390,13 @@ function startRemoteAudioServer(controller, speechService) {
         log.warn('Stream no encontrado (404 en /segmento)', { streamId: req.params.id, seq: req.body?.seq, ip: req.ip });
         if (req.file) fs.unlink(req.file.path, () => {});
         return res.status(404).json({ ok: false, error: 'stream no encontrado (¿ya se cerro con /finish?)' });
+      }
+      if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+        // 413 y no 400: el cliente necesita distinguir "el archivo es
+        // demasiado grande" (comprimir/partir) de un error de forma del
+        // request, y el 400 pelado no decia cual de los dos era.
+        log.warn('Segmento excede el limite de tamano', { streamId: streamState.id, maxMb });
+        return res.status(413).json({ ok: false, error: `El segmento excede el limite de ${maxMb}MB` });
       }
       if (error) {
         log.warn('Segmento rechazado', { streamId: streamState.id, error: error.message });
@@ -368,8 +466,26 @@ function startRemoteAudioServer(controller, speechService) {
     }
   });
 
-  const server = app.listen(port, '0.0.0.0', () => {
-    log.info(`Servidor HTTP escuchando en 0.0.0.0:${port}`, { uploadDir, maxMb });
+  // Node >=18 trae requestTimeout en 300000 (5 min): es el tope para recibir
+  // el CUERPO completo de una request, y al vencerse Node contesta 408 y
+  // corta el socket -- multer, que se queda con el stream a medias, reporta
+  // "Request aborted". Subir una reunion entera desde el celular tarda mucho
+  // mas que 5 minutos, asi que ese default mataba la subida a mitad de camino
+  // sin importar el tamano del archivo. Se sube a 2h por defecto en vez de
+  // deshabilitarlo (0): un tope alto pero finito sigue liberando sockets
+  // colgados.
+  //
+  // Va en createServer y NO como `server.requestTimeout = ...` sobre el
+  // resultado de app.listen(): asignarlo despues de construir el servidor no
+  // tiene ningun efecto (Node lee el valor al crearlo). Verificado -- con la
+  // asignacion post-hoc una subida de 50s sobrevive a un requestTimeout de
+  // 5s, mientras que pasandolo aca corta con 408 como debe. headersTimeout
+  // se deja en su default (60s): solo cubre los headers, no el cuerpo, y
+  // debe quedar por debajo de requestTimeout.
+  const server = http.createServer({ requestTimeout: requestTimeoutMs }, app);
+
+  server.listen(port, '0.0.0.0', () => {
+    log.info(`Servidor HTTP escuchando en 0.0.0.0:${port}`, { uploadDir, maxMb, requestTimeoutMs });
   });
 
   server.on('error', (error) => {

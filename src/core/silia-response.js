@@ -147,6 +147,25 @@ function formatDomainRiskReview(review) {
  * (titulo/descripcion, comentario, labels, reviewers ya aplicados por
  * Cerebro), asi que aca solo se confirma lo esencial.
  */
+/**
+ * Resultado por ticket de una transicion de Jira. Un PR puede cubrir varios
+ * (AGE-233, AGE-234, AGE-236) y ahora se mueven TODOS -- antes se movia solo
+ * el primero, en silencio.
+ *
+ * Se listan uno por uno en vez de resumir en "3 tickets movidos" porque cada
+ * uno se intenta por separado: si el segundo falla, el primero YA se movio, y
+ * un resumen unico haria pasar por completo algo que quedo a medias.
+ */
+function formatJiraTransitions(transitions, estadoLabel) {
+  if (!Array.isArray(transitions) || !transitions.length) return [];
+  return transitions.map((t) => {
+    if (t.error) return `Jira ${t.key}: ⚠️ no se pudo mover (${t.error})`;
+    if (t.skipped) return `Jira ${t.key}: sin cambios (${t.skipped})`;
+    if (t.commented) return `Jira ${t.key}: comentado (sin cambio de estado)`;
+    return `Jira ${t.key} -> "${t.transition || estadoLabel}"`;
+  });
+}
+
 function formatCrearPrResult(result) {
   if (result && result.already_exists) {
     const lines = [result.message || `Ya existe un PR abierto para esta rama: ${result.pr_url}`];
@@ -157,10 +176,25 @@ function formatCrearPrResult(result) {
   if (!result || !result.pr_url) return 'No se pudo crear el PR.';
   const lines = [`PR ${result.draft ? '(draft) ' : ''}creado: ${result.pr_url}`];
   if (result.title) lines.push(`Titulo: ${result.title}`);
-  if (result.jira_ticket_key) lines.push(`Jira: ${result.jira_ticket_key} -> "In Review"`);
+  const jiraLines = formatJiraTransitions(result.jira_transitions, 'In Review');
+  if (jiraLines.length) {
+    lines.push(...jiraLines);
+  } else if (result.jira_ticket_key) {
+    lines.push(`Jira: ${result.jira_ticket_key} -> "In Review"`);
+  }
+  if (result.multi_ticket_note) lines.push(`\n⚠️ ${result.multi_ticket_note}`);
   if (Array.isArray(result.labels) && result.labels.length) lines.push(`Labels: ${result.labels.join(', ')}`);
   if (Array.isArray(result.reviewers) && result.reviewers.length) lines.push(`Reviewers: ${result.reviewers.join(', ')}`);
+  if (Array.isArray(result.team_reviewers) && result.team_reviewers.length) lines.push(`Equipos: ${result.team_reviewers.join(', ')}`);
+  // Que un PR quede sin reviewers puede ser aceptable; que no se diga, no:
+  // quedaba esperando a que alguien lo notara.
+  if (result.reviewers_note) lines.push(`\n⚠️ ${result.reviewers_note}`);
   if (result.milestone) lines.push(`Milestone: ${result.milestone}`);
+  // Un PR en draft no lo puede revisar nadie: GitHub retiene las
+  // notificaciones de review request hasta marcarlo ready. Sin este aviso
+  // el dato quedaba en un "draft": true perdido entre veinte campos, y hubo
+  // PRs que se quedaron dias esperando una revision que nunca iba a llegar.
+  if (result.draft_note) lines.push(`\n⚠️ ${result.draft_note}`);
   if (result.untracked_files_warning) lines.push(`\n⚠️ ${result.untracked_files_warning}`);
   // Puramente informativo -- ver docstring de Orchestrator.run_crear_pr:
   // no afecta el PR, el push, ni ningun otro comentario/mensaje publicado.
@@ -174,7 +208,13 @@ function formatCrearPrResult(result) {
 function formatCancelarPrResult(result) {
   if (!result || !result.closed) return 'No se pudo cancelar el PR.';
   const lines = [`PR cerrado: ${result.pr_url}`];
-  if (result.jira_ticket_key) lines.push(`Jira ${result.jira_ticket_key} revertido a su estado anterior.`);
+  const jiraLines = formatJiraTransitions(result.jira_transitions, 'su estado anterior');
+  if (jiraLines.length) {
+    lines.push(...jiraLines);
+  } else if (result.jira_ticket_key) {
+    lines.push(`Jira ${result.jira_ticket_key} revertido a su estado anterior.`);
+  }
+  if (result.multi_ticket_note) lines.push(`\n⚠️ ${result.multi_ticket_note}`);
   return lines.join('\n');
 }
 
@@ -206,16 +246,64 @@ function formatMergeResult(result) {
  * incluyo, para no mostrar "sin completar" en la primera pasada donde
  * result.merge/result.tag vienen null a proposito.
  */
-function formatAprobarPrResult(result, { merge = false, tag = false } = {}) {
+/**
+ * Evidencia del merge gate (las pruebas corridas sobre base+head YA
+ * mergeados, no sobre la rama head aislada -- ver merge_gate.py en
+ * Cerebro). Se muestra SIEMPRE que Cerebro la devuelva, incluido el caso
+ * "no se corrio ninguna": un gate apagado que no se declara es peor que no
+ * tenerlo, porque el mensaje suena a que se reviso.
+ */
+function formatMergeGateEvidence(gate) {
+  if (!gate) return [];
+  if (!gate.validated) {
+    return [`⚠️ Merge gate: ${gate.reason || 'no se corrieron pruebas.'}`];
+  }
+  const base = String(gate.base_sha || '').slice(0, 7);
+  const cached = gate.cached ? ' (resultado ya calculado en el paso anterior)' : '';
+  if (gate.ok) {
+    const cuantos = (gate.passed || []).length;
+    return [`✅ Merge gate: ${cuantos} suite(s) OK sobre base+head mergeados (base ${base})${cached}.`];
+  }
+  const lines = [`❌ Merge gate: ${gate.reason || 'fallaron las pruebas del merge.'}`];
+  if (gate.failed_command) lines.push(`   Comando: ${gate.failed_command}`);
+  if (Array.isArray(gate.conflicting_files) && gate.conflicting_files.length) {
+    lines.push(`   Archivos en conflicto: ${gate.conflicting_files.join(', ')}`);
+  }
+  return lines;
+}
+
+/**
+ * `pendingConfirmation` describe la accion a confirmar ("mergear",
+ * "mergear y crear un tag anotado"). Cuando viene, la peticion de
+ * confirmacion se arma DENTRO de este mismo mensaje en vez de emitirse
+ * aparte.
+ *
+ * Es un requisito funcional, no cosmetico: por el tunel del celular
+ * (POST /comando -> runChatCommandHeadless) la promesa se resuelve con el
+ * PRIMER emitSiliaResult y todo lo que venga despues se descarta. Con dos
+ * mensajes separados, al telefono llegaba el resultado y NUNCA la pregunta
+ * -- habia que contestar "si" a ciegas, sin saber si el gate paso.
+ */
+function formatAprobarPrResult(result, { merge = false, tag = false, pendingConfirmation = null } = {}) {
   if (!result) return 'No se pudo procesar la aprobacion del PR.';
   const lines = [];
   lines.push(result.is_bot_author
     ? `PR aprobado automaticamente (autor bot): ${result.pr_url}`
     : `PR aprobado: ${result.pr_url}`);
 
+  if (result.branch_leveled && result.branch_leveled.leveled) {
+    lines.push(`Rama nivelada con su base (head ${String(result.branch_leveled.new_head_sha || '').slice(0, 7)}).`);
+  }
+
   if (result.review && result.review.status) {
     lines.push(`Revision (--revisar): ${result.review.status}`);
   }
+
+  lines.push(...formatMergeGateEvidence(result.merge_gate));
+  lines.push(...formatJiraTransitions(result.jira_transitions, 'Done'));
+  // Que NO se haya movido el ticket es informacion: mergear a develop no
+  // es un evento de Jira, y sin decirlo parece que el comando fallo.
+  if (result.multi_ticket_note) lines.push(`ℹ️ ${result.multi_ticket_note}`);
 
   if (merge) {
     if (result.merge && result.merge.merged) {
@@ -231,6 +319,43 @@ function formatAprobarPrResult(result, { merge = false, tag = false } = {}) {
     } else {
       lines.push('Tag no creado (el merge no se completo).');
     }
+  }
+
+  // El deploy NO se dispara solo: deploy-app.yml filtra por paths que no
+  // incluyen Agent y deploy-service.yml es workflow_dispatch puro. Si esto
+  // no se dice, el merge a staging/main parece haber desplegado.
+  if (result.deploy_dispatch) {
+    const d = result.deploy_dispatch;
+    if (d.pendiente) {
+      lines.push(`Deploy PENDIENTE: hay que lanzar ${d.workflow} en ${d.repo} con ref=${d.ref} (no se dispara solo).`);
+    } else if (d.dispatch) {
+      lines.push(`Deploy disparado: ${d.workflow} en ${d.repo} (ref=${d.ref}).`);
+    }
+    (d.advertencias || []).forEach((a) => lines.push(`⚠️ ${a}`));
+    if (d.dispatch_bloqueado) lines.push(`⚠️ ${d.dispatch_bloqueado}`);
+  }
+
+  // PRs apilados sobre la rama que se acaba de mergear. Mergear NO borra
+  // la rama (delete_branch_on_merge: false), asi que siguen apuntando a
+  // una rama muerta: mergearlos asi manda su codigo ahi y el ticket
+  // avanza igual. Es accionable y hay que decirlo, no enterrarlo.
+  //
+  // El ORDEN es parte del aviso, no un detalle: borrar la rama primero NO
+  // reapunta los PRs, los CIERRA y los deja en deadlock (verificado en
+  // vivo con el #203). Por eso van los comandos concretos y el borrado
+  // queda explicitamente despues, nunca como atajo equivalente.
+  if (result.cadena_pendiente && Array.isArray(result.cadena_pendiente.prs) && result.cadena_pendiente.prs.length) {
+    const cadena = result.cadena_pendiente;
+    lines.push(`⚠️ Cadena pendiente de reapuntar: ${cadena.prs.length} PR(s) siguen con base '${cadena.rama_mergeada}' (ya mergeada).`);
+    cadena.prs.forEach((pr) => lines.push(`   #${pr.number} ${pr.title} — ${pr.url}`));
+    lines.push(`   PRIMERO reapuntalos a '${cadena.destino_real}':`);
+    (cadena.comandos_reapuntar || []).forEach((cmd) => lines.push(`     ${cmd}`));
+    lines.push('   RECIEN DESPUES borra la rama, si quieres. Borrarla antes CIERRA esos PRs y los deja en deadlock.');
+  }
+
+  if (pendingConfirmation) {
+    lines.push('');
+    lines.push(`¿Confirmas ${pendingConfirmation} el PR ${result.pr_url}? Responde "si" para continuar o "no" para cancelar.`);
   }
 
   return lines.join('\n');
@@ -254,12 +379,22 @@ function formatActualizarJiraPreview(result) {
     lines.push(`${i + 1}. ${cambio.issue_key} — ${cambio.campo}`);
     if (cambio.requiere_revision) {
       lines.push(`   ⚠️ Requiere revisión manual: ${cambio.nota || 'sin detalle'}`);
+    } else if (cambio.campo === 'comentario') {
+      // Un comentario AGREGA constancia, no reemplaza nada: mostrarlo con
+      // el par Actual/Propuesto de los demas campos ("Actual: (vacío)")
+      // haria pensar que pisa contenido del ticket.
+      lines.push('   Se agregará este comentario (no modifica la descripción):');
+      lines.push(`   ${cambio.valor_propuesto}`);
     } else {
       const actual = cambio.valor_actual === null || cambio.valor_actual === undefined || cambio.valor_actual === ''
         ? '(vacío)' : cambio.valor_actual;
       lines.push(`   Actual: ${actual}`);
       lines.push(`   Propuesto: ${cambio.valor_propuesto}`);
     }
+    // Un comentario que trae frases dirigidas a la herramienta se publica
+    // LITERAL en Jira con el nombre del usuario: el aviso tiene que verse
+    // en el chat, que es donde se decide confirmar.
+    if (cambio.advertencia) lines.push(`   ⚠️ ${cambio.advertencia}`);
     lines.push('');
   });
   return lines.join('\n').trim();
@@ -427,6 +562,105 @@ function formatActualizaRagResult(stdout) {
   return `${header}\n\n${lines.join('\n')}`;
 }
 
+/**
+ * /crear-ticket SIN --confirmar: muestra lo que se va a crear, ANTES de
+ * escribir nada. Se detalla cada link con su tipo resuelto porque ahi esta
+ * el error caro: poner "bloquea" donde iba "relacionado con" deja varado el
+ * PR del otro afirmando algo que nadie dijo.
+ *
+ * El tipo del PADRE se muestra siempre que haya uno: es lo que deja ver, de
+ * un vistazo y antes de confirmar, que el ticket no va a quedar colgando del
+ * Epic en vez de la Feature.
+ */
+function formatCrearTicketPreview(result) {
+  const t = (result || {}).ticket_propuesto;
+  if (!t) return 'No se pudo generar el preview de /crear-ticket.';
+
+  const lines = ['Se va a crear este ticket:', ''];
+  lines.push(`${t.proyecto || '(sin proyecto)'} — ${t.tipo || '(sin tipo)'}`);
+  lines.push(`Resumen: ${t.resumen || '(sin resumen)'}`);
+  if (t.padre) lines.push(`Padre: ${t.padre.key} (tipo ${t.padre.tipo || '?'})`);
+  if (t.sprint) lines.push(`Sprint: ${t.sprint.name} (id ${t.sprint.id})`);
+  if (t.asignado_a) lines.push(`Asignado a: ${t.asignado_a.display_name || t.asignado_a.account_id}`);
+  if (t.fecha_limite) lines.push(`Fecha límite: ${t.fecha_limite}`);
+  if (t.story_points !== null && t.story_points !== undefined) lines.push(`Story points: ${t.story_points}`);
+
+  if ((t.links || []).length) {
+    lines.push('');
+    lines.push('Relaciones:');
+    t.links.forEach((l) => {
+      if (l.requiere_revision) {
+        lines.push(`- ⚠️ ${l.relacion_pedida || '?'} → ${l.clave || '?'}: sin resolver`);
+        return;
+      }
+      // "el ticket nuevo bloquea a X" vs "X bloquea al ticket nuevo": la
+      // direccion se dice en palabras porque invertirla afirma lo contrario.
+      const frase = l.invertido
+        ? `${l.clave} ${l.tipo} → el ticket nuevo`
+        : `el ticket nuevo ${l.tipo} → ${l.clave}`;
+      lines.push(`- ${l.relacion_pedida}: ${frase}`);
+    });
+  }
+
+  const descripcion = t.descripcion || '';
+  lines.push('');
+  lines.push(`Descripción (${descripcion.split('\n').length} línea(s), va verbatim):`);
+  lines.push(descripcion.length > 600 ? `${descripcion.slice(0, 600)}\n[...]` : descripcion);
+
+  if ((result.notas || []).length) {
+    lines.push('');
+    lines.push('⚠️ Requiere revisión manual antes de poder crearlo:');
+    result.notas.forEach((n) => lines.push(`- ${n}`));
+  }
+  return lines.join('\n').trim();
+}
+
+/**
+ * Segundo turno de /crear-ticket: que se creo de verdad.
+ *
+ * La verificacion de links se muestra SIEMPRE, no solo cuando falla:
+ * create_issue_link devuelve un eco (Jira no da id de link), asi que "se
+ * crearon 3 relaciones" sin el contraste de la relectura seria una
+ * afirmacion sin respaldo -- y es justo la afirmacion que importa.
+ */
+function formatCrearTicketResult(result) {
+  if (!result || !result.key) return 'No se pudo crear el ticket.';
+
+  const lines = [`✅ Ticket creado: ${result.key}`];
+  if (result.url) lines.push(result.url);
+  if (result.sprint_aplicado === true) lines.push('Agregado al sprint.');
+
+  const verificacion = result.verificacion_links || [];
+  if (verificacion.length) {
+    lines.push('');
+    lines.push(result.verificado
+      ? 'Relaciones verificadas releyendo el ticket:'
+      : '⚠️ Relaciones — al releer el ticket NO coinciden todas:');
+    verificacion.forEach((v) => {
+      if (v.coincide) {
+        lines.push(`- ✅ ${v.clave}: ${v.tipo_esperado}`);
+      } else if (v.encontrado) {
+        lines.push(`- ❌ ${v.clave}: se pidió ${v.tipo_esperado}, figura ${v.tipo_real}`);
+      } else {
+        lines.push(`- ❌ ${v.clave}: no aparece`);
+      }
+    });
+  }
+  if (result.padre_verificado === false) {
+    lines.push('');
+    lines.push('⚠️ El ticket no figura colgando del padre pedido -- verifícalo.');
+  }
+  if ((result.advertencias || []).length) {
+    lines.push('');
+    result.advertencias.forEach((a) => lines.push(`⚠️ ${a}`));
+  }
+  if (result.advertencia) {
+    lines.push('');
+    lines.push(`⚠️ ${result.advertencia}`);
+  }
+  return lines.join('\n').trim();
+}
+
 module.exports = {
   formatCerebroFinalAnswer,
   formatOptimizacionesList,
@@ -436,10 +670,14 @@ module.exports = {
   buildIncidenteLogEntry,
   formatPrReview,
   formatCrearPrResult,
+  formatJiraTransitions,
   formatCancelarPrResult,
   formatScriptResult,
   formatMergeResult,
   formatAprobarPrResult,
+  formatMergeGateEvidence,
   formatActualizarJiraPreview,
   formatActualizarJiraApplyResult,
+  formatCrearTicketPreview,
+  formatCrearTicketResult,
 };

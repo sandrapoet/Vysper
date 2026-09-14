@@ -46,7 +46,9 @@ Comandos de texto (en el chat o por voz):
 - /silia daily [identificador]  Actividades del último día hábil (Jira/GitHub/Notion/minutas locales) + checkpoint de riesgo abierto (silia, system-design — ver sección "Modo Silia")
 - /silia retro [--dominio <alias>] [sprint_ref], /silia retro [--dominio <alias>] comparar <sprint_a> <sprint_b>  Retrospectiva estructurada de un sprint (Jira Agile API + métricas + Notion/RAG + incidentes del SMC), default "agentes", o diff entre dos retros ya generadas (silia, system-design — ver sección "Modo Silia")
 - /revisar <url-pr> [--profundo|--arq|--security] [--diablo] [--merge] [--release]  Revisión automatizada de PR: conflictos + matriz de cumplimiento ponderada (silia, system-design — ver sección "Modo Silia")
-- /crear-pr <rama> [--draft|--publish] [--labels a,b,c] [--ticket AGE-123], /cancelar-pr <url-pr>, /aprobar-pr <url-pr> [--revisar] [--merge] [--tag]  Creación/cancelación/aprobación de PRs (silia, system-design — ver sección "Modo Silia")
+- /crear-ticket --proyecto AGE --resumen "..." [--padre AGE-147] [--sprint "Sprint 6"] [--link "bloquea:AGE-219"] --descripcion <texto>  Levanta un ticket nuevo en Jira desde un hallazgo (silia)
+- /auditar-bump <url-pr>, /estado-llm, /preflight-promocion <ticket>, /hoy-historial <dominio>, /hoy-comparar <dominio>  Comandos de solo lectura, por la ruta genérica (silia)
+- /crear-pr <rama> [--draft|--publish] [--labels a,b,c] [--ticket AGE-123, AGE-124], /cancelar-pr <url-pr>, /aprobar-pr <url-pr> [--revisar] [--merge] [--tag] [--ignorar-checks "a,b"]  Creación/cancelación/aprobación de PRs (silia, system-design — ver sección "Modo Silia")
 - /merge <numero-pr> --repo <owner/repo> [--merge]  Mergea un PR directo vía la API de GitHub, sin aprobar ni tocar Jira, con confirmación explícita en el chat (silia, system-design — ver sección "Modo Silia")
 - /actualizar-jira <texto>  Actualiza descripción/fecha/estado/story points de uno o varios tickets a partir de texto libre, con preview + confirmación antes de escribir (silia, system-design — ver sección "Modo Silia")
 - /script  Ejecuta cerebro/scripts/jira_transition.py (ruta fija, sin argumentos) — ver sección "Modo Silia"
@@ -170,6 +172,11 @@ npm run build
      - The STT sidecar starts lazily, not at app startup. Switching to `secretaria` or `traductor` warms up Whisper plus the microphone stream and keeps both ready while you stay in that mode. Set `VYSPER_STT_PRELOAD=1` only if you prefer loading it during app startup.
      - In `secretaria`, `Alt+R` records raw audio first; pending audio is transcribed when `Ctrl+1` is pressed.
      - `VYSPER_STT_MODEL=small` is the default; use `base` for lower CPU/RAM or `medium` for higher accuracy.
+     - `VYSPER_STT_LANGUAGE=es` is the default. Whisper's language autodetection only looks at the first 30 s of
+       audio, which in a real meeting is usually silence or clipped greetings; when it guesses wrong it decodes the
+       whole recording in that language and the transcript comes out unusable. Set `VYSPER_STT_LANGUAGE=auto` to
+       restore autodetection (it then samples `VYSPER_STT_LANGUAGE_DETECT_SEGMENTS=6` windows instead of one), or
+       any Whisper code such as `en`.
      - `VYSPER_STT_INTERIM_SEC=0` disables repeated interim Whisper passes while recording. This is the default.
      - `VYSPER_STT_CPU_THREADS=2` is the default and limits Whisper CPU threads if it competes with the rest of the desktop.
      - `VYSPER_STT_IDLE_EXIT_MS=120000` unloads the sidecar after two idle minutes once you leave modes that keep speech ready. Set it to `0` to keep models loaded after first use.
@@ -264,6 +271,20 @@ It also mistyped accented capitals (typing `ÁN` produced `áN`).
 
 Measured on a 600-character Spanish text: **91 ms and exact text** with
 keysyms, vs **3570 ms** with the old per-chunk `xdotool type`.
+
+A character reached through a dead key is **two tokens for one character**
+(`dead_acute` + `a`), and the paste is split into batches so it can report
+progress and be cancelled between them. Those batches must never split such a
+pair: sending the accent and its letter in two separate `xdotool` invocations
+leaves the pending accent crossing from one process to the next, and
+cancelling exactly there leaves it dangling, ready to combine with whatever
+the user types next. Measured before the fix: pasting this README split 4
+pairs, and a paste of `Áéíóú` at a small batch size produced a loose accent
+followed by an unaccented letter. `batchRuns` now carries the base letter into
+the same batch, and `test/paste-keysyms.test.js` locks it down by decoding the
+plan back to text and comparing it against the input — including the real
+`scripts/termux/*.sh` as corpus, since a single lost character there yields a
+script that fails in bewildering ways.
 
 The remaining limit is not Vysper: XTEST injects into the global input stream,
 so the keyboard belongs to the paste while it runs, and the target app
@@ -680,6 +701,15 @@ Importante:
   para un widget/atajo de Termux con el texto ya armado. Requiere `python3`
   (Termux no lo trae por defecto — `pkg install python -y`) para armar y
   parsear el JSON de forma segura.
+- **Aprobar desde el celular**: [scripts/termux/aprobar-pr.sh](scripts/termux/aprobar-pr.sh)
+  hace lo mismo para `/aprobar-pr`. Si el gate bloquea por checks no
+  requeridos en rojo, ofrece **un solo tap** para reintentar ignorando
+  exactamente esos (nunca el flag en bloque), y el reintento es uno solo:
+  si vuelve a bloquear, sale. También resuelve los **dos envíos** que exige
+  el flujo: el primero aprueba y corre el merge gate (las pruebas sobre
+  `base + head` mergeados, que tardan de verdad), muestra la evidencia, y
+  recién entonces pregunta; el segundo manda el `si`. Nunca manda la
+  confirmación solo, ni siquiera en modo no interactivo.
 - Es seguro usarlo aunque haya una grabación en vivo (Alt+S/Alt+O) corriendo
   al mismo tiempo en la PC: la respuesta se correlaciona con el comando que
   la originó (via `AsyncLocalStorage`, ver `runChatCommandHeadless` en
@@ -744,15 +774,110 @@ hueco en la minuta final (`[HUECO: segmento N no disponible...]`) en vez de
 omitirlo en silencio — es una nota de que ese tramo de audio no se pudo
 recuperar, no que el sistema haya "arreglado" la pérdida.
 
+**Pasar los scripts al celular** (`GET /scripts`): `GET /scripts` lista los
+scripts de [scripts/termux/](scripts/termux/) con su tamaño y su md5, y
+`GET /scripts/<nombre>` baja uno, detrás del mismo Basic Auth que el resto.
+
+La instalación va por [scripts/termux/act.sh](scripts/termux/act.sh), que se
+instala como el comando `act` y deja los scripts en `$PREFIX/bin` con nombres
+de **una sola palabra** — el celular se usa manejando, así que el comando tiene
+que poder escribirse de un tirón y sin rutas:
+
+| Comando | Script | Qué hace |
+|---------|--------|----------|
+| `sube` | `upload-audio.sh` | Sube un audio ya grabado y genera la minuta |
+| `pr` | `revisar-pr.sh` | `/modo silia` + `/revisar` sobre un PR |
+| `apr` | `aprobar-pr.sh` | `/modo silia` + `/aprobar-pr`: corre el merge gate y **después** pide confirmación |
+| `act` | `act.sh` | Actualiza todos (se actualiza solo) |
+
+```bash
+# Una sola vez, para instalarlos todos. `act` se instala a si mismo, asi que
+# basta con bajarlo a cualquier parte y correrlo con bash: no hace falta
+# chmod, ni $PREFIX en la linea, ni que el shebang resuelva.
+curl -fsS -u sanVysper:tu_clave http://100.83.125.94:8080/scripts/act.sh -o act && bash act
+```
+
+Ojo: `act` no existe hasta correr eso una vez — antes de eso Termux responde
+`No command act found, did you mean: ...`, que se lee como un fallo del atajo
+cuando en realidad es que nunca se instaló.
+
+`act` baja cada script a un temporal y lo instala **solo** si su md5 coincide
+con el que publica `GET /scripts`; si no, conserva la versión anterior. Esa
+verificación es la que importa: comprobar shebang y `bash -n` no alcanza,
+porque un script cortado por abajo en una frontera limpia (los primeros KB son
+comentarios y asignaciones) pasa las dos cosas y se instalaría como bueno.
+El `-f` de curl es igual de necesario — sin él, el cuerpo de un 401 se guarda
+como si fuera el script.
+
+Existe para no pegar el script a mano: un pegado truncado deja un archivo que
+falla de formas desconcertantes (se vio uno que arrancaba a mitad de
+`curl_with_retries`, con `local: can only be used in a function`,
+`$CONNECT_TIMEOUT` vacío y `sleep: missing operand`) y el script **no puede
+detectarlo por sí mismo**, porque lo que falta es justamente el encabezado
+donde iría cualquier chequeo. El nombre pedido se valida por igualdad exacta
+contra el contenido real del directorio, así que no sirve para leer nada
+fuera de `scripts/termux/`.
+
 **Para un archivo de audio ya grabado** (no una reunión en vivo), el script
 [scripts/termux/upload-audio.sh](scripts/termux/upload-audio.sh) usa el mismo
 pipeline de `/stream/*` como un solo segmento: te pide copiar el archivo a
 `/sdcard/Download/vysper_temp/`, lo sube, y hace exactamente lo mismo que
 Alt+S en la PC (transcribe + diariza + genera la minuta) sin preguntar nada
 más — el servidor no distingue "transcribir" de "minuta" para este endpoint.
-Manda la duración real del audio si tenés `ffprobe` instalado
-(`pkg install ffmpeg`); si no, manda `0` (solo se pierde ese dato
-informativo). También requiere `python3` (`pkg install python -y`).
+
+Si la duración supera los 20 minutos (`CONVERT_THRESHOLD_SEC`) **o** el
+archivo pesa más de 100MB (`CONVERT_THRESHOLD_BYTES`), **comprime
+automáticamente a Opus 16kHz mono 32kbps antes de subir** — de sobra para
+voz, y el servidor igual reconvierte todo a 16kHz mono para transcribir
+(`convertToWav`), así que no se pierde nada que Whisper fuera a usar de
+todos modos. El criterio de tamaño existe para el caso en que `ffprobe` no
+está instalado y la duración se lee como `0`: sin él, un `.wav` crudo de
+horas pasaba derecho a la subida. Opus a 32kbps son ~22MB por hora, así
+que una sesión de 8h queda en ~180MB, muy por debajo del límite del
+servidor (`VYSPER_HTTP_MAX_MB`, 1000MB por defecto en `.env`); la misma
+sesión sin comprimir serían varios GB. La compresión en sí es muy rápida
+(~350x tiempo real con `libopus`: una sesión de 2h tarda ~20s). Requiere
+`ffmpeg` (`pkg install ffmpeg -y`, trae también `ffprobe` para medir la
+duración). También requiere `python3` (`pkg install python -y`).
+
+Si la compresión falla, el script sube el original **sólo si es menor a
+500MB** (`MAX_UNCOMPRESSED_BYTES`); por encima de eso aborta de inmediato
+con el error de `ffmpeg` y el comando para convertir a mano, en vez de
+gastar más de una hora de subida móvil en un archivo que el servidor va a
+rechazar con 413 igual. En ese aborto **no borra** el archivo copiado, para
+no obligarte a pasar otra vez GB al celular: al reintentar, el script te
+avisa que ya hay un archivo ahí y basta con ENTER para reusarlo.
+
+**El POST del segmento no responde hasta haber transcrito**: el handler de
+`/stream/:id/segmento` corre `ingestSecretariaStreamSegment` *dentro* de la
+request, así que la respuesta llega recién cuando el audio está transcrito.
+Medido en esta instalación: 625 s de audio → 327 s de proceso, y 4433 s →
+1944 s, o sea ~0,5× tiempo real. El timeout del cliente tiene que cubrir
+**subida + transcripción**; modelar solo la transferencia daba 120 s para esos
+dos casos y el cliente abandonaba con `000` mucho antes de que el servidor
+contestara.
+
+Peor que abandonar: reintentaba. Y como un `000` no distingue "la subida se
+cortó" de "el servidor está transcribiendo", el reintento le hacía repetir el
+trabajo desde cero — se vio el mismo `seq=1` transcrito dos y tres veces
+(`attempts: 3` en el `stream-manifest.json` de la sesión), con 32 minutos
+duplicados. `upload-audio.sh` ya no adivina: ante un `000` consulta
+`/stream/:id/estado`, que es quien sabe si el segmento llegó. Si el servidor lo
+tiene, espera sondeando hasta que quede `transcrito` y sigue al `/finish`
+normal; si no lo tiene, ahí sí resube. (`%{size_upload}` de curl **no** sirve
+para distinguirlos: cuenta lo que curl volcó al socket, no lo que el servidor
+leyó, y el cuerpo multipart es mayor que el archivo, así que reporta "subida
+completa" incluso cuando la conexión se cortó a mitad.)
+
+**Timeout de subida en el servidor**: Node fija `requestTimeout` en 5 minutos
+por defecto — el tope para recibir el *cuerpo* completo de una request. Subir
+una reunión desde el celular tarda más que eso, y al vencerse Node responde
+**408** y corta el socket (en el log del servidor aparece como `Segmento
+rechazado {"error":"Request aborted"}`, que parece un problema de red pero no
+lo es). El servidor lo sube a 2h vía `VYSPER_HTTP_REQUEST_TIMEOUT_MS`. El
+valor va en `http.createServer({ requestTimeout })`: asignarlo después de
+construir el servidor (`server.requestTimeout = ...` sobre lo que devuelve
+`app.listen()`) **no tiene ningún efecto**, Node lo lee al crearlo.
 
 **Conflicto con Alt+O**: `/stream/start` responde 409 si hay una entrevista
 de Optimización (Alt+O) activa en ese momento en la PC — evita mezclar el
@@ -1035,7 +1160,7 @@ interactivo real que un subprocess pueda leer** — un `input()`/
 eso la integración a Vysper resuelve cada uno de esos tres puntos *sin*
 tocar stdin del proceso de Cerebro:
 
-- **`/crear-pr <rama> [--draft|--publish] [--labels a,b,c] [--ticket AGE-123] [--base <rama>] [--repo-dir <path>]`**
+- **`/crear-pr <rama> [--draft|--publish] [--labels a,b,c] [--ticket AGE-123, AGE-124] [--base <rama>] [--repo-dir <path>]`**
   — nunca commitea por vos: si hay cambios sin commitear en archivos **ya
   trackeados**, se detiene pidiendo que commitees primero (esos sí podrían
   faltar en el PR sin que te des cuenta). Archivos **sin trackear** ya NO
@@ -1051,6 +1176,18 @@ tocar stdin del proceso de Cerebro:
   transición equivalente a "In Review" que el workflow real del proyecto
   tenga disponible (nombre resuelto contra `get_available_transitions`, no
   asumido — el nombre exacto varía por proyecto/idioma, ej. "En revisión").
+  - **`--ticket` acepta varios**, separados por coma:
+    `--ticket AGE-233, AGE-234, AGE-236`. Un PR puede cubrir más de un
+    ticket y se transicionan **todos** (el chat lista uno por uno el
+    resultado de cada uno, porque cada transición se intenta por separado:
+    si la segunda falla, la primera ya se movió). Los espacios después de
+    la coma no necesitan comillas. Sin el flag, se detectan todos los
+    tickets que mencione el nombre de la rama. `--labels` acepta la misma
+    forma.
+  - Los reviewers salen de `.github/CODEOWNERS`; para repos que no lo
+    tienen (`Silia-mx/Agent`), del `DEFAULT_REVIEWERS` de Cerebro. Si no
+    hay ninguno de los dos, el chat lo dice en vez de dejar el PR sin
+    reviewers en silencio.
   - **`--repo-dir <path>` es OBLIGATORIO en la práctica** — Cerebro corre
     como subproceso con `cwd` fijo en `CEREBRO_PATH` (el propio directorio
     de Cerebro), nunca en el repo sobre el que querés el PR. Sin
@@ -1099,10 +1236,12 @@ tocar stdin del proceso de Cerebro:
   asumido). No es un revert de git/Jira: nunca toca commits, releases/tags
   ni contenido de Jira más allá de esa transición. Sin interactividad de
   ningún tipo.
-- **`/aprobar-pr <url-pr> [--revisar] [--merge] [--tag]`** — un PR de
-  Dependabot se aprueba automático; cualquier otro se valida (mergeable +
-  checks de CI, aquí cualquier check en rojo bloquea, sin el margen del 90%
-  que usa `/revisar`) antes de aprobar. Los tags siempre son anotados con
+- **`/aprobar-pr <url-pr> [--revisar] [--merge] [--tag] [--ignorar-checks "a,b"]`**
+  — un PR de Dependabot se aprueba automático; cualquier otro se valida
+  (mergeable + checks de CI) antes de aprobar. Cualquier check en rojo
+  bloquea por defecto, sin el margen del 90% que usa `/revisar`; los rojos
+  se clasifican en requeridos y no requeridos por la protección de la rama
+  base (ver el bullet de `--ignorar-checks`). Los tags siempre son anotados con
   mensaje detallado; Jira pasa a la transición equivalente a "Done" (ej.
   "Listo") solo si hubo merge real. Si el PR es de la misma cuenta de
   GitHub que usa Cerebro para escribir, no intenta auto-aprobarse (GitHub
@@ -1114,22 +1253,60 @@ tocar stdin del proceso de Cerebro:
     en cadena) y un pedido de revisión en Slack para esa PR. Ver el detalle
     completo en el README de Cerebro, sección
     "Release de `Silia-mx/Agent` en 3 etapas".
+  - **Merge gate**: antes de mergear, Cerebro corre las pruebas del repo
+    sobre `base + head` **ya mergeados** en un worktree descartable (nunca
+    sobre tu working tree). Es otra pregunta que la del CI del PR: un PR
+    verde contra una base de hace tres días puede romper la base de hoy.
+    Si el gate falla, no hay merge, ni comentario en el PR, ni bump, ni
+    Jira — y el chat muestra qué comando falló. Si el repo no tiene
+    comandos configurados, el resultado lo **declara** ("no se corrió
+    ninguna prueba") en vez de dejarlo pasar por validado. Se configura en
+    Cerebro con `CREAR_PR_TEST_COMMANDS` (acepta lista de comandos y clave
+    `owner/repo@rama`) y `MERGE_GATE_REPO_DIRS`.
+  - **Rama desnivelada**: si el PR está `BEHIND` respecto a su base (pasa
+    solo cuando la base avanza mientras el PR espera aprobación, y las
+    ramas protegidas exigen estar al día), Vysper la nivela sola con el
+    equivalente al botón "Update branch" y sigue con el head nuevo. Si
+    nivelar da conflicto, lo reporta y no insiste.
   - **Confirmación de `--merge`/`--tag`**: nunca se ejecutan en la misma
-    corrida que la aprobación. Vysper primero corre `/aprobar-pr` **sin**
-    esos flags (aprueba el PR y, si pediste `--revisar`, corre la revisión
-    profunda) y muestra el resultado. Si tu mensaje original pedía
-    `--merge` y/o `--tag`, el chat responde con una pregunta explícita
-    (`¿Confirmas mergear el PR <url>? Responde "si" para continuar o "no"
-    para cancelar.`) y queda esperando tu próxima respuesta — cualquier
-    otra cosa que no se lea como sí/no descarta la confirmación pendiente
-    sin ejecutar nada. Solo cuando respondés afirmativo, Vysper vuelve a
-    llamar a Cerebro con `--merge`/`--tag` **más** `--confirmar` (una
-    bandera nueva del CLI de Cerebro que reemplaza su `typer.confirm()` de
-    consola por esta confirmación ya obtenida en el chat).
+    corrida que la aprobación. Vysper primero corre `/aprobar-pr` con
+    `--evaluar`: aprueba, corre el **merge gate** y devuelve su evidencia
+    sin mergear ni pedir nada por stdin. El chat responde con **un solo
+    mensaje** que trae el resultado, la evidencia del gate y la pregunta
+    explícita (`¿Confirmas mergear el PR <url>? Responde "si" para
+    continuar o "no" para cancelar.`), y queda esperando tu próxima
+    respuesta — cualquier otra cosa que no se lea como sí/no descarta la
+    confirmación pendiente sin ejecutar nada. Que sea un solo mensaje no
+    es cosmético: por el túnel del celular (`POST /comando`) solo llega el
+    **primero**, así que con dos mensajes la pregunta nunca llegaba y
+    había que contestar "si" a ciegas. Solo cuando respondés afirmativo,
+    Vysper vuelve a llamar a Cerebro con `--merge`/`--tag` **más**
+    `--confirmar`; el resultado del gate queda cacheado por
+    `(base_sha, head_sha)`, así que ese turno no vuelve a pagar la suite
+    — salvo que la base se haya movido mientras tanto, en cuyo caso se
+    corre de nuevo, que es justamente lo correcto.
+  - **`--ignorar-checks "Nombre,Otro"`**: descuenta **por nombre** los
+    checks NO requeridos que ya miraste uno por uno. Cualquier otro rojo
+    — incluido uno que aparezca mañana y no esté en la lista — sigue
+    bloqueando. Cuando el gate bloquea, el mensaje del chat ya trae la
+    línea armada con los nombres exactos, lista para pegar. Un check
+    **requerido** no se ablanda nombrándolo, y `check-branch-name` en una
+    rama `chore/bump-agent-*` se descuenta solo (no puede pasar ahí por
+    diseño). El flag EN BLOQUE de Cerebro
+    (`--ignorar-checks-no-requeridos`) **no se expone desde el chat** a
+    propósito: aquí no se ve la lista de rojos de un vistazo como en la web
+    de GitHub, así que un "ignóralos todos" desde el celular es aún más
+    ciego que desde la terminal. Desde Termux, `aprobar-pr.sh` ofrece el
+    reintento acotado con un solo tap cuando detecta ese bloqueo.
+  - **Deploy**: mergear (y hasta bumpear el submódulo) **no despliega
+    nada** — `deploy-app.yml` filtra por paths que no incluyen Agent y
+    `deploy-service.yml` es `workflow_dispatch` puro. El resultado siempre
+    dice que el dispatch queda pendiente; se puede disparar con
+    `--disparar-deploy --confirmar-deploy` desde el CLI de Cerebro.
 
 **Ejemplos:**
 ```
-/crear-pr feature/AGE-123-nuevo-endpoint --labels backend,bug-fix --ticket AGE-123 --base develop --repo-dir /media/san/Miscosas6/Desarrollo/CreAI/Silia/Agent
+/crear-pr feature/AGE-123-nuevo-endpoint --labels backend,bug-fix --ticket AGE-123, AGE-124 --base develop --repo-dir /media/san/Miscosas6/Desarrollo/CreAI/Silia/Agent
 ```
 ```
 /cancelar-pr https://github.com/Silia-mx/silia/pull/2150
@@ -1138,6 +1315,92 @@ tocar stdin del proceso de Cerebro:
 /aprobar-pr https://github.com/Silia-mx/silia/pull/2150 --revisar --merge --tag
 si
 ```
+
+### `/crear-ticket`
+
+```
+/crear-ticket --proyecto AGE --tipo Story --resumen "Validar agentId contra el token"
+  --padre AGE-147 --sprint "Sprint 6"
+  --link "bloquea:AGE-219" --link "relacionado con:AGE-246"
+  --descripcion ## Contexto
+
+`agentId` llega en el cuerpo y es parte de la PK, así que un id ajeno
+SOBREESCRIBE el voto en vez de falsificarlo.
+- [ ] Validar contra el token
+```
+```
+si
+```
+
+Levanta un ticket nuevo en Jira **sin salir de Vysper**, porque el ticket es
+el entregable de una revisión: sacarlo a la UI de Jira rompe la traza justo
+donde el hallazgo tiene evidencia medida, y al copiarla a mano se resume.
+
+- **`--descripcion` va ÚLTIMO y se lleva todo lo que sigue**, verbatim y
+  multilínea. Es a propósito: una descripción de hallazgo trae bloques de
+  código y checklists, y cortar en el próximo `--` partiría cualquier lista
+  de markdown. **Ningún LLM la toca**, ni para redactar ni para resumir.
+  (`--descripcion-archivo <ruta>` también existe, pero la ruta es de la PC
+  donde corre Cerebro, no del teléfono.)
+- **`--link "relación:CLAVE"`, repetible, y sin default.** Cada relación
+  lleva su tipo; una que no se reconoce marca el preview para revisión en vez
+  de asumir `Relates`. Poner "bloquea" donde iba "relacionado con" deja
+  varado el PR del otro afirmando algo que nadie dijo.
+- **Dos turnos, como `/actualizar-jira`.** El primero devuelve **un solo
+  mensaje** con el preview y la pregunta —por el túnel del celular solo llega
+  el primero, así que separarlos obligaría a contestar "si" a ciegas— y el
+  ticket recién se crea al confirmar. El `plan_hash` viaja con el plan: si
+  cambió un carácter entre lo que viste y lo que se manda, Cerebro rechaza la
+  escritura.
+- **El preview muestra de qué TIPO es el padre** (`AGE-147, tipo Feature`),
+  que es lo que deja ver antes de confirmar que el ticket no va a quedar
+  colgando del Epic.
+- **Al crear, se relee el ticket y se verifican los links** por clave *y* por
+  tipo. `create_issue_link` devuelve un eco, así que sin releer "se crearon 3
+  relaciones" no tendría respaldo. El detalle completo está en el README de
+  Cerebro, sección "Creación de tickets de Jira".
+
+Un preview marcado para revisión **no ofrece confirmar**: es un solo ticket,
+y crearlo a medias no es media victoria.
+
+### Comandos de solo lectura (ruta genérica)
+
+```
+/auditar-bump https://github.com/Silia-mx/silia/pull/2420
+/estado-llm
+/preflight-promocion AGE-245 AGE-296
+/hoy-historial agentes
+/hoy-comparar agentes
+```
+
+Estos **no tienen un parser propio**: viven en un registro declarativo
+(`PASSTHROUGH_COMMANDS` en `src/core/silia-commands.js`) y se agregan con una
+línea. Los flags viajan **tal cual a la CLI de Cerebro, incluidos los que
+Vysper no conoce** — la CLI es la única que los valida, así que un flag nuevo
+allá queda disponible aquí el mismo día.
+
+**Por qué existe esto:** `auditar-bump` se agregó a la CLI y nació fuera del
+alcance del teléfono, porque cada comando costaba un parser, un método del
+servicio y una rama del dispatch. Y no fallaba: caía en `diagnose` y volvía
+**una respuesta del modelo con pinta de resultado**. Un comando que existe en
+Cerebro y no en Vysper es un comando que no se tiene la mitad del tiempo.
+
+**Solo lectura, y no es una formalidad.** Un comando que escribe
+(`/revisar-merge`, `/aprobar-pr`, `/actualizar-jira`, `/crear-ticket`) nunca
+entra al registro: necesita el flujo de confirmación de dos turnos, que vive
+en Vysper y no en la CLI. Además, un subcomando que caiga en `typer.confirm()`
+cuelga el subproceso —que no tiene stdin real— hasta el timeout.
+
+**Flags que nunca cruzan el túnel**, venga como venga el comando:
+`--confirmar`, `--confirmar-deploy`, `--disparar-deploy`, `--plan`,
+`--plan-hash` y `--ignorar-checks-no-requeridos`. El registro ya acota qué se
+puede correr; esta lista es la red por si mañana entra ahí algo que resulta
+no ser tan de lectura.
+
+**Un comando con `/` que nadie reconoce ahora se dice.** Antes iba a
+`diagnose` con la barra incluida y volvía una síntesis inventada; ahora
+responde que no lo reconoce y no consulta a Cerebro. Texto libre sin barra
+sigue yendo al loop de diagnóstico como siempre.
 
 ### `/merge`
 

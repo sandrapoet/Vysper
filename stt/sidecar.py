@@ -119,7 +119,18 @@ PREROLL_CHUNKS = max(1, (PREROLL_MS * RATE + (1000 * CHUNK) - 1) // (1000 * CHUN
 WARM_PREROLL_MS = int(os.getenv("VYSPER_STT_WARM_PREROLL_MS", "1500"))
 WARM_PREROLL_CHUNKS = max(1, (WARM_PREROLL_MS * RATE + (1000 * CHUNK) - 1) // (1000 * CHUNK))
 INTERIM_SEC  = float(os.getenv("VYSPER_STT_INTERIM_SEC", "0"))
-LANGUAGE     = os.getenv("VYSPER_STT_LANGUAGE") or None
+# El idioma se fija por defecto en espanol a proposito. Con autodeteccion
+# (language=None), faster-whisper decide el idioma mirando SOLO los primeros 30 s
+# (language_detection_segments=1 por defecto), y en audio de reunion real ese
+# tramo suele ser silencio o saludos entrecortados: en dos sesiones medidas dio
+# "nn" (nynorsk) con 0.18 de confianza y decodifico la reunion entera en
+# alfabetos que no existen en la grabacion, dejando la minuta inservible.
+# VYSPER_STT_LANGUAGE=auto restaura la autodeteccion (y entonces se mira sobre
+# varios segmentos, ver LANGUAGE_DETECTION_SEGMENTS).
+LANGUAGE     = os.getenv("VYSPER_STT_LANGUAGE", "es").strip() or None
+if LANGUAGE and LANGUAGE.lower() in ("auto", "detect"):
+    LANGUAGE = None
+LANGUAGE_DETECTION_SEGMENTS = int(os.getenv("VYSPER_STT_LANGUAGE_DETECT_SEGMENTS", "6"))
 BEAM_SIZE    = int(os.getenv("VYSPER_STT_BEAM_SIZE", "1"))
 BEST_OF      = int(os.getenv("VYSPER_STT_BEST_OF", "1"))
 
@@ -283,6 +294,7 @@ def _transcribe(audio_np: np.ndarray, fast: bool = False) -> str:
     segments, _ = _whisper.transcribe(
         audio_np,
         language=LANGUAGE,
+        language_detection_segments=LANGUAGE_DETECTION_SEGMENTS,
         beam_size=1 if fast else BEAM_SIZE,
         best_of=1 if fast else BEST_OF,
         vad_filter=False,    # we do our own VAD
@@ -293,13 +305,28 @@ def _transcribe(audio_np: np.ndarray, fast: bool = False) -> str:
 def _transcribe_file_with_segments(path: str) -> dict:
     """Like _transcribe_file, but also returns per-segment start/end timestamps
     so the caller can line up transcript text with speaker-diarization segments."""
+    # vad_filter=False a proposito, igual que en _transcribe(). El VAD interno de
+    # faster-whisper (Silero v5 en ONNX) descarta demasiado audio de reunion real:
+    # medido sobre tres sesiones, se quedo con 120/499 s, 338/625 s y 422/636 s de
+    # voz audible. En la peor tiro todo el arranque (0-176 s) y el transcript
+    # salia empezando a mitad de la reunion. Bajarle el threshold a 0.2 seguia
+    # perdiendo dos tercios del audio, asi que no hay parametro que salvar.
+    #
+    # A cambio, sin VAD hay que frenar las alucinaciones de Whisper sobre los
+    # silencios (bucles del tipo "que es? que es? que es?"): eso lo hace
+    # hallucination_silence_threshold, que salta los huecos de mas de 2 s cuando
+    # detecta una posible alucinacion. Con VAD apagado + idioma fijo (ver
+    # LANGUAGE) las tres sesiones quedaron con repeticion inmediata por debajo
+    # del 0.5% de las palabras y cobertura desde el segundo 0.
     segments, _ = _whisper.transcribe(
         path,
         language=LANGUAGE,
+        language_detection_segments=LANGUAGE_DETECTION_SEGMENTS,
         beam_size=BEAM_SIZE,
         best_of=BEST_OF,
-        vad_filter=True,
+        vad_filter=False,
         condition_on_previous_text=True,
+        hallucination_silence_threshold=2.0,
     )
     seg_list = []
     text_parts = []

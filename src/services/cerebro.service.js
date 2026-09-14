@@ -11,6 +11,14 @@ class CerebroError extends Error {
 
 const DEFAULT_CEREBRO_PATH = '/media/san/Miscosas6/Desarrollo/Cerebro';
 const DEFAULT_TIMEOUT_MS = 90000;
+// /aprobar-pr paga ahora el merge gate: worktree descartable + merge +
+// las suites del repo (medido en ~36s para las dos de Agent, mas el
+// worktree). Los 300000 anteriores eran el eslabon MAS CORTO de la cadena
+// del tunel (curl --max-time -> 480s del headless -> este), asi que una
+// maquina cargada mataba el CLI antes de que el headless se diera por
+// vencido. Igualado a los 480s de runChatCommandHeadless para que el que
+// corte sea siempre el de mas arriba, que sabe explicar por que.
+const APROBAR_PR_TIMEOUT_MS = 480000;
 
 function defaultPythonPath(cerebroPath) {
   return os.platform() === 'win32'
@@ -103,7 +111,16 @@ class CerebroService {
    * en un subprocess de chat -- se colgaria hasta el timeout. Cuando el
    * usuario no pidio labels, se manda "," (coma sola): un string no vacio
    * (asi el CLI no lo trata como "--labels no pasado") que el CLI parsea
-   * a una lista vacia. Por la misma razon (input() de consola si hay un
+   * a una lista vacia.
+   *
+   * Cerebro ya acepta --labels "" para lo mismo (antes un string vacio era
+   * falsy y caia al flujo interactivo igual -- el mismo hueco que este
+   * workaround rodea). Se conserva la coma a proposito: funciona con las
+   * dos versiones del CLI, y cambiarla acoplaria Vysper a un Cerebro
+   * actualizado. Si el chat quedara con un Cerebro viejo, un --labels ""
+   * colgaria el subprocess hasta el timeout.
+   *
+   * Por la misma razon (input() de consola si hay un
    * sprint activo de Jira sin milestone que lo matchee) siempre se manda
    * --no-milestone -- Vysper nunca crea milestones automaticamente; si
    * hace falta uno, se crea a mano en GitHub.
@@ -119,11 +136,18 @@ class CerebroService {
    * integra features contra 'main' -- default: PR_REVIEW_REFERENCE_BRANCH
    * del lado de Cerebro si se omite.
    */
-  runCrearPr(branch, { draft = true, labels = [], ticket = null, base = null, repoDir = null, timeoutMs = 300000 } = {}) {
+  runCrearPr(branch, { draft = true, labels = [], tickets = [], base = null, repoDir = null, timeoutMs = 300000 } = {}) {
     const args = ['crear-pr', branch, draft ? '--draft' : '--publish'];
     const labelsArg = Array.isArray(labels) && labels.length > 0 ? labels.join(',') : ',';
     args.push('--labels', labelsArg);
-    if (ticket) args.push('--ticket', ticket);
+    // Un --ticket REPETIDO por cada uno, no uno solo con comas: es el
+    // formato que el CLI de Cerebro toma nativamente, y degrada mejor si
+    // el chat quedara con un Cerebro viejo (ahi --ticket era un str y se
+    // queda con el ultimo, en vez de recibir "AGE-233,AGE-234" como si
+    // fuera una unica clave inexistente).
+    for (const t of (Array.isArray(tickets) ? tickets : [tickets])) {
+      if (t) args.push('--ticket', String(t));
+    }
     if (base) args.push('--base', base);
     if (repoDir) args.push('--repo-dir', repoDir);
     args.push('--no-milestone');
@@ -147,17 +171,70 @@ class CerebroService {
    * typer.confirm() (stdin de consola), que en un subprocess sin stdin
    * interactivo real se queda esperando datos que nunca llegan hasta que
    * este timeout lo mata -- por eso Vysper nunca deja que esto pase:
-   * siempre corre primero sin --merge/--tag, y solo los agrega ya con
-   * --confirmar tras la confirmacion explicita en el chat.
+   * siempre corre primero sin --confirmar (con --evaluar, que corre el
+   * merge gate y devuelve su evidencia sin mergear ni preguntar por
+   * stdin), y solo agrega --confirmar tras la confirmacion explicita en el
+   * chat.
    */
-  runAprobarPr(url, { revisar = false, merge = false, tag = false, tagMensaje = null, confirmar = false, timeoutMs = 300000 } = {}) {
+  runAprobarPr(url, { revisar = false, merge = false, tag = false, tagMensaje = null, confirmar = false, evaluar = false, ignorarChecks = [], timeoutMs = APROBAR_PR_TIMEOUT_MS } = {}) {
     const args = ['aprobar-pr', url];
     if (revisar) args.push('--revisar');
     if (merge) args.push('--merge');
     if (tag) args.push('--tag');
     if (tagMensaje) args.push('--tag-mensaje', tagMensaje);
     if (confirmar) args.push('--confirmar');
+    if (evaluar) args.push('--evaluar');
+    // Acotado por NOMBRE, nunca el flag en bloque: Vysper no expone
+    // --ignorar-checks-no-requeridos a proposito. Desde el chat no se ve
+    // la lista completa de checks rojos de un vistazo como en la web de
+    // GitHub, asi que un "ignoralos todos" desde aqui es aun mas ciego que
+    // desde la terminal -- y el celular es donde mas se aprueba.
+    if (ignorarChecks.length > 0) args.push('--ignorar-checks', ignorarChecks.join(','));
     return this._runCli(args, { timeoutMs });
+  }
+
+  /**
+   * /crear-ticket: fase 1 (sin `confirmar`) devuelve el preview y su
+   * plan_hash sin escribir nada en Jira; fase 2 (`confirmar` + `plan` +
+   * `planHash`) crea. Igual que runActualizarJira, `plan` es el objeto
+   * devuelto por la llamada anterior TAL CUAL, nunca uno re-generado: el
+   * plan_hash rechaza la escritura si cambio aunque sea un caracter, asi
+   * que lo que el usuario leyo en el chat es exactamente lo que se crea.
+   */
+  runCrearTicket(campos = {}, { plan = null, planHash = null, confirmar = false, timeoutMs = 120000 } = {}) {
+    const args = ['crear-ticket'];
+    if (confirmar) {
+      args.push('--confirmar', '--plan', JSON.stringify(plan || {}));
+      if (planHash) args.push('--plan-hash', planHash);
+      return this._runCli(args, { timeoutMs });
+    }
+    const simples = {
+      '--proyecto': campos.proyecto, '--tipo': campos.tipo, '--resumen': campos.resumen,
+      '--descripcion': campos.descripcion, '--descripcion-archivo': campos.descripcionArchivo,
+      '--padre': campos.padre, '--sprint': campos.sprint, '--asignado-a': campos.asignadoA,
+      '--fecha-limite': campos.fechaLimite, '--story-points': campos.storyPoints,
+    };
+    for (const [flag, valor] of Object.entries(simples)) {
+      if (valor !== null && valor !== undefined && valor !== '') args.push(flag, String(valor));
+    }
+    // Repetible: cada relacion lleva su propio tipo y no hay default -- ver
+    // parseCrearTicketCommand.
+    for (const link of campos.links || []) args.push('--link', link);
+    return this._runCli(args, { timeoutMs });
+  }
+
+  /**
+   * Corre un subcomando de SOLO LECTURA de la CLI tal cual, sin un metodo
+   * dedicado por comando (ver PASSTHROUGH_COMMANDS en silia-commands.js).
+   *
+   * Es generico pero NO es un agujero de ejecucion arbitraria: solo se
+   * alcanza desde ese registro, que es la allowlist, y el parser ya filtro
+   * los flags que no pueden cruzar el tunel. Los demas flags viajan tal
+   * cual a proposito: la CLI de Cerebro es la unica que los valida, asi que
+   * un flag nuevo alla queda disponible aqui el mismo dia.
+   */
+  runPassthrough(cliArgs, { timeoutMs = this.timeoutMs } = {}) {
+    return this._runCli(cliArgs, { timeoutMs });
   }
 
   runIncident(description, { persona = 'silia' } = {}) {
@@ -176,10 +253,15 @@ class CerebroService {
    * re-genera: Cerebro no vuelve a llamar al LLM en la confirmacion, asi
    * que lo que el usuario vio en el chat es exactamente lo que se escribe.
    */
-  runActualizarJira(texto, { plan = null, confirmar = false, timeoutMs = 300000 } = {}) {
+  runActualizarJira(texto, { plan = null, planHash = null, confirmar = false, timeoutMs = 300000 } = {}) {
     const args = ['actualizar-jira'];
     if (confirmar) {
       args.push('--confirmar', '--plan', JSON.stringify(plan || []));
+      // La huella del preview: sin ella Cerebro aplica igual pero avisa que
+      // no verifico nada. Con ella, si el plan cambio entre el preview y la
+      // confirmacion se rechaza la escritura entera -- se escribe
+      // EXACTAMENTE lo que el usuario leyo en el chat, o no se escribe.
+      if (planHash) args.push('--plan-hash', planHash);
     } else {
       args.push('--texto', texto);
     }

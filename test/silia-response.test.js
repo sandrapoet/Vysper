@@ -180,6 +180,279 @@ describe('formatCancelarPrResult', () => {
   });
 });
 
+describe('formatActualizarJiraPreview - advertencias', () => {
+  const { formatActualizarJiraPreview } = require('../src/core/silia-response');
+
+  test('muestra el aviso cuando el comentario trae una instruccion a la herramienta', () => {
+    // Se publica LITERAL en Jira con el nombre del usuario: el aviso tiene
+    // que verse donde se decide confirmar.
+    const out = formatActualizarJiraPreview({
+      cambios: [{
+        issue_key: 'AGE-332', campo: 'comentario',
+        valor_propuesto: 'Pendiente de infra. Anotar todo esto como comentario.',
+        requiere_revision: false,
+        advertencia: 'Este comentario parece incluir instrucciones dirigidas a la herramienta...',
+      }],
+    });
+
+    expect(out).toContain('⚠️');
+    expect(out).toContain('instrucciones dirigidas a la herramienta');
+  });
+
+  test('un cambio limpio no muestra ningun aviso', () => {
+    const out = formatActualizarJiraPreview({
+      cambios: [{
+        issue_key: 'AGE-333', campo: 'story_points',
+        valor_actual: 3, valor_propuesto: 5, requiere_revision: false,
+      }],
+    });
+    expect(out).not.toContain('⚠️');
+  });
+});
+
+describe('formatCrearPrResult - draft', () => {
+  const { formatCrearPrResult } = require('../src/core/silia-response');
+
+  test('avisa cuando el PR quedo en draft y como destrabarlo', () => {
+    const out = formatCrearPrResult({
+      pr_url: 'https://github.com/Silia-mx/Agent/pull/214', draft: true,
+      draft_note: 'El PR quedo en DRAFT, asi que nadie lo puede revisar todavia: ... gh pr ready 214 --repo Silia-mx/Agent ...',
+    });
+    expect(out).toContain('⚠️');
+    expect(out).toContain('DRAFT');
+    expect(out).toContain('gh pr ready 214');
+  });
+
+  test('un PR publicado no muestra el aviso', () => {
+    const out = formatCrearPrResult({
+      pr_url: 'https://github.com/Silia-mx/Agent/pull/214', draft: false,
+    });
+    expect(out).not.toContain('DRAFT');
+  });
+});
+
+describe('reviewers', () => {
+  const { formatCrearPrResult } = require('../src/core/silia-response');
+
+  test('muestra usuarios y equipos por separado', () => {
+    const out = formatCrearPrResult({
+      pr_url: 'https://github.com/Silia-mx/Agent/pull/205', draft: true,
+      reviewers: ['camilomosquera-silia', 'davidaleman-silia'],
+      team_reviewers: ['backend'],
+    });
+    expect(out).toContain('Reviewers: camilomosquera-silia, davidaleman-silia');
+    expect(out).toContain('Equipos: backend');
+  });
+
+  test('avisa cuando el PR quedo sin reviewers', () => {
+    // Agent no tiene CODEOWNERS: sin este aviso el PR quedaba esperando a
+    // que alguien notara que no tenia a quien revisarlo.
+    const out = formatCrearPrResult({
+      pr_url: 'https://github.com/Silia-mx/Agent/pull/205', draft: true,
+      reviewers: [], team_reviewers: [],
+      reviewers_note: 'El PR quedo SIN reviewers: Silia-mx/Agent no tiene .github/CODEOWNERS ...',
+    });
+    expect(out).toContain('⚠️');
+    expect(out).toContain('SIN reviewers');
+  });
+});
+
+describe('multi-ticket', () => {
+  const { formatCrearPrResult, formatJiraTransitions } = require('../src/core/silia-response');
+
+  test('lista cada ticket por separado, no un resumen', () => {
+    // Cada transicion se intenta por su cuenta: si la segunda falla, la
+    // primera YA se movio. Un "3 tickets movidos" haria pasar por completo
+    // algo que quedo a medias.
+    const lines = formatJiraTransitions([
+      { key: 'AGE-233', transition: 'In Review' },
+      { key: 'AGE-234', error: 'Jira rechazo la transicion' },
+      { key: 'AGE-236', skipped: 'ya estaba en el estado destino' },
+    ], 'In Review');
+
+    expect(lines).toEqual([
+      'Jira AGE-233 -> "In Review"',
+      'Jira AGE-234: ⚠️ no se pudo mover (Jira rechazo la transicion)',
+      'Jira AGE-236: sin cambios (ya estaba en el estado destino)',
+    ]);
+  });
+
+  test('/crear-pr muestra los tres tickets y el aviso', () => {
+    const out = formatCrearPrResult({
+      pr_url: 'https://github.com/Silia-mx/Agent/pull/205',
+      draft: true,
+      jira_ticket_key: 'AGE-233',
+      jira_transitions: [
+        { key: 'AGE-233', transition: 'In Review' },
+        { key: 'AGE-234', transition: 'In Review' },
+      ],
+      multi_ticket_note: 'Este PR menciona 2 tickets (AGE-233, AGE-234) y se transicionan los 2. Ojo que el repo padre declara one_concern_per_pr.',
+    });
+
+    expect(out).toContain('Jira AGE-233 -> "In Review"');
+    expect(out).toContain('Jira AGE-234 -> "In Review"');
+    expect(out).toContain('one_concern_per_pr');
+  });
+
+  test('un PR de un solo ticket se ve igual que siempre', () => {
+    const out = formatCrearPrResult({
+      pr_url: 'https://github.com/org/repo/pull/9',
+      draft: false,
+      jira_ticket_key: 'AGE-233',
+      jira_transitions: [{ key: 'AGE-233', transition: 'In Review' }],
+      multi_ticket_note: null,
+    });
+
+    expect(out).toContain('Jira AGE-233 -> "In Review"');
+    expect(out).not.toContain('⚠️');
+  });
+
+  test('sin jira_transitions cae al campo viejo (Cerebro desactualizado)', () => {
+    const out = formatCrearPrResult({
+      pr_url: 'https://github.com/org/repo/pull/9', draft: false, jira_ticket_key: 'AGE-233',
+    });
+    expect(out).toContain('Jira: AGE-233 -> "In Review"');
+  });
+});
+
+describe('formatAprobarPrResult - merge gate y confirmacion', () => {
+  const base = { approved: true, pr_url: 'https://github.com/org/repo/pull/9', is_bot_author: false };
+
+  test('la peticion de confirmacion viaja en el MISMO mensaje que la evidencia del gate', () => {
+    // Requisito del tunel del celular: runChatCommandHeadless resuelve con
+    // el primer emitSiliaResult y descarta el resto, asi que con dos
+    // mensajes la pregunta nunca llegaba al telefono.
+    const result = formatAprobarPrResult(
+      { ...base, merge_gate: { ok: true, validated: true, passed: ['suite-a', 'suite-b'], base_sha: 'a9b1773aaa' } },
+      { merge: false, tag: false, pendingConfirmation: 'mergear' }
+    );
+
+    expect(result).toContain('PR aprobado:');
+    expect(result).toContain('2 suite(s) OK sobre base+head mergeados (base a9b1773)');
+    expect(result).toContain('¿Confirmas mergear el PR https://github.com/org/repo/pull/9?');
+  });
+
+  test('declara explicitamente cuando NO se corrio ninguna prueba', () => {
+    // Un gate apagado que no se declara es peor que no tenerlo: el mensaje
+    // suena a que se reviso.
+    const result = formatAprobarPrResult(
+      { ...base, merge_gate: { ok: true, validated: false, reason: 'No hay comando de test configurado. El merge NO fue validado automaticamente.' } },
+      { merge: true, tag: false }
+    );
+
+    expect(result).toContain('⚠️ Merge gate');
+    expect(result).toContain('NO fue validado');
+  });
+
+  test('muestra el comando que fallo cuando el gate bloquea', () => {
+    const result = formatAprobarPrResult(
+      {
+        ...base,
+        merge_gate: {
+          ok: false, validated: true, reason: 'Fallaron las pruebas del merge sobre bb2b1d2',
+          failed_command: 'env RAG_PG_DSN= .venv/bin/python -m pytest -q pipeline/tests',
+        },
+      },
+      { merge: true }
+    );
+
+    expect(result).toContain('❌ Merge gate');
+    expect(result).toContain('pipeline/tests');
+  });
+
+  test('marca el resultado reusado del turno anterior en vez de volver a correr', () => {
+    const result = formatAprobarPrResult(
+      { ...base, merge_gate: { ok: true, validated: true, passed: ['suite'], base_sha: 'a9b1773', cached: true } },
+      { merge: true }
+    );
+    expect(result).toContain('ya calculado en el paso anterior');
+  });
+
+  test('avisa que el deploy queda pendiente y que falta el arreglo de build', () => {
+    // deploy-app.yml filtra por paths sin Agent y deploy-service.yml es
+    // workflow_dispatch puro: sin este aviso, el merge parece haber
+    // desplegado.
+    const result = formatAprobarPrResult(
+      {
+        ...base,
+        merge: { merged: true, sha: 'abcdef1234' },
+        deploy_dispatch: {
+          pendiente: true, repo: 'Silia-mx/silia', workflow: 'deploy-service.yml', ref: 'staging',
+          advertencias: ['El arreglo del contexto de build de engine-poc no esta en staging.'],
+        },
+      },
+      { merge: true }
+    );
+
+    expect(result).toContain('Deploy PENDIENTE');
+    expect(result).toContain('deploy-service.yml');
+    expect(result).toContain('engine-poc');
+  });
+
+  test('avisa de los PRs apilados que quedaron apuntando a la rama mergeada', () => {
+    // Caso real: tras mergear el #202, el #203 quedo con base
+    // feat/AGE-245-... Mergearlo asi manda su codigo a una rama muerta y
+    // el ticket avanza igual.
+    const result = formatAprobarPrResult(
+      {
+        ...base,
+        merge: { merged: true, sha: 'c1febb9aaa' },
+        cadena_pendiente: {
+          rama_mergeada: 'feat/AGE-245-router-multi-model-integration',
+          destino_real: 'develop',
+          prs: [{ number: 203, title: 'AGE-296 router', url: 'https://github.com/Silia-mx/Agent/pull/203' }],
+        },
+      },
+      { merge: true }
+    );
+
+    expect(result).toContain('Cadena pendiente de reapuntar');
+    expect(result).toContain('#203');
+    expect(result).toContain("PRIMERO reapuntalos a 'develop'");
+  });
+
+  test('fija el orden: reapuntar antes de borrar, y nunca ofrece el borrado como atajo', () => {
+    // Una version anterior decia "o borra la rama (los reapunta solo)".
+    // Es falso en estos repos: borrar CIERRA los PRs apilados y los deja
+    // en deadlock (verificado en vivo con el #203).
+    const result = formatAprobarPrResult(
+      {
+        ...base,
+        merge: { merged: true, sha: 'c1febb9aaa' },
+        cadena_pendiente: {
+          rama_mergeada: 'feat/AGE-296-fallback-indisponibilidad',
+          destino_real: 'develop',
+          prs: [{ number: 204, title: 'AGE-242', url: 'https://github.com/Silia-mx/Agent/pull/204' }],
+          comandos_reapuntar: ['gh api -X PATCH repos/Silia-mx/Agent/pulls/204 -f base=develop'],
+        },
+      },
+      { merge: true }
+    );
+
+    expect(result).toContain('gh api -X PATCH repos/Silia-mx/Agent/pulls/204 -f base=develop');
+    expect(result.indexOf('PRIMERO')).toBeLessThan(result.indexOf('RECIEN DESPUES'));
+    expect(result).toContain('CIERRA esos PRs');
+    expect(result).not.toContain('reapunta solo');
+    expect(result).not.toContain('gh pr edit');
+  });
+
+  test('no dice nada de la cadena cuando no hay PRs apilados', () => {
+    const result = formatAprobarPrResult(
+      { ...base, merge: { merged: true, sha: 'abc1234' }, cadena_pendiente: null },
+      { merge: true }
+    );
+    expect(result).not.toContain('Cadena pendiente');
+  });
+
+  test('reporta la nivelacion automatica de una rama BEHIND', () => {
+    const result = formatAprobarPrResult(
+      { ...base, branch_leveled: { leveled: true, new_head_sha: 'fedcba9876543' } },
+      { merge: false }
+    );
+    expect(result).toContain('Rama nivelada con su base (head fedcba9)');
+  });
+});
+
 describe('formatAprobarPrResult', () => {
   test('first pass (no merge/tag requested) only shows approval', () => {
     const result = formatAprobarPrResult(
@@ -231,6 +504,23 @@ describe('formatAprobarPrResult', () => {
 });
 
 describe('formatActualizarJiraPreview', () => {
+  test('a comentario is shown as an addition, never as overwriting the ticket', () => {
+    // Un comentario AGREGA constancia fechada; con el par Actual/Propuesto
+    // de los demas campos se leia "Actual: (vacío)", que hace pensar que
+    // pisa contenido de la descripcion.
+    const result = formatActualizarJiraPreview({
+      pending: true,
+      cambios: [
+        { issue_key: 'AGE-322', campo: 'comentario', requiere_revision: false, valor_actual: null, valor_propuesto: 'Se decidio bumpear staging.' },
+      ],
+    });
+
+    expect(result).toContain('AGE-322 — comentario');
+    expect(result).toContain('Se agregará este comentario (no modifica la descripción):');
+    expect(result).toContain('Se decidio bumpear staging.');
+    expect(result).not.toContain('(vacío)');
+  });
+
   test('lists resolved changes with actual/proposed values', () => {
     const result = formatActualizarJiraPreview({
       pending: true,

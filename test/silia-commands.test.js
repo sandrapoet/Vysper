@@ -357,7 +357,7 @@ describe('parseCrearPrCommand', () => {
       rama: 'feature/AGE-123-cosas',
       draft: true,
       labels: [],
-      ticket: null,
+      tickets: [],
       base: null,
       repoDir: null
     });
@@ -368,7 +368,7 @@ describe('parseCrearPrCommand', () => {
       rama: 'mi-rama',
       draft: false,
       labels: ['bug-fix', 'backend'],
-      ticket: 'AGE-123',
+      tickets: ['AGE-123'],
       base: null,
       repoDir: null
     });
@@ -377,7 +377,7 @@ describe('parseCrearPrCommand', () => {
       rama: 'mi-rama',
       draft: true,
       labels: ['bug-fix'],
-      ticket: 'AGE-123',
+      tickets: ['AGE-123'],
       base: null,
       repoDir: null
     });
@@ -388,7 +388,7 @@ describe('parseCrearPrCommand', () => {
       rama: 'mi-rama',
       draft: true,
       labels: ['bug-fix', 'backend'],
-      ticket: null,
+      tickets: [],
       base: null,
       repoDir: null
     });
@@ -401,7 +401,7 @@ describe('parseCrearPrCommand', () => {
       rama: 'mi-rama',
       draft: true,
       labels: ['age-309'],
-      ticket: null,
+      tickets: [],
       base: 'develop',
       repoDir: '/media/san/repo'
     });
@@ -416,7 +416,7 @@ describe('parseCrearPrCommand', () => {
       rama: 'feat/AGE-143-orchestrator-foundations',
       draft: true,
       labels: ['foundations', 'AGE-143'],
-      ticket: 'AGE-143',
+      tickets: ['AGE-143'],
       base: 'develop',
       repoDir: '/media/san/Miscosas6/Desarrollo/CreAI/Silia/Agent'
     });
@@ -436,8 +436,44 @@ describe('parseCrearPrCommand', () => {
       error: 'Falta el valor de --labels (ej. --labels bug-fix,backend).'
     });
     expect(parseCrearPrCommand('/crear-pr mi-rama --ticket')).toEqual({
-      error: 'Falta el valor de --ticket (ej. --ticket AGE-123).'
+      error: 'Falta el valor de --ticket (ej. --ticket AGE-123, AGE-124).'
     });
+    // Un flag no puede ser el valor de otro: --ticket --base develop es
+    // "falta el valor", no un ticket llamado "--base".
+    expect(parseCrearPrCommand('/crear-pr mi-rama --ticket --base develop')).toEqual({
+      error: 'Falta el valor de --ticket (ej. --ticket AGE-123, AGE-124).'
+    });
+  });
+
+  test('acepta varios tickets separados por coma en un solo --ticket', () => {
+    // Sintaxis pedida: con espacios despues de la coma y SIN comillas.
+    // Antes eso se tokenizaba en "AGE-233," "AGE-234," "AGE-236" y los dos
+    // ultimos caian como "flag desconocido"; habia que acordarse de poner
+    // comillas, que en un chat que se usa manejando no pasa.
+    expect(parseCrearPrCommand('/crear-pr mi-rama --ticket AGE-233, AGE-234, AGE-236').tickets)
+      .toEqual(['AGE-233', 'AGE-234', 'AGE-236']);
+    expect(parseCrearPrCommand('/crear-pr mi-rama --ticket AGE-233,AGE-234').tickets)
+      .toEqual(['AGE-233', 'AGE-234']);
+    expect(parseCrearPrCommand('/crear-pr mi-rama --ticket AGE-233 ,AGE-234').tickets)
+      .toEqual(['AGE-233', 'AGE-234']);
+    expect(parseCrearPrCommand('/crear-pr mi-rama --ticket "AGE-233, AGE-234"').tickets)
+      .toEqual(['AGE-233', 'AGE-234']);
+  });
+
+  test('la lista con comas no se come el flag siguiente', () => {
+    const r = parseCrearPrCommand(
+      '/crear-pr mi-rama --ticket AGE-233, AGE-234 --base develop --repo-dir /tmp/x --publish'
+    );
+    expect(r.tickets).toEqual(['AGE-233', 'AGE-234']);
+    expect(r.base).toBe('develop');
+    expect(r.repoDir).toBe('/tmp/x');
+    expect(r.draft).toBe(false);
+  });
+
+  test('--labels tambien acepta espacios despues de la coma sin comillas', () => {
+    // Misma mecanica, mismo helper: antes esto exigia comillas.
+    expect(parseCrearPrCommand('/crear-pr mi-rama --labels bug-fix, backend --ticket AGE-1').labels)
+      .toEqual(['bug-fix', 'backend']);
   });
 
   test('errors on an unknown flag', () => {
@@ -474,19 +510,59 @@ describe('parseAprobarPrCommand', () => {
 
   test('defaults all flags to false when none are given', () => {
     expect(parseAprobarPrCommand(`/aprobar-pr ${url}`)).toEqual({
-      url, revisar: false, merge: false, tag: false
+      url, revisar: false, merge: false, tag: false, ignorarChecks: []
     });
   });
 
   test('parses --revisar, --merge and --tag combined', () => {
     expect(parseAprobarPrCommand(`/aprobar-pr ${url} --revisar --merge --tag`)).toEqual({
-      url, revisar: true, merge: true, tag: true
+      url, revisar: true, merge: true, tag: true, ignorarChecks: []
     });
   });
 
   test('errors on an unknown flag', () => {
     expect(parseAprobarPrCommand(`/aprobar-pr ${url} --bogus`)).toEqual({
       error: 'Flag desconocido: --bogus'
+    });
+  });
+
+  // Los nombres de checks llevan espacios, ampersands y parentesis. La
+  // forma entrecomillada es la que devuelve Cerebro en `sugerencia` cuando
+  // bloquea, lista para pegar tal cual desde el chat.
+  test('parses --ignorar-checks with quoted, multi-word check names', () => {
+    expect(parseAprobarPrCommand(
+      `/aprobar-pr ${url} --merge --ignorar-checks "Lint & Format Check,Adversarial Verify (shadow)"`
+    )).toEqual({
+      url, revisar: false, merge: true, tag: false,
+      ignorarChecks: ['Lint & Format Check', 'Adversarial Verify (shadow)']
+    });
+  });
+
+  test('parses --ignorar-checks without quotes -- se usa manejando', () => {
+    expect(parseAprobarPrCommand(`/aprobar-pr ${url} --ignorar-checks Lint & Format Check, Tests & Coverage`)).toEqual({
+      url, revisar: false, merge: false, tag: false,
+      ignorarChecks: ['Lint & Format Check', 'Tests & Coverage']
+    });
+  });
+
+  test('--ignorar-checks stops at the next flag, no se come --merge', () => {
+    expect(parseAprobarPrCommand(`/aprobar-pr ${url} --ignorar-checks "Tests & Coverage" --merge`)).toEqual({
+      url, revisar: false, merge: true, tag: false, ignorarChecks: ['Tests & Coverage']
+    });
+  });
+
+  test('errors when --ignorar-checks has no value', () => {
+    expect(parseAprobarPrCommand(`/aprobar-pr ${url} --ignorar-checks --merge`)).toEqual({
+      error: 'Falta el valor de --ignorar-checks (ej. --ignorar-checks "Lint & Format Check").'
+    });
+  });
+
+  // El flag EN BLOQUE no se expone desde el chat a proposito: ahi no se ve
+  // la lista de rojos de un vistazo, asi que un "ignoralos todos" es aun
+  // mas ciego que desde la terminal.
+  test('rejects the blanket flag', () => {
+    expect(parseAprobarPrCommand(`/aprobar-pr ${url} --ignorar-checks-no-requeridos`)).toEqual({
+      error: 'Flag desconocido: --ignorar-checks-no-requeridos'
     });
   });
 

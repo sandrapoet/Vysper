@@ -24,9 +24,13 @@
 #     segura (el reporte de /revisar puede traer comillas, backslashes,
 #     etc. que un parseo con grep/sed rompe).
 
-SERVER="http://100.83.125.94:8080"
-USER="sanVysper"
-PASS='S@Ndra21'
+# Overridables por entorno, igual que en upload-audio.sh. Tenerlos
+# hardcodeados impedia apuntar el script a otra PC y, peor, hacia que
+# cualquier prueba saliera contra la maquina real: /modo cambia el modo
+# activo de esa PC y /revisar dispara trabajo de verdad.
+SERVER="${VYSPER_HOST:-http://100.83.125.94:8080}"
+USER="${VYSPER_HTTP_USER:-sanVysper}"
+PASS="${VYSPER_HTTP_PASSWORD:-S@Ndra21}"
 MODO="silia"                # modo requerido para que /revisar no se descarte en silencio
 TIMEOUT=320                 # el server da hasta 300s (5 min) al CLI de Cerebro
 
@@ -212,12 +216,34 @@ if [ -z "$RESPONSE" ]; then
     exit 1
 fi
 
+# Se leen DOS cosas: "ok" (el comando llego y se ejecuto) y "fallo" (se
+# ejecuto pero su resultado es un error, p.ej. Cerebro salio con codigo != 0
+# porque el PR no existe). Mirar solo "ok" hacia anunciar "Revision
+# completada" encima de un traceback -- el caso real fue elegir el repo
+# equivocado en el menu y recibir un 404 de la API de GitHub.
 OK=$(echo "$RESPONSE" | python3 -c 'import json,sys
 try:
     d = json.load(sys.stdin)
-    print("true" if d.get("ok") else "false")
+    if not d.get("ok"):
+        print("false")
+    else:
+        print("fallo" if d.get("fallo") else "true")
 except Exception:
     print("parse-error")')
+
+if [ "$OK" = "fallo" ]; then
+    echo -e "${RED}❌ La revisión falló${NC}"
+    echo -e "${BLUE}───────────────────────────────────────────────────────${NC}"
+    echo "$RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("resultado",""))'
+    echo -e "${BLUE}───────────────────────────────────────────────────────${NC}"
+    # Un 404 de la API de GitHub casi siempre es el repo equivocado: el menu
+    # ofrece agent/silia/skills y el numero de PR de uno no existe en otro.
+    if echo "$RESPONSE" | grep -q "404 Not Found"; then
+        echo -e "${YELLOW}💡 El PR no existe en ese repo. Revisa si el número es de otro:${NC}"
+        echo -e "${YELLOW}   vuelve a correr eligiendo otro repo, o directo:${NC} pr silia:<numero> --profundo"
+    fi
+    exit 1
+fi
 
 if [ "$OK" = "true" ]; then
     echo -e "${GREEN}✅ Revision completada${NC}"

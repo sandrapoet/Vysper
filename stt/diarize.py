@@ -11,6 +11,7 @@ meeting pipeline can process finished fragments without disturbing live capture.
 
 import argparse
 import json
+import re
 import os
 import sys
 import warnings
@@ -26,6 +27,11 @@ _CPU_THREAD_CAP = os.environ.get("VYSPER_STT_CPU_THREADS", "2")
 for _env_var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
     os.environ.setdefault(_env_var, _CPU_THREAD_CAP)
 
+
+# SPEAKER_XX lo pone pyannote; UNKNOWN_XX lo pone el flujo de revision
+# humana (ver markSpeakerAsUnknown en main.js). Ninguna de las dos es un
+# nombre real, asi que se pueden sobreescribir sin perder informacion.
+_GENERIC_LABEL = re.compile(r"^(?:SPEAKER|UNKNOWN)_\d+$")
 
 DEFAULT_MODEL = "pyannote/speaker-diarization-community-1"
 
@@ -204,7 +210,11 @@ def _apply_voiceprint_matches(segments: list, waveform, sample_rate: int, token:
     scores = {}
     for speaker_label, speaker_segments in grouped.items():
         try:
-            clip = vp.concat_segments_waveform(waveform, sample_rate, speaker_segments)
+            # MAX_MATCH_SECONDS y no el tope de enrolamiento: identificar quiere
+            # toda la voz disponible del cluster, no un clip representativo.
+            clip = vp.concat_segments_waveform(
+                waveform, sample_rate, speaker_segments, max_seconds=vp.MAX_MATCH_SECONDS
+            )
             embedding = vp.extract_embedding(clip, sample_rate, 0.0, clip.shape[-1] / sample_rate, token, device)
         except Exception as exc:
             print(f"[diarize] Voiceprint match skipped for {speaker_label}: {exc}", file=sys.stderr, flush=True)
@@ -215,15 +225,70 @@ def _apply_voiceprint_matches(segments: list, waveform, sample_rate: int, token:
         if name:
             print(f"[diarize] {speaker_label} matched '{name}' (score={score:.3f})", file=sys.stderr, flush=True)
             resolved[speaker_label] = name
+        else:
+            # Se dice POR QUE no se resolvio, distinguiendo "nadie se parece"
+            # de "dos se parecen casi igual". Lo segundo es lo que antes
+            # producia un nombre equivocado con apariencia de certeza, y sin
+            # este log no habia forma de notarlo desde la sesion.
+            ranking = vp.rank_speakers(embedding, store)
+            if len(ranking) > 1 and score >= vp.match_threshold():
+                print(
+                    f"[diarize] {speaker_label} sin identificar: empate entre "
+                    f"'{ranking[0][0]}' ({ranking[0][1]:.3f}) y '{ranking[1][0]}' "
+                    f"({ranking[1][1]:.3f}); margen {ranking[0][1] - ranking[1][1]:.3f} "
+                    f"< {vp.match_min_margin():.3f} exigido",
+                    file=sys.stderr, flush=True
+                )
+            else:
+                mejor = f"'{ranking[0][0]}' ({ranking[0][1]:.3f})" if ranking else "(sin voiceprints)"
+                print(
+                    f"[diarize] {speaker_label} sin identificar: el mejor candidato "
+                    f"{mejor} no llega al umbral {vp.match_threshold():.3f}",
+                    file=sys.stderr, flush=True
+                )
+
+    # Etiqueta generica para los clusters que quedaron sin resolver. Hace
+    # falta porque un rematch tiene que poder QUITAR un nombre, no solo
+    # ponerlo: si una corrida anterior etiqueto el cluster con un nombre que
+    # ya no se sostiene (p.ej. se subio el margen exigido, o se corrigio la
+    # voiceprint culpable), conservarlo dejaria el error clavado para siempre
+    # -- /actualizarHablantes es justamente la herramienta para arreglarlo y
+    # no podia. Se cae a UNKNOWN_XX, la convencion que ya entienden
+    # findUnknownSpeakerLabels y /reconocerVozPendientes en main.js.
+    generic_labels = {}
+    next_unknown = 0
+    taken = {seg["speaker"] for seg in segments if _GENERIC_LABEL.match(str(seg.get("speaker", "")))}
+    for label in grouped:
+        if label in resolved or label not in scores:
+            continue
+        if _GENERIC_LABEL.match(str(label)):
+            generic_labels[label] = label
+            continue
+        while f"UNKNOWN_{next_unknown:02d}" in taken:
+            next_unknown += 1
+        generic_labels[label] = f"UNKNOWN_{next_unknown:02d}"
+        taken.add(generic_labels[label])
+        # Una linea por cluster, no por segmento.
+        print(
+            f"[diarize] '{label}' pierde su nombre: este rematch ya no lo respalda, "
+            f"queda como {generic_labels[label]}",
+            file=sys.stderr, flush=True
+        )
 
     for seg in segments:
         original_label = seg["speaker"]
         if original_label not in scores:
             continue
+        # La etiqueta cruda del cluster se conserva la primera vez que se ve,
+        # para no perderla al renombrar.
+        seg.setdefault("cluster", original_label)
         seg["score"] = scores[original_label]
         if original_label in resolved:
             seg["speaker"] = resolved[original_label]
             seg["status"] = "MATCHED"
+        elif seg.get("status") == "MATCHED":
+            seg["speaker"] = generic_labels.get(original_label, original_label)
+            seg["status"] = None
 
 
 def rematch(speakers_json: Path, audio_override: str) -> dict:

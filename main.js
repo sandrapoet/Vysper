@@ -32,6 +32,10 @@ const {
   parseCancelarPrCommand,
   parseAprobarPrCommand,
   parseActualizarJiraCommand,
+  parseCrearTicketCommand,
+  parsePassthroughCommand,
+  isUnknownSlashCommand,
+  normalizeSlashCommandName,
   parseScriptCommand,
   parseMergeCommand,
   parseConfirmationResponse,
@@ -60,7 +64,9 @@ const {
   formatMergeResult,
   formatAprobarPrResult,
   formatActualizarJiraPreview,
-  formatActualizarJiraApplyResult
+  formatActualizarJiraApplyResult,
+  formatCrearTicketPreview,
+  formatCrearTicketResult
 } = require("./src/core/silia-response");
 const { classifyOperationalQuery, isExplicitCerebroCommand } = require("./src/core/cerebro-query-router");
 const { parseKeymapKeysyms, planTypedPaste, batchRuns } = require("./src/core/paste-keysyms");
@@ -156,6 +162,40 @@ const MEETING_FINAL_TRANSCRIPT_CHARS = Number(process.env.VYSPER_MEETING_FINAL_T
 // legitima del modelo sin dejar al usuario esperando demasiado.
 const MEETING_STARTUP_TIMEOUT_MS = Number(process.env.VYSPER_MEETING_STARTUP_TIMEOUT_MS || 25000);
 const DIARIZE_HELPER_PATH = path.join(__dirname, 'stt', 'diarize.py');
+
+// Cuanto tiempo darle a diarize.py. Un tope FIJO de 30 min solo alcanzaba
+// para reuniones de ~35 min: la sesion del 8-sep-2026 (74 min de audio) se
+// corto exactamente a los 30:00:00 y se quedo sin speakers-full.json, sin
+// transcript-hablantes.txt y sin transcript-teams.txt -- los tres se derivan
+// de la diarizacion. La minuta salio igual, pero sin hablantes, y el error
+// guardado fue un "Command failed" sin causa (ver runSecretariaDiarization).
+//
+// Velocidad medida sobre 300 s de audio real de reunion en este equipo
+// (i9-14900HX + RTX 5060):
+//   GPU (cuda)      15 s   -> 0.05x tiempo real  (2 h de reunion ~ 6 min)
+//   CPU,  8 hilos  123 s   -> 0.41x              (2 h ~ 49 min)
+//   CPU,  2 hilos  252 s   -> 0.84x              (2 h ~ 101 min)
+// diarize.py usa la GPU sola cuando torch la ve (VYSPER_PYANNOTE_DEVICE=auto);
+// el camino de CPU sigue vivo como respaldo, de ahi que el timeout se
+// dimensione para el peor caso y no para el mejor.
+//
+// Se dimensiona sobre la duracion real del audio con factor 2 (mas del doble
+// de lo medido en CPU) y se conserva un piso igual al tope anterior, para no
+// recortarle margen a las sesiones cortas.
+const DIARIZE_TIME_FACTOR = 2;
+const DIARIZE_TIMEOUT_MARGIN_MS = 10 * 60 * 1000;
+const DIARIZE_TIMEOUT_FLOOR_MS = 30 * 60 * 1000;
+const REMATCH_TIMEOUT_FLOOR_MS = 10 * 60 * 1000;
+
+// Hilos de CPU para diarize.py, usados solo cuando NO hay GPU disponible. El
+// tope global de 2 (VYSPER_STT_CPU_THREADS, ver stt/sidecar.py y
+// stt/diarize.py) existe para no competir con la captura en vivo de Alt+S,
+// pero la diarizacion de una sesion ya grabada corre cuando esa captura YA
+// termino, asi que ahi el tope solo la hace lenta: medido sobre audio real de
+// reunion, 300 s tardan 252 s con 2 hilos y 123 s con 8 -- la mitad. Con 16
+// sube a 152 s (la contencion pesa mas que los nucleos extra), asi que 8 es el
+// punto optimo, no "todos los que haya".
+const DIARIZE_CPU_THREADS = process.env.VYSPER_DIARIZE_CPU_THREADS || '8';
 const ENROLL_SPEAKER_HELPER_PATH = path.join(__dirname, 'stt', 'enroll_speaker.py');
 const MERGE_VOICEPRINTS_HELPER_PATH = path.join(__dirname, 'stt', 'merge_voiceprints.py');
 const REIDENTIFY_MINUTAS_HELPER_PATH = path.join(__dirname, 'stt', 'reidentify_minutas.py');
@@ -703,6 +743,13 @@ class ApplicationController {
     // reenvia sin cambios en la confirmacion, nunca se le vuelve a pedir al
     // LLM que lo regenere.
     this.pendingJiraUpdate = null;
+
+    // /crear-ticket: mismo patron de dos turnos que pendingJiraUpdate --
+    // la fase 1 solo genera el preview, y el ticket recien se crea cuando
+    // el proximo mensaje confirma (ver resolvePendingTicketCreation).
+    // Guarda el ticket_propuesto COMPLETO y su plan_hash: se reenvia sin
+    // tocar, y Cerebro rechaza la escritura si cambio un caracter.
+    this.pendingTicketCreation = null;
 
     // /merge <numero> --repo <owner/repo>: nunca se ejecuta directo (ver
     // CerebroService.runMergePr) -- este objeto guarda la accion a
@@ -2655,15 +2702,64 @@ class ApplicationController {
     }
   }
 
+  /**
+   * Duracion aproximada de un WAV a partir de su tamano. El pipeline escribe
+   * full-audio.wav como PCM 16-bit mono a 16 kHz (ver convertToWav en
+   * stt/http_server.js), asi que el tamano alcanza y evita pagar un ffprobe.
+   * Si el formato fuera otro, la estimacion solo mueve el margen del timeout,
+   * nunca la correctitud del resultado.
+   */
+  estimateWavDurationSec(audioPath) {
+    try {
+      return Math.max(0, fs.statSync(audioPath).size / (16000 * 2));
+    } catch (error) {
+      logger.warn('No se pudo estimar la duracion del audio para el timeout de diarizacion', {
+        audioPath, error: error.message
+      });
+      return 0;
+    }
+  }
+
+  diarizationTimeoutMs(audioPath, floorMs = DIARIZE_TIMEOUT_FLOOR_MS) {
+    const durationSec = this.estimateWavDurationSec(audioPath);
+    return Math.max(floorMs, durationSec * DIARIZE_TIME_FACTOR * 1000 + DIARIZE_TIMEOUT_MARGIN_MS);
+  }
+
   runSecretariaDiarization(audioPath, outputPath) {
     return new Promise((resolve, reject) => {
       const python = this.resolveSttPython();
+      const durationSec = this.estimateWavDurationSec(audioPath);
+      const timeoutMs = this.diarizationTimeoutMs(audioPath);
+      logger.info('Diarizando sesion', {
+        audioPath,
+        audioMin: Math.round(durationSec / 60),
+        timeoutMin: Math.round(timeoutMs / 60000)
+      });
       execFile(
         python,
         [DIARIZE_HELPER_PATH, audioPath, '--output', outputPath],
-        { encoding: 'utf8', timeout: 30 * 60 * 1000, maxBuffer: 1024 * 1024 },
+        {
+          encoding: 'utf8',
+          timeout: timeoutMs,
+          maxBuffer: 1024 * 1024,
+          // Solo para este proceso: el sidecar conserva su propio tope bajo.
+          env: { ...process.env, VYSPER_STT_CPU_THREADS: DIARIZE_CPU_THREADS }
+        },
         (error, stdout, stderr) => {
           if (error) {
+            // execFile mata por timeout con SIGTERM y sin dejar stderr, asi
+            // que el mensaje quedaba en "Command failed: <comando>" y no habia
+            // forma de saber que la causa era el tope de tiempo: hubo que
+            // deducirlo comparando las fechas de los archivos de la sesion.
+            // Un timeout tiene que decir que lo fue.
+            if (error.killed) {
+              reject(new Error(
+                `La diarizacion excedio su tiempo maximo (${Math.round(timeoutMs / 60000)} min ` +
+                `para ${Math.round(durationSec / 60)} min de audio) y se cancelo. ` +
+                'La transcripcion de texto no se pierde, pero la sesion queda sin hablantes.'
+              ));
+              return;
+            }
             reject(new Error((stderr || stdout || error.message).trim()));
             return;
           }
@@ -4367,7 +4463,7 @@ class ApplicationController {
       // continuacion (ver pendingVisualImage / resolvePendingVisualImage).
 
       if (canCaptureInstruction && !options?.promptOverride) {
-        const tempImagePath = path.join(os.tmpdir(), `vysper-cerebro-image-${Date.now()}.png`);
+        const tempImagePath = path.join(config.get('app.tempDir'), `vysper-cerebro-image-${Date.now()}.png`);
         fs.writeFileSync(tempImagePath, imageBuffer);
 
         this.clearPendingVisualImage();
@@ -4382,7 +4478,7 @@ class ApplicationController {
 
       windowManager.showLLMLoading();
 
-      const tempImagePath = path.join(os.tmpdir(), `vysper-cerebro-image-${Date.now()}.png`);
+      const tempImagePath = path.join(config.get('app.tempDir'), `vysper-cerebro-image-${Date.now()}.png`);
       fs.writeFileSync(tempImagePath, imageBuffer);
 
       let cerebroResult;
@@ -6005,6 +6101,21 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         // El modo cambio antes de responder: se descarta sin aplicar nada.
       }
 
+      if (this.pendingTicketCreation) {
+        const pending = this.pendingTicketCreation;
+        this.pendingTicketCreation = null;
+        if (pending.skill === normalizedSkill) {
+          const confirmation = parseConfirmationResponse(text);
+          if (confirmation !== null) {
+            await this.resolvePendingTicketCreation(pending, confirmation, { skill: normalizedSkill, source: 'cerebro' });
+            return;
+          }
+          // No leyo como si/no -- se descarta el preview pendiente y el
+          // mensaje sigue su camino normal (puede ser un comando nuevo).
+        }
+        // El modo cambio antes de responder: se descarta sin crear nada.
+      }
+
       if (this.pendingMerge) {
         const pending = this.pendingMerge;
         this.pendingMerge = null;
@@ -6377,7 +6488,17 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve(llmResult?.response ?? '');
+        // Se devuelve tambien si el comando fallo, no solo su texto:
+        // emitSiliaResult marca metadata.error cuando el comando SI corrio
+        // pero su resultado es un mensaje de fallo (p.ej. Cerebro salio con
+        // codigo != 0). Sin propagarlo, el cliente HTTP ve ok:true y un
+        // texto cualquiera, y no puede distinguir exito de fallo --
+        // scripts/termux/revisar-pr.sh anunciaba "Revision completada"
+        // encima de un traceback de Cerebro por un PR inexistente.
+        resolve({
+          resultado: llmResult?.response ?? '',
+          fallo: llmResult?.metadata?.error === true
+        });
       };
 
       sessionManager.addUserInput(text, 'chat');
@@ -6400,7 +6521,7 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     try {
       const localNotes = this.gatherLocalMinutasForPreviousBusinessDay();
       if (localNotes) {
-        localNotesFile = path.join(os.tmpdir(), `vysper-silia-daily-notes-${Date.now()}.txt`);
+        localNotesFile = path.join(config.get('app.tempDir'), `vysper-silia-daily-notes-${Date.now()}.txt`);
         fs.writeFileSync(localNotesFile, localNotes, 'utf8');
       }
     } catch (error) {
@@ -6530,11 +6651,11 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     }
   }
 
-  async runCrearPrCommand({ rama, draft, labels, ticket, base, repoDir }, metadata = {}) {
-    logger.info('Comando /crear-pr recibido', { rama, draft, labels, ticket, base, repoDir });
+  async runCrearPrCommand({ rama, draft, labels, tickets, base, repoDir }, metadata = {}) {
+    logger.info('Comando /crear-pr recibido', { rama, draft, labels, tickets, base, repoDir });
 
     try {
-      const result = await this.cerebroService.runCrearPr(rama, { draft, labels, ticket, base, repoDir });
+      const result = await this.cerebroService.runCrearPr(rama, { draft, labels, tickets, base, repoDir });
       if (result.error) {
         this.emitSiliaResult(result.error, { ...metadata, siliaCommand: 'crear-pr', error: true });
         return;
@@ -6659,7 +6780,7 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
   }
 
   /**
-   * /aprobar-pr <url> [--revisar] [--merge] [--tag]: SIEMPRE corre primero
+   * /aprobar-pr <url> [--revisar] [--merge] [--tag] [--ignorar-checks "a,b"]: SIEMPRE corre primero
    * sin --merge/--tag (el CLI de Cerebro los ejecutaria via typer.confirm()
    * -- stdin de consola que este subprocess no tiene, ver el comentario en
    * CerebroService.runAprobarPr). Si el usuario pidio --merge y/o --tag,
@@ -6667,26 +6788,53 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
    * en el chat -- solo se ejecuta de verdad en resolvePendingPrApproval,
    * cuando el proximo mensaje del usuario confirma que si.
    */
-  async runAprobarPrCommand({ url, revisar, merge, tag }, metadata = {}) {
-    logger.info('Comando /aprobar-pr recibido', { url, revisar, merge, tag });
+  async runAprobarPrCommand({ url, revisar, merge, tag, ignorarChecks = [] }, metadata = {}) {
+    logger.info('Comando /aprobar-pr recibido', { url, revisar, merge, tag, ignorarChecks });
 
     try {
-      const result = await this.cerebroService.runAprobarPr(url, { revisar });
-      if (result.error) {
-        this.emitSiliaResult(result.error, { ...metadata, siliaCommand: 'aprobar-pr', error: true });
+      // merge/tag viajan YA en el turno 1, junto con --evaluar: es lo que
+      // hace que Cerebro corra el merge gate antes de preguntar. Sin esto
+      // el gate no correria hasta despues del "si" del usuario, y
+      // preguntar, recibir la confirmacion y recien entonces fallar es
+      // peor UX que no preguntar. --evaluar nunca mergea ni pide
+      // confirmacion por stdin.
+      const result = await this.cerebroService.runAprobarPr(url, {
+        revisar, merge, tag, ignorarChecks, evaluar: merge || tag
+      });
+      if (result.error && !this._esPeticionDeConfirmacion(result)) {
+        // La salida de las pruebas es lo unico accionable cuando el gate
+        // falla, y por el tunel este es el unico mensaje que llega: se
+        // manda junto al error, no en un segundo mensaje.
+        const detalle = result.test_output
+          ? `${result.error}\n\n${String(result.test_output).slice(-1500)}`
+          : result.error;
+        this.emitSiliaResult(detalle, { ...metadata, siliaCommand: 'aprobar-pr', error: true });
         return;
       }
 
-      this.emitSiliaResult(formatAprobarPrResult(result, { merge: false, tag: false }), { ...metadata, siliaCommand: 'aprobar-pr' });
+      // UN SOLO mensaje con el resultado, la evidencia del merge gate y la
+      // peticion de confirmacion. Emitirlos por separado funcionaba en el
+      // chat de la PC pero se rompia por el tunel del celular: la promesa
+      // de runChatCommandHeadless se resuelve con el PRIMER emitSiliaResult
+      // (ver el `settled` de mas abajo) y descarta el resto, asi que al
+      // telefono llegaba el resultado y nunca la pregunta -- habia que
+      // responder "si" a ciegas sin saber si el gate habia pasado.
+      const pendingConfirmation = (merge || tag)
+        ? [merge ? 'mergear' : null, tag ? 'crear un tag anotado' : null].filter(Boolean).join(' y ')
+        : null;
 
-      if (merge || tag) {
-        const actions = [merge ? 'mergear' : null, tag ? 'crear un tag anotado' : null].filter(Boolean).join(' y ');
-        this.pendingPrApproval = { url, merge, tag, skill: metadata.skill || this.getNormalizedSkill() };
-        this.emitSiliaResult(
-          `¿Confirmas ${actions} el PR ${url}? Responde "si" para continuar o "no" para cancelar.`,
-          { ...metadata, siliaCommand: 'aprobar-pr', awaitingConfirmation: true }
-        );
+      if (pendingConfirmation) {
+        // ignorarChecks viaja al turno 2: sin el, la confirmacion vuelve a
+        // pegar contra el gate de checks y falla DESPUES del "si" del
+        // usuario -- el mismo patron que el comentario de --evaluar de
+        // arriba existe para evitar.
+        this.pendingPrApproval = { url, merge, tag, ignorarChecks, skill: metadata.skill || this.getNormalizedSkill() };
       }
+
+      this.emitSiliaResult(
+        formatAprobarPrResult(result, { merge: false, tag: false, pendingConfirmation }),
+        { ...metadata, siliaCommand: 'aprobar-pr', ...(pendingConfirmation ? { awaitingConfirmation: true } : {}) }
+      );
     } catch (error) {
       const friendlyMessage = error instanceof CerebroError
         ? error.message
@@ -6695,6 +6843,18 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
       this.broadcastLLMError(friendlyMessage);
       this.emitSiliaResult(friendlyMessage, { ...metadata, siliaCommand: 'aprobar-pr', usedFallback: true, error: true });
     }
+  }
+
+  /**
+   * "Mergear requiere confirmacion explicita" NO es un fallo: es la
+   * respuesta esperada del turno 1, y llega en el campo `error` del
+   * payload de Cerebro (que usa ese campo para todo corte temprano).
+   * Tratarlo como error mostraria el corte y nunca haria la pregunta.
+   */
+  _esPeticionDeConfirmacion(result) {
+    return typeof result?.error === 'string'
+      && result.error.includes('confirmacion explicita')
+      && result.approved === true;
   }
 
   /**
@@ -6718,6 +6878,7 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
       const result = await this.cerebroService.runAprobarPr(pending.url, {
         merge: pending.merge,
         tag: pending.tag,
+        ignorarChecks: pending.ignorarChecks || [],
         confirmar: true
       });
       if (result.error) {
@@ -6761,7 +6922,13 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
 
       const aplicables = (result.cambios || []).filter((c) => !c.requiere_revision);
       if (aplicables.length > 0) {
-        this.pendingJiraUpdate = { plan: result.cambios, skill: metadata.skill || this.getNormalizedSkill() };
+        this.pendingJiraUpdate = {
+          plan: result.cambios,
+          // Viaja junto al plan: es lo que permite a Cerebro verificar que se
+          // escriba exactamente el preview que se mostro en el chat.
+          planHash: result.plan_hash || null,
+          skill: metadata.skill || this.getNormalizedSkill(),
+        };
         this.emitSiliaResult(
           `¿Confirmas aplicar ${aplicables.length} cambio(s) en Jira? Responde "si" para continuar o "no" para cancelar.`,
           { ...metadata, siliaCommand: 'actualizar-jira', awaitingConfirmation: true }
@@ -6785,6 +6952,111 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
    * a Cerebro tal cual se genero -- Cerebro no vuelve a llamar al LLM aca,
    * solo ejecuta las escrituras ya revisadas.
    */
+  /**
+   * /crear-ticket: SIEMPRE corre primero sin --confirmar (fase de preview,
+   * que no escribe nada en Jira) y deja el ticket_propuesto en
+   * this.pendingTicketCreation hasta que el proximo mensaje confirme.
+   *
+   * UN SOLO mensaje con el preview y la pregunta, a proposito: por el tunel
+   * del celular (POST /comando) solo llega el PRIMER emitSiliaResult, asi
+   * que emitirlos por separado dejaria al telefono con el preview y sin la
+   * pregunta -- habria que contestar "si" a ciegas sin haber visto que se
+   * va a crear. Es la misma leccion que ya aprendio /aprobar-pr.
+   */
+  async runCrearTicketCommand(campos, metadata = {}) {
+    logger.info('Comando /crear-ticket recibido', {
+      proyecto: campos.proyecto, tipo: campos.tipo, links: (campos.links || []).length,
+    });
+
+    try {
+      const result = await this.cerebroService.runCrearTicket(campos);
+      if (result.error) {
+        this.emitSiliaResult(result.error, { ...metadata, siliaCommand: 'crear-ticket', error: true });
+        return;
+      }
+
+      const propuesto = result.ticket_propuesto || {};
+      const lineas = [formatCrearTicketPreview(result)];
+      if (result.requiere_revision) {
+        // No se ofrece confirmar: un preview marcado no se puede crear a
+        // medias -- es UN ticket, no una lista de cambios independientes.
+        this.emitSiliaResult(lineas.join('\n'), { ...metadata, siliaCommand: 'crear-ticket', error: true });
+        return;
+      }
+
+      this.pendingTicketCreation = {
+        plan: propuesto,
+        planHash: result.plan_hash || null,
+        skill: metadata.skill || this.getNormalizedSkill(),
+      };
+      lineas.push('');
+      lineas.push('¿Confirmas crear este ticket en Jira? Responde "si" para continuar o "no" para cancelar.');
+      this.emitSiliaResult(
+        lineas.join('\n'),
+        { ...metadata, siliaCommand: 'crear-ticket', awaitingConfirmation: true }
+      );
+    } catch (error) {
+      const friendlyMessage = error instanceof CerebroError
+        ? error.message
+        : `No se pudo ejecutar /crear-ticket: ${error.message}`;
+      logger.error('Fallo al ejecutar /crear-ticket', { error: error.message });
+      this.broadcastLLMError(friendlyMessage);
+      this.emitSiliaResult(friendlyMessage, { ...metadata, siliaCommand: 'crear-ticket', usedFallback: true, error: true });
+    }
+  }
+
+  async resolvePendingTicketCreation(pending, confirmed, metadata = {}) {
+    if (!confirmed) {
+      this.emitSiliaResult(
+        'Cancelado -- no se creo ningun ticket en Jira.',
+        { ...metadata, siliaCommand: 'crear-ticket', cancelled: true }
+      );
+      return;
+    }
+
+    logger.info('Confirmacion recibida para /crear-ticket', { resumen: pending.plan.resumen });
+
+    try {
+      const result = await this.cerebroService.runCrearTicket(
+        {}, { plan: pending.plan, planHash: pending.planHash, confirmar: true }
+      );
+      if (result.error) {
+        this.emitSiliaResult(result.error, { ...metadata, siliaCommand: 'crear-ticket', error: true });
+        return;
+      }
+      this.emitSiliaResult(formatCrearTicketResult(result), { ...metadata, siliaCommand: 'crear-ticket' });
+    } catch (error) {
+      const friendlyMessage = error instanceof CerebroError
+        ? error.message
+        : `No se pudo confirmar /crear-ticket: ${error.message}`;
+      logger.error('Fallo al confirmar /crear-ticket', { error: error.message });
+      this.broadcastLLMError(friendlyMessage);
+      this.emitSiliaResult(friendlyMessage, { ...metadata, siliaCommand: 'crear-ticket', usedFallback: true, error: true });
+    }
+  }
+
+  /**
+   * Comandos de solo lectura de la CLI, por la ruta generica (ver
+   * PASSTHROUGH_COMMANDS). No hay confirmacion porque no hay nada que
+   * confirmar: ninguno escribe.
+   */
+  async runPassthroughCommand({ cli, args }, metadata = {}) {
+    logger.info('Comando passthrough recibido', { cli, args });
+
+    try {
+      const result = await this.cerebroService.runPassthrough([cli, ...args]);
+      const texto = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+      this.emitSiliaResult(texto, { ...metadata, siliaCommand: cli, error: Boolean(result && result.error) });
+    } catch (error) {
+      const friendlyMessage = error instanceof CerebroError
+        ? error.message
+        : `No se pudo ejecutar /${cli}: ${error.message}`;
+      logger.error('Fallo al ejecutar un comando passthrough', { cli, error: error.message });
+      this.broadcastLLMError(friendlyMessage);
+      this.emitSiliaResult(friendlyMessage, { ...metadata, siliaCommand: cli, usedFallback: true, error: true });
+    }
+  }
+
   async resolvePendingJiraUpdate(pending, confirmed, metadata = {}) {
     if (!confirmed) {
       this.emitSiliaResult(
@@ -6797,7 +7069,9 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     logger.info('Confirmacion recibida para /actualizar-jira', { cambios: pending.plan.length });
 
     try {
-      const result = await this.cerebroService.runActualizarJira(null, { plan: pending.plan, confirmar: true });
+      const result = await this.cerebroService.runActualizarJira(
+        null, { plan: pending.plan, planHash: pending.planHash, confirmar: true }
+      );
       if (result.error) {
         this.emitSiliaResult(result.error, { ...metadata, siliaCommand: 'actualizar-jira', error: true });
         return;
@@ -7082,9 +7356,17 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
       : hablantesText.slice(0, MEETING_FINAL_TRANSCRIPT_CHARS);
 
     return [
-      'La siguiente es una minuta ya generada de una reunion, y la transcripcion de esa misma reunion con los nombres reales de los hablantes ya identificados (antes podian aparecer como SPEAKER_00, UNKNOWN_01, PARTICIPANTE 1, etc).',
+      'La siguiente es una minuta ya generada de una reunion, y la transcripcion de esa misma reunion con la identificacion de hablantes ACTUALIZADA. En la transcripcion, un hablante puede aparecer con su nombre real o con una etiqueta generica (SPEAKER_00, UNKNOWN_01, PARTICIPANTE 1, etc) si no se pudo identificar.',
       '',
-      'Actualiza la minuta para que use los nombres reales donde corresponda (Participantes, responsables de tareas, etc). No inventes informacion nueva ni cambies nada del contenido salvo los nombres de los hablantes.',
+      'Actualiza la minuta para que refleje EXACTAMENTE esa identificacion, en los dos sentidos:',
+      '- Si la transcripcion ya trae el nombre real de un hablante, usalo en la minuta (Participantes, responsables de tareas, etc).',
+      '- Si un hablante aparece con etiqueta generica, la minuta NO puede atribuirle un nombre propio: reemplaza ese nombre por la etiqueta generica que trae la transcripcion. Esto incluye la lista de participantes y los responsables de tareas.',
+      '',
+      'Lo segundo es obligatorio aunque la minuta actual ya traiga un nombre ahi: significa que ese nombre venia de una identificacion que se descarto por insuficiente, y dejarlo atribuiria lo dicho (y sus tareas) a alguien que quizas no estuvo en la reunion.',
+      '',
+      'Excepcion: si el nombre aparece porque alguien lo MENCIONO hablando ("le pregunto a Ana"), eso no es identificacion de hablante y se conserva tal cual.',
+      '',
+      'No inventes informacion nueva ni cambies nada del contenido salvo lo relativo a los nombres de los hablantes.',
       '',
       'MINUTA ACTUAL:',
       '"""',
@@ -7127,7 +7409,14 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         '--rematch', speakersPath,
         audioPath,
         '--output', speakersPath
-      ], { timeout: 10 * 60 * 1000, label: 'actualizarHablantes-rematch' });
+      ], {
+        // Proporcional por lo mismo que la diarizacion completa: el rematch
+        // vuelve a extraer embeddings sobre TODO el audio, asi que su costo
+        // tambien crece con la duracion (el piso se mantiene en los 10 min
+        // que tenia, es mas rapido que el clustering completo).
+        timeout: this.diarizationTimeoutMs(audioPath, REMATCH_TIMEOUT_FLOOR_MS),
+        label: 'actualizarHablantes-rematch'
+      });
 
       // Cualquier cluster que siga sin nombre real tras el rematch se marca
       // UNKNOWN (con el score que dejo el rematch), para poder retomarlo con
@@ -7696,6 +7985,29 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
       return true;
     }
 
+    const crearTicketCommand = parseCrearTicketCommand(text);
+    if (crearTicketCommand) {
+      if (crearTicketCommand.error) {
+        this.emitSiliaResult(crearTicketCommand.error, { ...baseMetadata, siliaCommand: 'crear-ticket', error: true });
+        return true;
+      }
+      await this.runCrearTicketCommand(crearTicketCommand, baseMetadata);
+      return true;
+    }
+
+    // AL FINAL, despues de todos los parsers propios: un comando con parser
+    // dedicado siempre gana. Esto solo alcanza a los de SOLO LECTURA del
+    // registro (ver PASSTHROUGH_COMMANDS).
+    const passthrough = parsePassthroughCommand(text);
+    if (passthrough) {
+      if (passthrough.error) {
+        this.emitSiliaResult(passthrough.error, { ...baseMetadata, error: true });
+        return true;
+      }
+      await this.runPassthroughCommand(passthrough, baseMetadata);
+      return true;
+    }
+
     return false;
   }
 
@@ -7703,6 +8015,23 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     try {
       const handled = await this.tryHandleCerebroSlashCommand(text);
       if (handled) return;
+
+      // Un texto que EMPIEZA CON "/" y que ningun parser reconocio no es una
+      // consulta en lenguaje libre: es un comando mal escrito, o uno que
+      // existe en la CLI de Cerebro y todavia no aca. Mandarlo a diagnose --
+      // que es lo que se hacia -- devolvia una respuesta redactada por el
+      // modelo CON PINTA DE RESULTADO, que es peor que un error: un error se
+      // nota. Asi fue como /auditar-bump quedo fuera del alcance del celular
+      // sin que nada avisara.
+      if (isUnknownSlashCommand(text)) {
+        this.emitSiliaResult(
+          `No reconozco el comando "${normalizeSlashCommandName(text)}". No se consultó a Cerebro: ` +
+          'si existe en su CLI pero no aquí, córrelo desde la terminal. Para una pregunta en ' +
+          'lenguaje libre, escríbela sin la barra inicial.',
+          { error: true }
+        );
+        return;
+      }
 
       const result = await this.cerebroService.runDiagnose(text);
       this.emitSiliaResult(formatCerebroFinalAnswer(result));

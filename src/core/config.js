@@ -1,5 +1,16 @@
+const fs = require('fs');
 const path = require('path');
 const os = require('os');
+
+// Todo lo temporal/de procesamiento de Vysper vive en <repo>/tmp (mismo
+// volumen que apoyos/ y minutas/, ver .gitignore) en vez de os.tmpdir()
+// (raiz del sistema) -- ese disco puede ser mucho mas chico que el volumen
+// donde vive el repo (visto en vivo: la raiz se quedo sin espacio por
+// archivos de audio/imagenes temporales acumulados ahi). Overrideable con
+// VYSPER_TMP_DIR para el caso raro de correr Vysper con el repo en un
+// disco realmente sin espacio.
+const VYSPER_TMP_DIR = process.env.VYSPER_TMP_DIR || path.join(__dirname, '..', '..', 'tmp');
+fs.mkdirSync(VYSPER_TMP_DIR, { recursive: true });
 
 class ConfigManager {
   constructor() {
@@ -15,10 +26,11 @@ class ConfigManager {
         version: '1.0.0',
         processTitle: 'Vysper',
         dataDir: this.appDataDir,
+        tempDir: VYSPER_TMP_DIR,
         isDevelopment: this.env === 'development',
         isProduction: this.env === 'production'
       },
-      
+
       window: {
         defaultWidth: 400,
         defaultHeight: 600,
@@ -34,7 +46,7 @@ class ConfigManager {
 
       ocr: {
         language: 'eng',
-        tempDir: os.tmpdir(),
+        tempDir: VYSPER_TMP_DIR,
         cleanupDelay: 5000
       },
 

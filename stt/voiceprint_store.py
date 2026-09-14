@@ -22,6 +22,27 @@ DEFAULT_EMBEDDING_MODEL = "pyannote/embedding"
 DEFAULT_THRESHOLD = 0.60
 MAX_ENROLL_SECONDS = 20.0
 
+# Margen minimo que el mejor candidato debe sacarle al segundo para que su
+# nombre se considere identificado. Superar el umbral NO alcanza: medido en
+# vivo sobre reunion-2026-09-09-15-46-31, un cluster dio
+#   0.608  Axel Manuel Medrano Sanchez   <- elegido
+#   0.606  Andre Santa
+# o sea 0.002 de diferencia, y la minuta salio afirmando que hablo Axel
+# cuando era Andre. En la misma reunion los aciertos ganaron por +0.357 y
+# +0.182: cuando la voz de verdad coincide, el margen es de otro orden de
+# magnitud. Un empate asi no es una identificacion, es ruido, y en una minuta
+# que se lee como un hecho es peor que dejar SPEAKER_XX -- el humano puede
+# resolver una etiqueta generica con /reconocerVozPendientes, pero no puede
+# adivinar que un nombre concreto y plausible esta mal.
+DEFAULT_MIN_MARGIN = 0.05
+
+# Cuanto audio del cluster se usa para IDENTIFICAR. Distinto de
+# MAX_ENROLL_SECONDS (que acota el clip representativo que se guarda al
+# enrolar): al identificar conviene toda la evidencia disponible, porque el
+# embedding de 20 s de voz entrecortada discrimina mucho peor. En esa misma
+# reunion habia 122 s de voz de un hablante y solo se miraban los primeros 20.
+MAX_MATCH_SECONDS = 60.0
+
 
 def store_path() -> Path:
     configured = os.getenv("VYSPER_VOICEPRINTS_PATH")
@@ -37,6 +58,13 @@ def match_threshold() -> float:
         return float(os.getenv("VYSPER_VOICEPRINT_THRESHOLD", DEFAULT_THRESHOLD))
     except ValueError:
         return DEFAULT_THRESHOLD
+
+
+def match_min_margin() -> float:
+    try:
+        return float(os.getenv("VYSPER_VOICEPRINT_MIN_MARGIN", DEFAULT_MIN_MARGIN))
+    except ValueError:
+        return DEFAULT_MIN_MARGIN
 
 
 def load_store(path: Path = None) -> dict:
@@ -102,20 +130,49 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / denom)
 
 
-def match_speaker(embedding: np.ndarray, store: dict, threshold: float = None):
-    """Returns (name, score) for the best match above threshold, or (None, best_score)."""
-    threshold = match_threshold() if threshold is None else threshold
-    best_name = None
-    best_score = -1.0
+def rank_speakers(embedding: np.ndarray, store: dict) -> list:
+    """[(name, best_score), ...] ordenado de mayor a menor, un solo score por
+    persona (el de su muestra mas parecida). Sirve para decidir con el
+    contexto completo -- quien quedo segundo y a que distancia -- en vez de
+    solo con el maximo absoluto."""
+    ranking = []
     for name, entry in store.items():
-        for sample in entry.get("embeddings", []):
-            score = _cosine_similarity(embedding, np.array(sample, dtype=np.float32))
-            if score > best_score:
-                best_score = score
-                best_name = name
-    if best_name is not None and best_score >= threshold:
-        return best_name, best_score
-    return None, best_score
+        samples = entry.get("embeddings", [])
+        if not samples:
+            continue
+        ranking.append((
+            name,
+            max(_cosine_similarity(embedding, np.array(sample, dtype=np.float32)) for sample in samples)
+        ))
+    ranking.sort(key=lambda item: item[1], reverse=True)
+    return ranking
+
+
+def match_speaker(embedding: np.ndarray, store: dict, threshold: float = None, min_margin: float = None):
+    """Returns (name, score) for the best match, or (None, best_score) when no
+    name can be claimed.
+
+    Se exigen DOS condiciones, no una: que el mejor candidato supere el umbral
+    y que le saque `min_margin` al segundo. Sin la segunda, dos personas
+    separadas por milesimas se resolvian a favor de una de ellas con la misma
+    confianza que un acierto claro (ver DEFAULT_MIN_MARGIN).
+    """
+    threshold = match_threshold() if threshold is None else threshold
+    min_margin = match_min_margin() if min_margin is None else min_margin
+
+    ranking = rank_speakers(embedding, store)
+    if not ranking:
+        return None, -1.0
+
+    best_name, best_score = ranking[0]
+    if best_score < threshold:
+        return None, best_score
+
+    runner_up = ranking[1][1] if len(ranking) > 1 else None
+    if runner_up is not None and (best_score - runner_up) < min_margin:
+        return None, best_score
+
+    return best_name, best_score
 
 
 _inference_cache = {}
