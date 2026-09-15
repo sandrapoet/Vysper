@@ -7,6 +7,12 @@ dist/
 .DS_Store
 stt/venv/
 stt/venv_windows/
+# Bytecode de Python. Se regenera solo y depende de la version del
+# interprete (cpython-312), asi que versionarlo solo produce conflictos y
+# diffs binarios que nadie puede revisar. Estuvo rastreado hasta este
+# commit: ver el git rm --cached que lo acompaña.
+__pycache__/
+*.py[cod]
 Vysper.code-workspace
 /apoyos
 evaluaciones/
