@@ -16,6 +16,10 @@ __pycache__/
 Vysper.code-workspace
 /apoyos
 evaluaciones/
+# Misma familia que evaluaciones/: salidas de corridas puntuales que se
+# miran una vez. Hoy tiene el analisis de una evaluacion contestada por
+# Vysper (30-ago-2026). Se queda en disco, no en el repo.
+contextoTmp/
 transcripciones/
 .claude/settings.local.json
 minutas/
