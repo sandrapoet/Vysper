@@ -42,6 +42,7 @@ Comandos de texto (en el chat o por voz):
 - /actualizaRag  Ejecuta `./build.sh --actualiza` sobre SandraRagCreAI (solo en secretaria, silia y system-design — ver sección "Modo Silia")
 - /hoy <dominio>  Análisis de riesgo de Jira para un dominio de equiv.yaml, sintetizado por un LLM en un plan de acción de 3 secciones (secretaria, silia, system-design — ver sección "Modo Silia")
 - /detalle [dominio]  Vuelca el análisis de /hoy ya persistido a un .md (secretaria, silia, system-design)
+- /contexto <ruta-carpeta>  Carga los archivos de esa carpeta como referencia fija de las respuestas (solo modo dsa)
 - /jira, /notion, /github <consulta>  Acota una consulta libre a esa sola fuente (secretaria, silia, system-design)
 - /silia daily [identificador]  Actividades del último día hábil (Jira/GitHub/Notion/minutas locales) + checkpoint de riesgo abierto (silia, system-design — ver sección "Modo Silia")
 - /silia retro [--dominio <alias>] [sprint_ref], /silia retro [--dominio <alias>] comparar <sprint_a> <sprint_b>  Retrospectiva estructurada de un sprint (Jira Agile API + métricas + Notion/RAG + incidentes del SMC), default "agentes", o diff entre dos retros ya generadas (silia, system-design — ver sección "Modo Silia")
@@ -168,6 +169,12 @@ npm run build
 1. **Local Speech Recognition** (for voice commands)
    - Uses the local `stt/sidecar.py` service with Silero VAD + faster-whisper.
    - Run the STT setup script for your platform before using voice recording.
+   - `PYTHON_PATH` (optional) points at a specific Python executable. Without it,
+     the sidecar uses the venv the setup script creates — `stt/venv/bin/python`
+     on Unix/Mac, `stt/venv/Scripts/python.exe` on Windows. Only set it if you
+     deliberately want an interpreter outside that venv; note that diarization
+     reads its torch build from whichever interpreter this resolves to, so
+     pointing it elsewhere is also how you lose the CUDA build.
    - Performance knobs for slower CPUs:
      - The STT sidecar starts lazily, not at app startup. Switching to `secretaria` or `traductor` warms up Whisper plus the microphone stream and keeps both ready while you stay in that mode. Set `VYSPER_STT_PRELOAD=1` only if you prefer loading it during app startup.
      - In `secretaria`, `Alt+R` records raw audio first; pending audio is transcribed when `Ctrl+1` is pressed.
@@ -543,7 +550,10 @@ después). Al presionarlo (sin una sesión ya armada), pregunta el modo:
 - **Tiempo real**: sugiere preguntas durante la reunión, en fragmentos de
   `VYSPER_OPTIMIZACION_SEGMENT_SEC`s (default `15`) y con
   `VYSPER_OPTIMIZACION_SILENCE_SEC`s de silencio (default `6`) como gatillo —
-  igual que siempre. Guarda su resumen/sugerencias en memoria compartida
+  igual que siempre. `VYSPER_OPTIMIZACION_CONTEXT_CHARS` (default `8000`)
+  limita cuánto de la conversación acumulada viaja en cada sugerencia: subirlo
+  da más contexto por sugerencia y cuesta más tokens en cada fragmento, que en
+  tiempo real se pagan cada 15 s. Guarda su resumen/sugerencias en memoria compartida
   (no por sesión), así que esta es la única sesión que **sigue bloqueando**
   `Alt+S` hasta que termina de generar su documento final — ver la nota en
   [Meeting Recording & Auto-Summary](#meeting-recording--auto-summary-any-skill).
@@ -894,6 +904,24 @@ construir el servidor (`server.requestTimeout = ...` sobre lo que devuelve
 de Optimización (Alt+O) activa en ese momento en la PC — evita mezclar el
 texto de dos sesiones distintas, ya que esa bandera es global a la app, no
 por sesión.
+
+## `/contexto` (modo dsa)
+
+```
+/contexto /ruta/a/la/carpeta
+```
+
+Carga el contenido de los archivos de esa carpeta y lo usa como **referencia
+en cada respuesta final del modo `dsa`**, hasta que cierres la app o vuelvas a
+correr `/contexto` con otra ruta. Responde con la lista de archivos que
+efectivamente cargó.
+
+Si la carpeta no entra en el límite de contexto, **lo dice** (`⚠️ Se truncó:
+hay más archivos de los que caben`) en vez de recortar en silencio — lo que
+importa aquí es saber sobre qué está respondiendo, no que la carga "funcione".
+
+Solo se reconoce en modo `dsa`: en cualquier otro modo el texto sigue su
+camino normal.
 
 ## Modo Silia (líder de proyecto interino)
 
@@ -1573,6 +1601,19 @@ El pipeline corre tres pasos en orden: `ingest.sync_from_minutas` (copia
 transcripts nuevos desde `SYNC_SOURCE_DIR`), `ingest.normalize_transcripts`
 (dedupe de tartamudeo y corrección de glosario sobre copias espejo, sin
 tocar el original) e `ingest.ingest` (sube lo nuevo a LightRAG).
+
+**Dónde vive LightRAG** (los tres son opcionales; sin ellos se usa el
+checkout por defecto de la plataforma que arma `stt/setup`):
+
+| Variable | Para qué | Default |
+|---|---|---|
+| `VYSPER_RAG_URL` | Endpoint del servidor LightRAG que se consulta. | `http://localhost:9621` |
+| `VYSPER_RAG_ENV_FILE` | `.env` del checkout de LightRAG, de donde se leen sus credenciales. | el `.env` del checkout por defecto |
+| `VYSPER_LIGHTRAG_DIR` | Raíz del checkout de LightRAG. | el checkout por defecto |
+
+Se configuran por separado porque no siempre apuntan al mismo sitio: se puede
+consultar un LightRAG remoto (`VYSPER_RAG_URL`) mientras el checkout local
+sigue haciendo falta para reindexar.
 
 **Ejemplo:**
 ```
