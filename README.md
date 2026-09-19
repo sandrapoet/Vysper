@@ -46,10 +46,10 @@ Comandos de texto (en el chat o por voz):
 - /jira, /notion, /github <consulta>  Acota una consulta libre a esa sola fuente (secretaria, silia, system-design)
 - /silia daily [identificador]  Actividades del último día hábil (Jira/GitHub/Notion/minutas locales) + checkpoint de riesgo abierto (silia, system-design — ver sección "Modo Silia")
 - /silia retro [--dominio <alias>] [sprint_ref], /silia retro [--dominio <alias>] comparar <sprint_a> <sprint_b>  Retrospectiva estructurada de un sprint (Jira Agile API + métricas + Notion/RAG + incidentes del SMC), default "agentes", o diff entre dos retros ya generadas (silia, system-design — ver sección "Modo Silia")
-- /revisar <url-pr> [--profundo|--arq|--security] [--diablo] [--merge] [--release]  Revisión automatizada de PR: conflictos + matriz de cumplimiento ponderada (silia, system-design — ver sección "Modo Silia")
+- /revisar <url-pr> [--basico|--profundo|--arq|--security] [--diablo] [--merge] [--release]  Revisión automatizada de PR: conflictos + CI + matriz de cumplimiento ponderada + checklist de 12 dimensiones con severidades + OpenSpec/Jira (silia, system-design — ver sección "Modo Silia")
 - /crear-ticket --proyecto AGE --resumen "..." [--padre AGE-147] [--sprint "Sprint 6"] [--link "bloquea:AGE-219"] --descripcion <texto>  Levanta un ticket nuevo en Jira desde un hallazgo (silia)
 - /auditar-bump <url-pr>, /estado-llm, /preflight-promocion <ticket>, /hoy-historial <dominio>, /hoy-comparar <dominio>  Comandos de solo lectura, por la ruta genérica (silia)
-- /crear-pr <rama> [--draft|--publish] [--labels a,b,c] [--ticket AGE-123, AGE-124], /cancelar-pr <url-pr>, /aprobar-pr <url-pr> [--revisar] [--merge] [--tag] [--ignorar-checks "a,b"]  Creación/cancelación/aprobación de PRs (silia, system-design — ver sección "Modo Silia")
+- /crear-pr <rama> [--draft|--publish] [--labels a,b,c] [--ticket AGE-123, AGE-124], /cancelar-pr <url-pr>, /aprobar-pr <url-pr> [--revisar] [--merge] [--tag] [--ignorar-checks "a,b"]  Creación/cancelación/aprobación de PRs (silia, system-design — ver sección "Modo Silia"). Desde la terminal, `crear-pr --dry-run` ahora **no escribe nada** — antes creaba el PR igual, ver "Flags de Cerebro que cambiaron de significado"
 - /merge <numero-pr> --repo <owner/repo> [--merge]  Mergea un PR directo vía la API de GitHub, sin aprobar ni tocar Jira, con confirmación explícita en el chat (silia, system-design — ver sección "Modo Silia")
 - /actualizar-jira <texto>  Actualiza descripción/fecha/estado/story points de uno o varios tickets a partir de texto libre, con preview + confirmación antes de escribir (silia, system-design — ver sección "Modo Silia")
 - /script  Ejecuta cerebro/scripts/jira_transition.py (ruta fija, sin argumentos) — ver sección "Modo Silia"
@@ -1105,15 +1105,65 @@ si no hay ningún check terminado bloquea por falta de evidencia
 (fail-closed). El reporte del chat siempre muestra el % de checks pasando,
 haya bloqueado o no.
 
-- **Sin flags** (PRs triviales): solo conflictos + formato superficial
-  (título + ticket de Jira referenciado), sin LLM.
-- **`--profundo`**: corre la matriz completa de cumplimiento (tests 30%/min
-  80%, documentación 20%/min 100%, deuda técnica 20%/min 90%, AC de Jira
-  30%/min 100% — cada criterio con score y nivel de confianza del LLM;
-  Python decide la aprobación, nunca el LLM), con contexto exhaustivo.
-- **`--arq`**: misma matriz, pero la síntesis se enfoca en patrones de
-  diseño, acoplamiento y escalabilidad.
-- **`--security`**: misma matriz, más una búsqueda explícita de
+- **Sin flags** (modo `silia`, el default): la **auditoría completa**, que es
+  el algoritmo de la skill `silia-review-pr` del marketplace
+  (`Silia-mx/silia-claude-marketplace`) adaptado a este pipeline. Corre
+  tres "lentes", igual que la skill despacha tres subagentes en paralelo:
+  1. **Matriz de cumplimiento** (tests 30%/min 80%, documentación 20%/min
+     100%, deuda técnica 20%/min 90%, AC de Jira 30%/min 100% — cada
+     criterio con score y nivel de confianza del LLM; Python decide la
+     aprobación, nunca el LLM).
+  2. **Checklist de calidad de 12 dimensiones** (estilo, funciones, datos e
+     inmutabilidad, clases, manejo de errores, arquitectura, testing,
+     imports, documentación y antipatterns), del que salen **hallazgos con
+     severidad** `blocker` / `major` / `minor` / `suggestion`.
+  3. **OpenSpec + trazabilidad a Jira**, resuelto en Python sobre el clon
+     que ya se hizo para el merge-check (nada que un LLM pueda alucinar):
+     un change activo con tareas sin cerrar es `blocker`; un change
+     archivado antes del merge, `major`; un PR sin ticket referenciado,
+     `major`. Los `tasks*.md` marcados con `<!-- openspec:non-gating -->`
+     no cuentan.
+
+  **Las rutas que cita un hallazgo se verifican contra el PR.** Un `major`
+  real citó `pipeline/tests/test_engine_secrets.py`: el archivo no existe, el
+  cambio no estaba en el delta del PR y el test que pedía ya existía. Un
+  `major` con severidad y arreglo sugerido hace que alguien abra ticket, lo
+  estime y lo trabaje — eso no es ruido, es trabajo **fabricado**. Ahora hay
+  dos niveles: una ruta que **no existe** en el árbol baja a `suggestion` y
+  sale marcada con `⚠️ [ruta no encontrada en el PR]`; una que **existe pero
+  el PR no toca** se **topa en `minor`** (la variante frecuente: archivo
+  real, PR equivocado). Se topa y no se descarta porque "cambiaste A y
+  olvidaste B" es legítimo y B por definición no está en el diff — `minor`
+  conserva la señal y le quita el poder de condicionar el veredicto solo.
+  Sin snapshot del árbol no se degrada nada: no se puede *probar* una
+  ausencia.
+
+  **En el reporte, `❌` quedó reservado a lo que de verdad bloquea.** El paso
+  "Merge con tu rama (main)" nunca bloquea —solo el merge contra la rama base
+  lo hace— y aparecía con `❌` y 43 rutas detrás en *todos* los PRs del repo,
+  seguido de "no afecta la evaluación". Un ❌ decorativo en un reporte de
+  auditoría entrena justo el reflejo de ignorarlos: ahora es `⚠️`, y las
+  listas de archivos se colapsan a tres rutas + "y N mas".
+
+  Los dos lentes de LLM van en **paralelo**. El veredicto se deriva
+  mecánicamente de la severidad más alta (el mapa `graduated` de la skill):
+  un `blocker` bloquea, un `major` condiciona, `minor`/`suggestion` se
+  reportan pero no retienen la aprobación. Y se combina con el veredicto de
+  la matriz tomando siempre **el peor de los dos**, así que un hallazgo solo
+  puede empeorar el resultado, nunca rescatar un PR que la matriz ya
+  condicionó. A partir de la segunda corrida el reporte abre con una tabla
+  de **ronda anterior**: ningún hallazgo `blocker`/`major`/`minor` de la
+  ronda previa desaparece sin decir si se resolvió.
+- **`--basico`** (PRs triviales): solo conflictos + CI + formato superficial
+  (título + ticket de Jira referenciado), **sin LLM**. Era el
+  comportamiento por defecto hasta 2026-09-15; hoy hay que pedirlo
+  explícitamente, porque tenerlo como default convertía la forma más usada
+  del comando en la más débil de todas.
+- **`--profundo`**: la auditoría completa con contexto exhaustivo y foco en
+  edge cases.
+- **`--arq`**: la auditoría completa, pero la síntesis se enfoca en patrones
+  de diseño, acoplamiento y escalabilidad.
+- **`--security`**: la auditoría completa, más una búsqueda explícita de
   secretos/credenciales/PII expuestos en el diff — es lectura de un LLM,
   **no** un escaneo automatizado de CVEs, y el reporte lo aclara.
 - **`--diablo`** ("abogado del diablo"): segunda pasada adversarial que
@@ -1150,11 +1200,50 @@ correr `/revisar <url> --merge` (agregando `--release` si además querés un
 tag/release) es la única forma de ejecutar el merge real — Cerebro primero
 confirma que sigue habiendo una revisión `APROBADO` vigente sobre el mismo
 commit; si subiste algo nuevo mientras tanto, pide que corras `/revisar` de
-nuevo en vez de mergear a ciegas. La re-evaluación de un PR
+nuevo en vez de mergear a ciegas.
+
+**Los pasos posteriores al merge se reportan, no se pierden.** El merge es
+irreversible, así que un fallo posterior (transición de Jira, comentario de
+cierre, release) nunca se convierte en `error` — eso invitaría a reintentar
+un merge que ya ocurrió. Cerebro lo devuelve en `pasos_no_completados` +
+`advertencia` y **sale con código 2**: `0` = ciclo completo, `1` = no se
+mergeó nada (reintentar tiene sentido), `2` = se mergeó con algo pendiente.
+
+Vysper lo entiende por dos piezas:
+
+- **`CerebroService._runCli` acepta una lista blanca `okExitCodes` por
+  comando**, y `runRevisarMerge` pasa `[2]`. Es por comando y no una regla
+  global a propósito: un código ≠ 0 sigue siendo un fallo para todos los
+  demás. Si el stdout de un código permitido no es JSON válido, se rechaza
+  igual — aceptar el 2 no puede degradar en "resuelve con basura".
+- **`formatRevisarMergeResult`** renderiza los pasos pendientes **junto al**
+  `PR mergeado: <url>`, nunca en vez de él, con el detalle y la remediación
+  de cada uno y un aviso explícito de no volver a correr el comando.
+
+Sin esto, `_runCli` rechazaba con cualquier código ≠ 0, el chat mostraba
+«Cerebro falló (código 2)» y se perdía el payload entero — el link del PR,
+el `comment_url` y el del release. El texto de la advertencia llegaba solo de
+rebote, por la cola de stderr, y enmarcado como un fallo del comando.
+Encontrado en vivo en el PR 272: la transición a `Done` falló, quedó solo en
+una línea de log intermedia, y el JSON decía `{"merged": true}`.
+
+La re-evaluación de un PR
 `CONDITIONAL_APPROVED` también es así: solo ocurre cuando volvés a correr
-`/revisar` sobre la misma URL (no hay polling en segundo plano) — si el sha
-no cambió, devuelve el resultado ya guardado sin llamar a nada; si cambió,
-re-evalúa únicamente las observaciones pendientes, no la matriz completa.
+`/revisar` sobre la misma URL (no hay polling en segundo plano). Si el sha
+cambió, re-evalúa únicamente las observaciones pendientes, no la matriz
+completa.
+
+**Si el sha no cambió, el caché ya no te devuelve el veredicto entero.**
+Cubre solo la capa cara —los hallazgos del LLM, que dependen del *diff*— y
+los gates de **CI y conflictos se reevalúan siempre**, porque su evidencia
+depende del *tiempo*: el mismo commit pasa de "cero checks" a "seis en
+verde", y un PR bloqueado por conflictos se vuelve mergeable cuando alguien
+más mergea — sin que cambie un byte. Antes quedaban pegados al sha: correr
+`/revisar` justo después de pushear (lo natural) dejaba un `BLOQUEADO` que
+solo se destrababa con `--force`, y el mensaje te empujaba a subir un commit
+vacío. Hoy no hace falta `--force` para eso; el campo `cached` del payload
+significa "se reusó la capa LLM", no "no se evaluó nada", y un veredicto que
+**cambió** sí se vuelve a comentar en el PR.
 
 El reporte completo se guarda en `apoyos/revision-pr-<numero>.md`, y Cerebro
 además genera un resumen en texto plano (sintaxis mrkdwn de Slack:
@@ -1347,6 +1436,31 @@ tocar stdin del proceso de Cerebro:
     dice que el dispatch queda pendiente; se puede disparar con
     `--disparar-deploy --confirmar-deploy` desde el CLI de Cerebro.
 
+#### Flags de Cerebro que cambiaron de significado
+
+Estos flags **no cruzan el túnel** — el chat nunca los manda, y los comandos
+que escriben no están en el registro de solo lectura. Se documentan acá
+porque son los mismos comandos que corrés desde la terminal o desde Termux,
+y porque uno de ellos era una trampa seria.
+
+- **`crear-pr --dry-run` ahora no escribe nada.** Antes el flag solo se
+  saltaba la publicación en Slack: el PR se creaba igual, los reviewers se
+  asignaban igual y los tickets de Jira se movían igual. Alguien lo corrió
+  para mirar antes de decidir y terminó con el PR creado, los reviewers
+  asignados y **nueve tickets movidos** — lo único *fake* fue el mensaje de
+  Slack. Hoy corre lecturas, git local y la síntesis del título/descripción,
+  y devuelve el plan con `escrituras_que_haria`: el inventario de lo que
+  haría una corrida real, incluido a qué estado movería cada ticket.
+- **`crear-pr --sin-slack`** es el comportamiento viejo, con el nombre que
+  siempre le correspondió: crea el PR normalmente y solo calla el canal.
+- **`aprobar-pr --dry-run` se renombró a `--preview-bump`.** Cubría solo el
+  preview del bump de submódulo mientras el comando **aprobaba el PR en
+  GitHub igual** — el approve no lo protege ningún flag (`--confirmar` solo
+  cubre merge y tag).
+
+Ninguno de los tres afecta a Vysper: el chat no expone `/crear-pr --dry-run`
+ni `/aprobar-pr --preview-bump`.
+
 **Ejemplos:**
 ```
 /crear-pr feature/AGE-123-nuevo-endpoint --labels backend,bug-fix --ticket AGE-123, AGE-124 --base develop --repo-dir /media/san/Miscosas6/Desarrollo/CreAI/Silia/Agent
@@ -1421,6 +1535,22 @@ Estos **no tienen un parser propio**: viven en un registro declarativo
 línea. Los flags viajan **tal cual a la CLI de Cerebro, incluidos los que
 Vysper no conoce** — la CLI es la única que los valida, así que un flag nuevo
 allá queda disponible aquí el mismo día.
+
+**`/preflight-promocion` ya no ofrece `--estado-final` ante cualquier
+conflicto.** Ese atajo promueve el contenido final en un solo commit y
+verifica paridad de árbol contra la rama de origen — y en una promoción por
+rama **curada** esa paridad es la señal de *contaminación*, no el éxito: el
+árbol correcto queda distinto de `develop`, porque `develop` trae trabajo de
+otros tickets. Ahora el criterio mira el **destino**, archivo por archivo: si
+el archivo en conflicto ya existe allá y lo tocan los commits del ticket, el
+choque es contra un estado intermedio y el atajo aplica (con la advertencia
+de que la paridad hay que revisarla, no celebrarla). Si **no existe** en el
+destino es un prerequisito faltante, y en vez del atajo se nombra el commit
+que lo crea y su ticket: *«`redaction.py` no existe en `origin/staging`; lo
+crea `7b55a6a` (AGE-327). Ese ticket tiene que promoverse primero.»* El caso
+real que lo motivó: `redaction.py` **sí** lo tocaba un commit de AGE-335, así
+que preguntar "¿es del ticket?" habría ofrecido el atajo y arrastrado AGE-327
+a staging bajo la etiqueta de AGE-335.
 
 **Por qué existe esto:** `auditar-bump` se agregó a la CLI y nació fuera del
 alcance del teléfono, porque cada comando costaba un parser, un método del

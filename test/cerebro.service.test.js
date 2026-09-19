@@ -280,7 +280,7 @@ describe('CerebroService', () => {
     );
   });
 
-  test('runRevisar builds bare args for modo basico', async () => {
+  test('runRevisar builds bare args for the default mode (silia)', async () => {
     const child = makeFakeChild();
     const spawnFn = jest.fn(() => child);
     const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
@@ -293,6 +293,23 @@ describe('CerebroService', () => {
     expect(spawnFn).toHaveBeenCalledWith(
       expect.any(String),
       ['-m', 'cerebro.cli', 'revisar', 'https://github.com/org/repo/pull/1', '--persona', 'silia'],
+      expect.any(Object)
+    );
+  });
+
+  test('runRevisar passes --basico through: the default mode is silia, so basico needs the flag', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runRevisar('https://github.com/org/repo/pull/1', { mode: 'basico' });
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ status: 'APPROVED' })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'revisar', 'https://github.com/org/repo/pull/1', '--basico', '--persona', 'silia'],
       expect.any(Object)
     );
   });
@@ -531,5 +548,81 @@ describe('CerebroService', () => {
       ['-m', 'cerebro.cli', 'actualizar-jira', '--confirmar', '--plan', JSON.stringify(plan)],
       expect.any(Object)
     );
+  });
+
+  // --- revisar-merge: el codigo 2 significa "se mergeo, pero algo quedo pendiente" ---
+  //
+  // El merge es irreversible, asi que Cerebro nunca convierte un fallo
+  // POSTERIOR (transicion de Jira, comentario de cierre, release) en
+  // {"error": ...}: eso invitaria a reintentar un merge que ya paso. Lo
+  // reporta en `pasos_no_completados` + `advertencia` y sale con codigo 2.
+  //
+  // Sin esto, _runCli rechazaba con cualquier codigo != 0 y el chat mostraba
+  // "Cerebro fallo (codigo 2)": se perdian el link del PR mergeado, el
+  // comment_url y el del release. Encontrado en vivo en el PR 272.
+
+  test('runRevisarMerge resolves on exit code 2 because the merge did happen', async () => {
+    const child = makeFakeChild();
+    const service = new CerebroService({ spawnFn: () => child, logger: silentLogger(), timeoutMs: 5000 });
+    const payload = {
+      merged: true,
+      message: 'Pull Request successfully merged',
+      comment_url: 'https://github.com/o/r/pull/1#issuecomment-1',
+      release: null,
+      pasos_no_completados: [{
+        paso: 'jira_transition_done',
+        label: 'transicion del ticket de Jira a "Done"',
+        detalle: 'No se pudo mover AGE-335 a "Done"',
+        remediacion: 'Transiciona AGE-335 a mano en Jira.',
+      }],
+      advertencia: 'El merge SI se completo, pero 1 paso(s) posterior(es) no.',
+    };
+
+    const promise = service.runRevisarMerge('https://github.com/o/r/pull/1');
+    child.stdout.emit('data', Buffer.from(JSON.stringify(payload)));
+    child.stderr.emit('data', Buffer.from(payload.advertencia));
+    child.emit('close', 2);
+
+    await expect(promise).resolves.toEqual(payload);
+  });
+
+  test('runRevisarMerge still rejects on exit code 1 because nothing was merged', async () => {
+    // El 1 sigue significando "no se mergeo, puedes reintentar".
+    const child = makeFakeChild();
+    const service = new CerebroService({ spawnFn: () => child, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runRevisarMerge('https://github.com/o/r/pull/1');
+    child.stdout.emit('data', Buffer.from(JSON.stringify({
+      error: 'No hay una revision APPROVED guardada para este PR.',
+    })));
+    child.emit('close', 1);
+
+    await expect(promise).rejects.toThrow(/No hay una revision APPROVED/);
+  });
+
+  test('a command without okExitCodes keeps rejecting on exit code 2', async () => {
+    // El permiso es por comando, no global: /revisar saliendo con 2 sigue
+    // siendo un fallo.
+    const child = makeFakeChild();
+    const service = new CerebroService({ spawnFn: () => child, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runRevisar('https://github.com/o/r/pull/1');
+    child.stderr.emit('data', Buffer.from('traceback...'));
+    child.emit('close', 2);
+
+    await expect(promise).rejects.toBeInstanceOf(CerebroError);
+  });
+
+  test('an allowed non-zero exit still rejects when stdout is not valid JSON', async () => {
+    // Aceptar el 2 no puede degradar en "resuelve con basura": si no hay
+    // payload que renderizar, es un fallo como cualquier otro.
+    const child = makeFakeChild();
+    const service = new CerebroService({ spawnFn: () => child, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runRevisarMerge('https://github.com/o/r/pull/1');
+    child.stdout.emit('data', Buffer.from('no soy json'));
+    child.emit('close', 2);
+
+    await expect(promise).rejects.toBeInstanceOf(CerebroError);
   });
 });

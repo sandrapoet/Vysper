@@ -203,6 +203,38 @@ function formatCrearPrResult(result) {
 }
 
 /**
+ * /revisar --merge: el merge, y lo que quedo pendiente DESPUES de el.
+ *
+ * El merge es irreversible, asi que Cerebro nunca lo reporta como error
+ * cuando falla un paso posterior (transicion de Jira, comentario de cierre,
+ * release): sale con codigo 2 y los lista en `pasos_no_completados`. Aca se
+ * renderizan JUNTO al merge, nunca en vez de el -- esconder que el merge si
+ * ocurrio empuja a reintentar el comando, que es lo unico que no hay que
+ * hacer. Caso real: el PR 272 cerro con el ticket de Jira sin mover y el
+ * resultado decia {"merged": true} a secas.
+ */
+function formatRevisarMergeResult(result) {
+  if (!result || !result.merged) return 'No se pudo mergear el PR.';
+  const lines = [`PR mergeado: ${result.pr_url}`];
+  if (result.comment_url) lines.push(`Comentario: ${result.comment_url}`);
+  if (result.release) lines.push(`Release creado: ${result.release.tag_name} (${result.release.url})`);
+
+  const pendientes = Array.isArray(result.pasos_no_completados) ? result.pasos_no_completados : [];
+  if (pendientes.length) {
+    lines.push(
+      `\n⚠️ El merge SI se completo, pero ${pendientes.length} paso(s) posterior(es) no. ` +
+      'No vuelvas a correr /revisar --merge: el PR ya esta mergeado.'
+    );
+    for (const paso of pendientes) {
+      const detalle = paso.detalle ? `: ${paso.detalle}` : '';
+      const remediacion = paso.remediacion ? ` -> ${paso.remediacion}` : '';
+      lines.push(`  • ${paso.label || paso.paso}${detalle}${remediacion}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
  * /cancelar-pr: confirma el cierre + la transicion de Jira si aplica.
  */
 function formatCancelarPrResult(result) {
@@ -670,6 +702,7 @@ module.exports = {
   buildIncidenteLogEntry,
   formatPrReview,
   formatCrearPrResult,
+  formatRevisarMergeResult,
   formatJiraTransitions,
   formatCancelarPrResult,
   formatScriptResult,

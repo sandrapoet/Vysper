@@ -59,6 +59,7 @@ const {
   buildIncidenteLogEntry,
   formatPrReview,
   formatCrearPrResult,
+  formatRevisarMergeResult,
   formatCancelarPrResult,
   formatScriptResult,
   formatMergeResult,
@@ -2720,9 +2721,19 @@ class ApplicationController {
     }
   }
 
+  /**
+   * El Math.round no es cosmetico: estimateWavDurationSec divide bytes entre
+   * 32000 y devuelve un float, mientras que el `timeout` de execFile exige un
+   * entero sin signo. Con un decimal, Node lanza ERR_OUT_OF_RANGE ANTES de
+   * arrancar el proceso, asi que la diarizacion no fallaba: no llegaba a
+   * ejecutarse. Paso de verdad con 22 minutos de audio
+   * ("Received 3260354.75") y dejo una sesion entera sin hablantes.
+   */
   diarizationTimeoutMs(audioPath, floorMs = DIARIZE_TIMEOUT_FLOOR_MS) {
     const durationSec = this.estimateWavDurationSec(audioPath);
-    return Math.max(floorMs, durationSec * DIARIZE_TIME_FACTOR * 1000 + DIARIZE_TIMEOUT_MARGIN_MS);
+    return Math.round(
+      Math.max(floorMs, durationSec * DIARIZE_TIME_FACTOR * 1000 + DIARIZE_TIMEOUT_MARGIN_MS)
+    );
   }
 
   runSecretariaDiarization(audioPath, outputPath) {
@@ -6637,10 +6648,15 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         return;
       }
 
-      const parts = [`PR mergeado: ${url}`];
-      if (result.comment_url) parts.push(`Comentario: ${result.comment_url}`);
-      if (result.release) parts.push(`Release creado: ${result.release.tag_name} (${result.release.url})`);
-      this.emitSiliaResult(parts.join('\n'), { ...metadata, siliaCommand: 'revisar-merge' });
+      // Los pasos posteriores al merge que fallaron viajan en el payload
+      // (Cerebro sale con codigo 2, no con error) -- ver
+      // formatRevisarMergeResult y `okExitCodes` en CerebroService._runCli.
+      const text = formatRevisarMergeResult({ ...result, pr_url: result.pr_url || url });
+      this.emitSiliaResult(text, {
+        ...metadata,
+        siliaCommand: 'revisar-merge',
+        pasosNoCompletados: (result.pasos_no_completados || []).length,
+      });
     } catch (error) {
       const friendlyMessage = error instanceof CerebroError
         ? error.message

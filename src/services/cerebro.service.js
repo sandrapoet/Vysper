@@ -76,13 +76,26 @@ class CerebroService {
 
   /**
    * /revisar <url>: pipeline forzado de revision de PR (clone aislado +
-   * merge-check + matriz de cumplimiento). Timeout propio, mas generoso
-   * que el default: clonar historial completo de un repo real via SSH
-   * puede tardar bastante mas que las llamadas normales a Jira/Notion.
+   * merge-check + CI + matriz de cumplimiento + checklist de 12
+   * dimensiones + OpenSpec/Jira). Timeout propio, mas generoso que el
+   * default: clonar historial completo de un repo real via SSH puede
+   * tardar bastante mas que las llamadas normales a Jira/Notion, y la
+   * auditoria completa corre dos llamadas al LLM (en paralelo).
+   *
+   * 'silia' es el modo por defecto del CLI de Cerebro, asi que es el unico
+   * que NO lleva flag; cualquier otro (incluido 'basico', que antes era el
+   * default) se pide explicitamente.
+   *
+   * El timeout se igualo a los 480s de runChatCommandHeadless por el mismo
+   * motivo que APROBAR_PR_TIMEOUT_MS: con 300s este era el eslabon MAS
+   * CORTO de la cadena del tunel y mataba el CLI antes de que el de arriba
+   * (el unico que sabe explicar por que corto) se diera por vencido. Con la
+   * auditoria completa como default hay dos llamadas al LLM por corrida, asi
+   * que el margen viejo ya no alcanzaba.
    */
-  runRevisar(url, { mode = 'basico', diablo = false, force = false, persona = 'silia', timeoutMs = 300000 } = {}) {
+  runRevisar(url, { mode = 'silia', diablo = false, force = false, persona = 'silia', timeoutMs = 480000 } = {}) {
     const args = ['revisar', url];
-    if (mode && mode !== 'basico') args.push(`--${mode}`);
+    if (mode && mode !== 'silia') args.push(`--${mode}`);
     if (diablo) args.push('--diablo');
     if (force) args.push('--force');
     args.push('--persona', persona);
@@ -97,7 +110,10 @@ class CerebroService {
   runRevisarMerge(url, { release = false } = {}) {
     const args = ['revisar-merge', url];
     if (release) args.push('--release');
-    return this._runCli(args);
+    // Codigo 2 = se mergeo, pero algun paso posterior quedo pendiente (ver
+    // `okExitCodes` en _runCli). El 1 sigue rechazando: ahi no se mergeo
+    // nada y reintentar tiene sentido.
+    return this._runCli(args, { okExitCodes: [2] });
   }
 
   /**
@@ -391,7 +407,23 @@ class CerebroService {
     return this._runCli(args);
   }
 
-  _runCli(args, { timeoutMs = this.timeoutMs } = {}) {
+  /**
+   * `okExitCodes` declara, POR COMANDO, que codigos de salida traen un
+   * resultado utilizable ademas del 0. Existe por /revisar-merge: el merge
+   * es irreversible, asi que un paso POSTERIOR que falla (transicion de
+   * Jira, comentario de cierre, release) nunca se convierte en
+   * `{"error": ...}` -- eso invitaria a reintentar un merge que ya paso.
+   * Cerebro lo reporta en `pasos_no_completados` y sale con codigo 2.
+   *
+   * Con el rechazo indiscriminado de todo != 0, el chat mostraba "Cerebro
+   * fallo (codigo 2)" y se perdia el payload entero: el link del PR
+   * mergeado, el comment_url y el del release. El texto de la advertencia
+   * llegaba solo de rebote, por la cola de stderr.
+   *
+   * Es una lista blanca por llamada y no una regla global a proposito: un
+   * codigo != 0 sigue siendo un fallo para todos los demas comandos.
+   */
+  _runCli(args, { timeoutMs = this.timeoutMs, okExitCodes = [] } = {}) {
     const startedAt = Date.now();
     const command = `${this.pythonPath} -m cerebro.cli ${args.join(' ')}`;
 
@@ -436,7 +468,10 @@ class CerebroService {
         clearTimeout(timer);
         const durationMs = Date.now() - startedAt;
 
-        if (code !== 0) {
+        // Un codigo declarado como aceptable trae payload igual que el 0, y
+        // se parsea por el mismo camino de abajo -- si su stdout no es JSON
+        // valido, cae en el mismo rechazo que cualquier otra salida ilegible.
+        if (code !== 0 && !okExitCodes.includes(code)) {
           // Some CLI commands (e.g. daily-checkpoint's assignee resolution,
           // propuesta-decidir's estado validation) print a structured
           // `{"error": "..."}` to stdout before exiting non-zero. Prefer
@@ -474,7 +509,13 @@ class CerebroService {
           return;
         }
 
-        this.logger.info?.('Cerebro respondio correctamente', { command, durationMs });
+        if (code === 0) {
+          this.logger.info?.('Cerebro respondio correctamente', { command, durationMs });
+        } else {
+          // Que quede distinguible en el log: hubo resultado, pero el
+          // comando declaro que algo quedo pendiente.
+          this.logger.warn?.('Cerebro respondio con pasos pendientes', { command, code, durationMs, stderr });
+        }
         resolve(parsed);
       });
     });

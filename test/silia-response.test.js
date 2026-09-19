@@ -2,6 +2,7 @@ const {
   formatActualizaRagResult,
   formatPrReview,
   formatCrearPrResult,
+  formatRevisarMergeResult,
   formatCancelarPrResult,
   formatAprobarPrResult,
   formatActualizarJiraPreview,
@@ -312,6 +313,67 @@ describe('multi-ticket', () => {
       pr_url: 'https://github.com/org/repo/pull/9', draft: false, jira_ticket_key: 'AGE-233',
     });
     expect(out).toContain('Jira: AGE-233 -> "In Review"');
+  });
+});
+
+describe('formatRevisarMergeResult', () => {
+  const base = {
+    merged: true,
+    message: 'Pull Request successfully merged',
+    pr_url: 'https://github.com/org/repo/pull/9',
+    comment_url: 'https://github.com/org/repo/pull/9#issuecomment-1',
+    release: null,
+    pasos_no_completados: [],
+    advertencia: '',
+  };
+
+  test('un ciclo completo se ve como antes', () => {
+    const out = formatRevisarMergeResult(base);
+
+    expect(out).toContain('PR mergeado: https://github.com/org/repo/pull/9');
+    expect(out).toContain('Comentario: https://github.com/org/repo/pull/9#issuecomment-1');
+    expect(out).not.toContain('⚠️');
+  });
+
+  test('los pasos pendientes se nombran SIN esconder que el merge si ocurrio', () => {
+    // Caso real del PR 272: la transicion de Jira fallo, quedo en una linea
+    // de log intermedia, y el resultado decia {"merged": true} a secas. El
+    // ticket quedo sin mover y el ciclo se dio por cerrado.
+    const out = formatRevisarMergeResult({
+      ...base,
+      pasos_no_completados: [{
+        paso: 'jira_transition_done',
+        label: 'transicion del ticket de Jira a "Done"',
+        detalle: 'No se pudo mover AGE-335 a "Done"',
+        remediacion: 'Transiciona AGE-335 a mano en Jira.',
+      }],
+      advertencia: 'El merge SI se completo, pero 1 paso(s) posterior(es) no.',
+    });
+
+    // El merge no se esconde: reintentarlo es justo lo que no hay que hacer.
+    expect(out).toContain('PR mergeado: https://github.com/org/repo/pull/9');
+    expect(out).toContain('⚠️');
+    expect(out).toContain('transicion del ticket de Jira a "Done"');
+    expect(out).toContain('Transiciona AGE-335 a mano en Jira.');
+  });
+
+  test('cada paso pendiente aparece, no solo el primero', () => {
+    const out = formatRevisarMergeResult({
+      ...base,
+      pasos_no_completados: [
+        { paso: 'github_release', label: 'creacion del release/tag', detalle: '422', remediacion: 'Crea el tag a mano.' },
+        { paso: 'jira_transition_done', label: 'transicion de Jira', detalle: 'sin transicion', remediacion: 'Muevelo a mano.' },
+      ],
+      advertencia: 'El merge SI se completo, pero 2 paso(s) posterior(es) no.',
+    });
+
+    expect(out).toContain('creacion del release/tag');
+    expect(out).toContain('transicion de Jira');
+  });
+
+  test('un resultado sin merge no se anuncia como mergeado', () => {
+    expect(formatRevisarMergeResult({ merged: false })).toBe('No se pudo mergear el PR.');
+    expect(formatRevisarMergeResult(null)).toBe('No se pudo mergear el PR.');
   });
 });
 
