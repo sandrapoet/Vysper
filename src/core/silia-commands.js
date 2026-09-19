@@ -173,16 +173,26 @@ function parseToolScopedCommand(text) {
   return query.length > 0 ? { tool, query } : null;
 }
 
-const REVISAR_DEPTH_FLAGS = ['--profundo', '--arq', '--security'];
+// '--basico' vive aqui, junto a los modos de profundidad, porque comparte su
+// regla: es un MODO, y elegir dos modos a la vez es un error, no una
+// combinacion. Dejo de ser el default (ver parseRevisarCommand) -- ahora
+// /revisar sin flags corre la auditoria completa.
+const REVISAR_DEPTH_FLAGS = ['--basico', '--profundo', '--arq', '--security'];
 const REVISAR_KNOWN_FLAGS = [...REVISAR_DEPTH_FLAGS, '--diablo', '--merge', '--release', '--force'];
 
 /**
  * Returns {url, mode, diablo, merge, release, force} if text is
- * "/revisar <url> [--profundo|--arq|--security] [--diablo] [--merge]
- * [--release] [--force]", or {error} if flags of profundidad se combinan o
- * hay un flag desconocido (nunca silencioso). Otherwise null. `mode` is
- * one of 'basico'|'profundo'|'arq'|'security' — 'basico' (sin flags) es
- * solo conflictos+formato, sin la matriz de cumplimiento completa (ver
+ * "/revisar <url> [--basico|--profundo|--arq|--security] [--diablo] [--merge]
+ * [--release] [--force]", or {error} if dos modos se combinan o hay un flag
+ * desconocido (nunca silencioso). Otherwise null. `mode` is one of
+ * 'silia'|'basico'|'profundo'|'arq'|'security'.
+ *
+ * SIN FLAGS el modo es 'silia': la auditoria completa (matriz de
+ * cumplimiento + el checklist de 12 dimensiones con severidades +
+ * OpenSpec/Jira), el algoritmo de la skill silia-review-pr. Antes el
+ * default era 'basico' — solo titulo y ticket, sin LLM — asi que la forma
+ * MAS USADA del comando, aqui y en el menu de Termux, era tambien la mas
+ * debil. 'basico' sigue disponible con --basico (ver
  * CerebroService.runRevisar / Orchestrator.run_pr_review). `force` ignora
  * la revision cacheada para el sha actual y re-evalua desde cero -- util
  * cuando el reporte cacheado quedo desactualizado aunque el PR siga en el
@@ -219,12 +229,12 @@ function parseRevisarCommand(text) {
 
   const depthFlags = flags.filter((f) => REVISAR_DEPTH_FLAGS.includes(f));
   if (depthFlags.length > 1) {
-    return { error: 'Usa como maximo un modo de profundidad: --profundo, --arq o --security.' };
+    return { error: 'Usa como maximo un modo: --basico, --profundo, --arq o --security.' };
   }
 
   return {
     url,
-    mode: depthFlags.length ? depthFlags[0].replace('--', '') : 'basico',
+    mode: depthFlags.length ? depthFlags[0].replace('--', '') : 'silia',
     diablo: flags.includes('--diablo'),
     merge: flags.includes('--merge'),
     release: flags.includes('--release'),

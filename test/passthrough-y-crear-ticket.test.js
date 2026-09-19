@@ -122,7 +122,7 @@ describe('/revisar-merge como alias', () => {
 
   test('implica --merge sin tener que escribirlo', () => {
     expect(parseRevisarCommand(`/revisar-merge ${URL_PR}`)).toEqual({
-      url: URL_PR, mode: 'basico', diablo: false, merge: true, release: false, force: false,
+      url: URL_PR, mode: 'silia', diablo: false, merge: true, release: false, force: false,
     });
   });
 

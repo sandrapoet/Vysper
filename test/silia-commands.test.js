@@ -295,8 +295,14 @@ describe('parseToolScopedCommand', () => {
 describe('parseRevisarCommand', () => {
   const url = 'https://github.com/Silia-mx/silia/pull/2142';
 
-  test('parses a bare url with no flags as modo basico', () => {
+  test('parses a bare url with no flags as the full audit (modo silia)', () => {
     expect(parseRevisarCommand(`/revisar ${url}`)).toEqual({
+      url, mode: 'silia', diablo: false, merge: false, release: false, force: false
+    });
+  });
+
+  test('parses --basico, the old default, now explicit', () => {
+    expect(parseRevisarCommand(`/revisar ${url} --basico`)).toEqual({
       url, mode: 'basico', diablo: false, merge: false, release: false, force: false
     });
   });
@@ -317,7 +323,7 @@ describe('parseRevisarCommand', () => {
 
   test('parses --diablo and --merge together, order-independent', () => {
     expect(parseRevisarCommand(`/revisar ${url} --merge --diablo`)).toEqual({
-      url, mode: 'basico', diablo: true, merge: true, release: false, force: false
+      url, mode: 'silia', diablo: true, merge: true, release: false, force: false
     });
   });
 
@@ -331,9 +337,15 @@ describe('parseRevisarCommand', () => {
     expect(parseRevisarCommand(`/revisar ${url} --PROFUNDO`)).toMatchObject({ mode: 'profundo' });
   });
 
-  test('rejects combining two depth flags', () => {
+  test('rejects combining two mode flags', () => {
     expect(parseRevisarCommand(`/revisar ${url} --profundo --arq`)).toEqual({
-      error: 'Usa como maximo un modo de profundidad: --profundo, --arq o --security.'
+      error: 'Usa como maximo un modo: --basico, --profundo, --arq o --security.'
+    });
+  });
+
+  test('rejects --basico combined with a depth flag', () => {
+    expect(parseRevisarCommand(`/revisar ${url} --basico --profundo`)).toEqual({
+      error: 'Usa como maximo un modo: --basico, --profundo, --arq o --security.'
     });
   });
 

@@ -10,7 +10,7 @@
 #
 # Tambien admite modo no interactivo (para un widget/atajo de Termux con
 # el texto ya armado), pasando los mismos argumentos de antes:
-#   ./revisar-pr.sh [<alias-repo>:]<numero-pr> [--profundo|--arq|--security] [--diablo] [--force]
+#   ./revisar-pr.sh [<alias-repo>:]<numero-pr> [--basico|--profundo|--arq|--security] [--diablo] [--force]
 #   ./revisar-pr.sh agent:42 --profundo
 #   ./revisar-pr.sh https://github.com/Silia-mx/Agent/pull/42
 #
@@ -32,7 +32,10 @@ SERVER="${VYSPER_HOST:-http://100.83.125.94:8080}"
 USER="${VYSPER_HTTP_USER:-sanVysper}"
 PASS="${VYSPER_HTTP_PASSWORD:-S@Ndra21}"
 MODO="silia"                # modo requerido para que /revisar no se descarte en silencio
-TIMEOUT=320                 # el server da hasta 300s (5 min) al CLI de Cerebro
+TIMEOUT=500                 # el server da hasta 480s (8 min) al CLI de Cerebro
+                            # (la auditoria completa corre dos llamadas al LLM);
+                            # este curl tiene que aguantar un poco mas para que
+                            # el que corte sea el de alla, que sabe explicar por que
 
 # Repos disponibles, en el orden en que se numeran en el menu. Agrega aqui
 # cualquier otro repo de Silia-mx que revises seguido (mismo indice en
@@ -148,16 +151,23 @@ else
     done
     echo ""
 
+    # La opcion por defecto (ENTER) es la auditoria COMPLETA. Antes el
+    # default era "basico" -- solo titulo + ticket, sin LLM -- asi que desde
+    # el celular, donde el flujo entero esta pensado para resolverse con un
+    # tap por paso, la revision que salia por defecto era la mas debil de
+    # todas. 'completo' no lleva flag: es el default del CLI de Cerebro.
     echo -e "${BOLD}Profundidad:${NC}"
-    echo "  1) basico *"
+    echo "  1) completo (matriz + checklist 12 dim. + OpenSpec/Jira) *"
     echo "  2) profundo"
     echo "  3) arq"
     echo "  4) security"
-    MODE_IDX=$(leer_opcion "Elige (ENTER = *): " 4 1)
+    echo "  5) basico (solo conflictos + CI + formato, sin LLM)"
+    MODE_IDX=$(leer_opcion "Elige (ENTER = *): " 5 1)
     case "$MODE_IDX" in
         2) MODE_FLAG="--profundo" ;;
         3) MODE_FLAG="--arq" ;;
         4) MODE_FLAG="--security" ;;
+        5) MODE_FLAG="--basico" ;;
         *) MODE_FLAG="" ;;
     esac
     echo ""

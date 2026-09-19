@@ -717,7 +717,11 @@ Importante:
   mano — pensado para usarse manejando: sin argumentos muestra un menú de
   elección rápida (repo, número de PR, profundidad, `--diablo`) donde cada
   paso es un solo tap de número (ENTER solo toma la opción marcada con
-  `*`; el número de PR es el único que sí necesita Enter). También admite
+  `*`; el número de PR es el único que sí necesita Enter). La opción por
+  defecto de profundidad es la **auditoría completa** (matriz + checklist de
+  12 dimensiones + OpenSpec/Jira); `basico` sigue en el menú, pero hay que
+  elegirlo — tenerlo como default hacía que la revisión más fácil de
+  disparar desde el celular fuera también la más débil. También admite
   modo no interactivo con argumentos (`./revisar-pr.sh agent:42 --profundo`)
   para un widget/atajo de Termux con el texto ya armado. Requiere `python3`
   (Termux no lo trae por defecto — `pkg install python -y`) para armar y
@@ -1087,7 +1091,7 @@ constancia de por qué se rechazó o pospuso.
 /propuesta 2 posponer revisar despues del sprint
 ```
 
-**`/revisar <url-pr> [--profundo|--arq|--security] [--diablo] [--merge] [--release]`**
+**`/revisar <url-pr> [--basico|--profundo|--arq|--security] [--diablo] [--merge] [--release]`**
 — pipeline fijo de revisión de PR: clona el repo por SSH en aislado
 (`git@<PR_REVIEW_GIT_SSH_HOST>:owner/repo.git`, nunca ejecuta código del
 PR) y verifica conflictos de merge contra el branch base real del PR
