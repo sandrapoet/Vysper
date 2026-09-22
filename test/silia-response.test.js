@@ -637,3 +637,44 @@ describe('formatActualizarJiraApplyResult', () => {
     expect(formatActualizarJiraApplyResult({ aplicados: [], fallidos: [], omitidos: [] })).toBe('No se aplico ningun cambio.');
   });
 });
+
+describe('formatRevisarMergeResult - tickets huerfanos', () => {
+  const base = {
+    merged: true,
+    pr_url: 'https://github.com/Silia-mx/Agent/pull/285',
+    comment_url: '',
+    release: null,
+    pasos_no_completados: [],
+    advertencia: '',
+  };
+
+  test('un ticket que el PR entrega sin nombrar se avisa al mergear', () => {
+    // Al mergear el aviso importa MAS, no menos: el PR ya entro y nada va a
+    // transicionar ese ticket. En el caso real AGE-431 se quedo en "En
+    // curso" con su codigo ya en develop.
+    const out = formatRevisarMergeResult({
+      ...base,
+      tickets_huerfanos: [{ clave: 'AGE-431', archivos: ['a', 'b', 'c', 'd'], estado_jira: 'En curso' }],
+      advertencia_huerfanos:
+        '#285 entrega codigo de AGE-431 (4 archivos) y no lo menciona.\nAGE-431 sigue en "En curso".',
+    });
+
+    expect(out).toContain('PR mergeado:');
+    expect(out).toContain('AGE-431');
+    expect(out).toContain('En curso');
+    expect(out).toContain('⚠️');
+  });
+
+  test('sin huerfanos no se agrega ninguna seccion', () => {
+    const out = formatRevisarMergeResult({ ...base, tickets_huerfanos: [], advertencia_huerfanos: '' });
+
+    expect(out).not.toContain('⚠️');
+  });
+
+  test('un resultado de una version vieja de Cerebro no rompe el render', () => {
+    // NEGATIVO: los campos pueden no venir si el CLI es anterior.
+    const out = formatRevisarMergeResult(base);
+
+    expect(out).toContain('PR mergeado:');
+  });
+});

@@ -219,6 +219,15 @@ function formatRevisarMergeResult(result) {
   if (result.comment_url) lines.push(`Comentario: ${result.comment_url}`);
   if (result.release) lines.push(`Release creado: ${result.release.tag_name} (${result.release.url})`);
 
+  // Tickets que este PR entrega sin nombrar. Al mergear el aviso importa
+  // MAS, no menos: el PR ya entro y nada va a transicionar ese ticket --
+  // AGE-431 se quedo en "En curso" con su codigo ya en develop. Cerebro los
+  // trae de la fila APPROVED, no los re-escanea.
+  if (result.advertencia_huerfanos) {
+    lines.push(`\n⚠️ ${result.advertencia_huerfanos}`);
+    lines.push('Transicionalos a mano: este merge no los toca.');
+  }
+
   const pendientes = Array.isArray(result.pasos_no_completados) ? result.pasos_no_completados : [];
   if (pendientes.length) {
     lines.push(

@@ -1145,6 +1145,24 @@ haya bloqueado o no.
   auditoría entrena justo el reflejo de ignorarlos: ahora es `⚠️`, y las
   listas de archivos se colapsan a tres rutas + "y N mas".
 
+  **El reporte avisa si el PR entrega código de un ticket que no menciona.**
+  Caso real: el PR `Silia-mx/Agent#285` (`feat(AGE-428)…`) entregó además el
+  código completo de **AGE-431** —cuatro archivos— sin nombrarlo en el
+  título, el cuerpo ni un solo subject de commit. AGE-431 se quedó en «En
+  curso» con su código ya en `develop`, y dos tickets que dependen de él
+  leían la cadena como bloqueada. El aviso aparece en el reporte del chat:
+
+  ```
+  #285 entrega codigo de AGE-431 (4 archivos) y no lo menciona.
+  AGE-431 sigue en "En curso".
+  ```
+
+  Llega **antes del merge**, que es el único momento en que todavía cambia
+  algo: si es correcto, se agrega el ticket al título o al marcador
+  `Jira-Tickets:` del PR y al mergear sí se transiciona. Y `/revisar --merge`
+  lo repite, porque ahí importa más, no menos: el PR ya entró y **nada va a
+  transicionar ese ticket**.
+
   Los dos lentes de LLM van en **paralelo**. El veredicto se deriva
   mecánicamente de la severidad más alta (el mapa `graduated` de la skill):
   un `blocker` bloquea, un `major` condiciona, `minor`/`suggestion` se
@@ -1338,6 +1356,18 @@ tocar stdin del proceso de Cerebro:
     `--labels`, el PR se crea sin labels (nunca dispara el flujo
     interactivo de Cerebro, que Vysper siempre evita pasándole `--labels`
     explícito internamente).
+    - Esa evasión sigue siendo la primera línea de defensa, pero ya no es la
+      única: **el CLI de Cerebro tampoco se cuelga** si alguien llega al
+      prompt sin consola. Antes esperaba `input()` y en un subprocess se
+      quedaba hasta el timeout y abortaba **sin crear el PR**; ahora cae a
+      «sin labels» con aviso.
+    - Y **las labels propuestas se contrastan contra las que el repo tiene
+      de verdad**. El LLM sugería labels razonables e inexistentes
+      (`bugfix`, `guardrails` contra un repo que tiene `bug`), y aplicarlas
+      las creaba. Ahora se marcan como «se crearía» y no se aplican. Esto
+      importa para el camino de Vysper porque `--labels a,b,c` viaja tal
+      cual: si nombrás una label que el repo no tiene, Cerebro la reporta en
+      vez de crearla.
   - **Milestone**: Vysper nunca crea un milestone nuevo automáticamente
     (le pasa `--no-milestone` a Cerebro) — si el sprint activo de Jira
     necesita uno, créalo a mano en GitHub. Evita el `input()` de consola
@@ -1435,6 +1465,22 @@ tocar stdin del proceso de Cerebro:
     `deploy-service.yml` es `workflow_dispatch` puro. El resultado siempre
     dice que el dispatch queda pendiente; se puede disparar con
     `--disparar-deploy --confirmar-deploy` desde el CLI de Cerebro.
+
+#### `auditar-cierre`: solo desde la terminal
+
+Cerebro tiene un comando nuevo, **`auditar-cierre <AGE-###>`**, que contesta
+«¿este ticket está realmente entregado, y hasta dónde?»: localiza en qué PR y
+commit aterrizó su código (aunque el PR no lo nombre), corre las suites sobre
+el HEAD real de la rama destino, contrasta el puntero del submódulo, y recién
+entonces comenta y transiciona en Jira. Es el pipeline de `revisar-merge`
+corrido **después** del hecho, para cuando el código entró por otra vía.
+
+**No está expuesto en el chat**, y por la regla que ya rige este registro: es
+un comando que escribe, así que necesita el flujo de confirmación de dos
+turnos que vive en Vysper y no en la CLI — el mismo que tienen
+`/actualizar-jira` y `/crear-ticket`. Su preview sí es de solo lectura, pero
+exponer la mitad de un comando de dos fases invita a confirmarlo por fuera.
+Si se agrega, va con su flujo completo, no como passthrough.
 
 #### Flags de Cerebro que cambiaron de significado
 
@@ -1603,7 +1649,7 @@ si
 ### `/actualizar-jira`
 
 Automatiza actualizar Jira (descripción, fecha límite, estado, story
-points) a partir de un texto libre de correcciones que puede mencionar
+points, **asignación**) a partir de un texto libre de correcciones que puede mencionar
 varios tickets a la vez — el caso real es pegar una nota de "esto hay que
 corregir en Jira" (varias decisiones de diseño que se traducen en cambios
 a distintos campos de distintos tickets) y dejar que el LLM identifique
@@ -1622,6 +1668,18 @@ turnos separados, con confirmación explícita en el medio:
   disponible, campo no reconocido) se muestra aparte marcado como
   "requiere revisión manual", con el motivo — nunca se adivina ni se
   aplica solo.
+  - **Asignar ya no cae en «no ejecutable».** Lo hacía, y como una sola
+    entrada no ejecutable bloquea el plan **entero**, un texto que mezclara
+    asignación con cambio de estado no escribía nada — ni la parte que sí
+    sabía hacer. El nombre se resuelve contra Jira en el preview: si matchea
+    más de una persona queda marcado para revisión con los candidatos
+    listados (elegir entre personas reales es justo lo que un preview no
+    debe hacer), y desasignar se dice explícitamente (`nadie`).
+  - **Las descripciones viajan como ADF.** Antes iban como string y el
+    parser de Jira Cloud las reinterpretaba: en un ticket real `**Epic:**`
+    quedó como `\***Epic:**\*` y los `##` se convirtieron en listas
+    numeradas. Hubo que rehacerlo a mano. El markdown se convierte ahora del
+    lado de Cerebro, así que lo que ves en el preview es lo que queda.
   - Si hay al menos un cambio aplicable, el chat pregunta explícitamente
     (`¿Confirmas aplicar N cambio(s) en Jira? Responde "si" para continuar
     o "no" para cancelar.`) y queda esperando tu próxima respuesta —
