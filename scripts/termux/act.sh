@@ -41,6 +41,15 @@ echo -e "${BLUE}🔄 Actualizando atajos desde $SERVER${NC}"
 mkdir -p "$BIN" || exit 1
 fallos=0
 
+# El log de curl va junto a los atajos, no a /tmp: Termux no tiene /tmp
+# escribible (su temporal es $TMPDIR = .../usr/tmp) y con la ruta fija la
+# redireccion fallaba con "Permission denied" ANTES de que curl arrancara --
+# eso tumbaba el `if` completo, asi que TODAS las descargas se daban por
+# fallidas aunque el servidor respondiera bien, y el detalle que explicaba
+# por que tampoco se podia imprimir, porque salia del mismo archivo.
+# $BIN sirve por construccion: es donde ya se escriben los .nuevo.
+ERRLOG="$BIN/.act-curl.err"
+
 # El listado trae el md5 de cada script (ver GET /scripts en
 # stt/http_server.js): es la unica forma fiable de saber que la descarga
 # llego entera. Comprobar shebang + `bash -n` no alcanza -- un script
@@ -74,9 +83,9 @@ for par in $ATAJOS; do
     # -f: que curl falle en vez de guardar el cuerpo de un error. Sin esto un
     # 401/404 se escribe como si fuera el script y el atajo queda roto.
     if ! curl -fsS --connect-timeout 15 --max-time 120 \
-        -u "$USER:$PASS" "$SERVER/scripts/$remoto" -o "$tmp" 2>/tmp/act-curl.err; then
+        -u "$USER:$PASS" "$SERVER/scripts/$remoto" -o "$tmp" 2>"$ERRLOG"; then
         echo -e "  ${RED}✗ $local_${NC} (no se pudo bajar $remoto)"
-        [ -s /tmp/act-curl.err ] && sed 's/^/      /' /tmp/act-curl.err
+        [ -s "$ERRLOG" ] && sed "s/^/      /" "$ERRLOG"
         rm -f "$tmp"
         fallos=$((fallos + 1))
         continue
@@ -125,7 +134,7 @@ if [ "${ACT_CAMBIO:-0}" = "1" ] && [ "${ACT_REEJECUTADO:-0}" != "1" ]; then
     ACT_REEJECUTADO=1 exec "$BIN/act"
 fi
 
-rm -f /tmp/act-curl.err 2>/dev/null
+rm -f "$ERRLOG" 2>/dev/null
 
 if [ "$fallos" -gt 0 ]; then
     echo -e "${RED}❌ $fallos atajo(s) no se actualizaron${NC}"
