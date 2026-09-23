@@ -101,10 +101,29 @@ for par in $ATAJOS; do
         continue
     fi
 
+    # ¿Cambio el propio act? Se anota ANTES de pisarlo: despues ya no hay
+    # con que comparar.
+    if [ "$remoto" = "act.sh" ] && [ -f "$BIN/$local_" ]; then
+        [ "$(md5_local "$tmp")" != "$(md5_local "$BIN/$local_")" ] && ACT_CAMBIO=1
+    fi
+
     chmod +x "$tmp"
     mv -f "$tmp" "$BIN/$local_"
     echo -e "  ${GREEN}✓ $local_${NC} ($(wc -c < "$BIN/$local_") bytes)"
 done
+
+# LA LISTA DE ATAJOS VIVE DENTRO DE ESTE ARCHIVO, asi que un act viejo solo
+# conoce los atajos viejos: cuando se agrega uno nuevo en la PC, la primera
+# corrida se actualiza a si mismo pero NO baja el atajo nuevo, y hace falta
+# correr `act` dos veces sin que nada lo diga. Si el propio act cambio, se
+# vuelve a ejecutar con la lista nueva -- una sola corrida basta siempre.
+#
+# ACT_REEJECUTADO corta el bucle: la segunda pasada ya no puede cambiarse a
+# si misma, pero si el servidor devolviera algo inestable, esto lo frena.
+if [ "${ACT_CAMBIO:-0}" = "1" ] && [ "${ACT_REEJECUTADO:-0}" != "1" ]; then
+    echo -e "${BLUE}🔁 act se actualizo: repasando con la lista nueva...${NC}"
+    ACT_REEJECUTADO=1 exec "$BIN/act"
+fi
 
 rm -f /tmp/act-curl.err 2>/dev/null
 
