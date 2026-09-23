@@ -1188,6 +1188,35 @@ haya bloqueado o no.
   intenta refutar el veredicto de la primera — solo puede bajar scores u
   agregar observaciones, nunca subirlos.
 
+### `/audit`: auditar tu trabajo ANTES de abrir el PR
+
+El hermano de `/revisar`, y hace lo contrario. Aquel revisa el PR de **otra**
+persona; `/audit` audita lo que vos tenés en la PC y que **todavía no es un
+PR** — cambios sin commitear incluidos — con los seis lentes de
+`silia-audit-pr`.
+
+```
+/audit                 # el repo configurado (MERGE_GATE_REPO_DIRS)
+/audit owner/repo      # uno concreto, si hay varios
+/audit-estado <job-id> # en qué quedó
+```
+
+Devuelve un veredicto **`READY` / `NEEDS FIXES` / `BLOCKED`** con el detalle
+por hallazgo. **No escribe nada**: ni en el repo (la skill se declara read-only
+y la allowlist no incluye `Edit`, `Write` ni `git add/commit/push`), ni en
+GitHub, ni en Jira.
+
+Asíncrono por el mismo motivo que `/revisar`: seis lentes en paralelo no caben
+en los 480 s del túnel. Lo que vuelve en segundos es el **preflight** — rama,
+base y cuántos archivos con cambios — más el `job_id`.
+
+Antes de gastar la corrida comprueba las tres paradas duras de la skill: estar
+parado en `develop`/`main`, una rama que no desciende de ninguna, y no tener
+ningún cambio. **Un preflight que corta no es un error**: es una respuesta
+legítima y la más barata posible.
+
+Desde el celular: `audit` y `audit-estado <job-id>`.
+
 ### La revisión profunda corre aparte y te avisa
 
 Cerebro ahora invoca la skill `silia-review-pr` de verdad: tres lentes con
