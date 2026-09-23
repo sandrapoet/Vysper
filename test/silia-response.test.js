@@ -743,3 +743,77 @@ describe('El revisor asincrono en el chat', () => {
     expect(texto).toContain('no por un PR limpio');
   });
 });
+
+describe('/audit en el chat', () => {
+  const { formatAuditArranque, formatAuditEstado } = require('../src/core/silia-response');
+
+  test('el preflight que corta NO se presenta como un error', () => {
+    // Que estes parado en develop, o que no haya cambios, es una respuesta
+    // legitima y la mas barata posible. Presentarla como fallo haria creer
+    // que algo se rompio.
+    const texto = formatAuditArranque({
+      preflight_ok: false, motivo: 'sin_cambios', rama: 'fix/x',
+      detalle: "'fix/x' no tiene ningun cambio contra 'develop'",
+    });
+
+    expect(texto).toContain('No hay nada que auditar');
+    expect(texto).not.toContain('❌');
+  });
+
+  test('el arranque dice rama, base y cuantos archivos, mas el job', () => {
+    const texto = formatAuditArranque({
+      preflight_ok: true, repo: 'Silia-mx/Agent', rama: 'fix/x', base: 'develop',
+      archivos: ['a.py', 'b.py'], job_id: 'j1', job_estado: 'en_curso',
+    });
+
+    expect(texto).toContain('fix/x');
+    expect(texto).toContain('develop');
+    expect(texto).toContain('2 archivo(s)');
+    expect(texto).toContain('/audit-estado j1');
+  });
+
+  test('si el proceso desacoplado no arranco, lo dice', () => {
+    const texto = formatAuditArranque({
+      preflight_ok: true, rama: 'f/x', base: 'develop', archivos: [], repo: 'r',
+      job_id: 'j1', job_estado: 'en_curso',
+      auditor_lanzado: { ok: false, motivo: 'no se pudo abrir el log' },
+    });
+
+    expect(texto).toContain('no se pudo lanzar');
+    expect(texto).toContain('NO va a llegar');
+  });
+
+  test('un veredicto terminado trae el readiness y el desglose', () => {
+    const texto = formatAuditEstado({
+      job_estado: 'terminado', job_id: 'j1', repo: 'r', rama: 'fix/x',
+      readiness: 'NEEDS FIXES',
+      conteos: { parseado: true, blocker: 0, major: 2, minor: 5, suggestion: 1 },
+      reporte: '## Hallazgos\n- algo',
+    });
+
+    expect(texto).toContain('NEEDS FIXES');
+    expect(texto).toContain('2 major');
+    expect(texto).toContain('## Hallazgos');
+  });
+
+  test('una auditoria fallida nunca se lee como "listo"', () => {
+    // Un veredicto ausente es uno que no llego, no uno favorable.
+    const texto = formatAuditEstado({
+      job_estado: 'fallido', job_id: 'j1', repo: 'r', rama: 'f/x',
+      job_detalle: 'el reporte no trajo la linea PR-readiness',
+    });
+
+    expect(texto).toContain('NO completó');
+    expect(texto).toContain('no lo leas como que está listo');
+  });
+
+  test('sin desglose parseable lo declara en vez de mostrar ceros', () => {
+    const texto = formatAuditEstado({
+      job_estado: 'terminado', job_id: 'j1', repo: 'r', rama: 'f/x',
+      readiness: 'READY', conteos: { parseado: false },
+    });
+
+    expect(texto).toContain('Sin desglose');
+    expect(texto).not.toContain('0 blocker');
+  });
+});

@@ -126,6 +126,26 @@ class CerebroService {
   }
 
   /**
+   * /audit: la skill silia-audit-pr sobre el arbol LOCAL de la PC.
+   *
+   * Asincrono por el mismo motivo que /revisar -- seis lentes en paralelo no
+   * caben en los 480s del tunel -- y ademas acepta el exit 2, que aqui NO es
+   * un fallo: es "el preflight corto". Que estes parado en develop, o que no
+   * haya ningun cambio, es una respuesta legitima y el payload la explica;
+   * tratarla como error la perderia.
+   */
+  runAudit({ repo = '', async: asincrono = true } = {}) {
+    const args = ['audit'];
+    if (repo) args.push('--repo', repo);
+    if (asincrono) args.push('--async');
+    return this._runCli(args, { timeoutMs: 480000, okExitCodes: [2] });
+  }
+
+  runAuditEstado(jobId) {
+    return this._runCli(['audit-estado', jobId], { okExitCodes: [1, 2] });
+  }
+
+  /**
    * /revisar <url> --merge: mergea/comenta/transiciona Jira -- solo
    * procede si Cerebro ya tiene una revision APPROVED vigente (mismo sha)
    * para esa URL. Nunca re-analiza aqui, asi que el timeout default basta.

@@ -242,6 +242,37 @@ function parseRevisarCommand(text) {
   };
 }
 
+/**
+ * "/audit [repo]" -- la skill silia-audit-pr sobre el arbol LOCAL de la PC.
+ *
+ * Sin argumento usa el unico repo configurado en MERGE_GATE_REPO_DIRS;
+ * Cerebro decide, no este parser, porque la lista vive en su .env.
+ *
+ * NO lleva url: es justo lo contrario de /revisar. Aquel mira el PR de otra
+ * persona, este mira el trabajo tuyo que TODAVIA no es un PR -- cambios sin
+ * commitear incluidos. Si alguien le pasa una url, decirselo es mejor que
+ * tratarla como nombre de repo y auditar el que no era.
+ */
+function parseAuditCommand(text) {
+  const normalized = normalize(text);
+  if (!/^\/audit(\s|$)/i.test(normalized)) return null;
+
+  const match = normalized.match(/^\/audit(?:\s+(\S+))?\s*$/i);
+  if (!match) {
+    return { error: 'Uso: /audit [owner/repo]. No lleva url: audita tu arbol local.' };
+  }
+
+  const argumento = match[1] || '';
+  if (/^https?:\/\//i.test(argumento)) {
+    return {
+      error:
+        '/audit no lleva url -- audita TU trabajo local, antes del PR. ' +
+        'Para revisar un PR abierto es /revisar <url>.',
+    };
+  }
+  return { repo: argumento };
+}
+
 const CREAR_PR_BOOL_FLAGS = { '--draft': true, '--publish': false };
 
 /**
@@ -601,6 +632,7 @@ const PASSTHROUGH_COMMANDS = {
   // no tendria forma de entregarse -- Termux abre su request y se va, y no
   // hay canal de push hacia el telefono.
   'revisar-estado': { minArgs: 1, ejemplo: '/revisar-estado <job-id>' },
+  'audit-estado': { minArgs: 1, ejemplo: '/audit-estado <job-id>' },
   'estado-llm': { minArgs: 0, ejemplo: '/estado-llm' },
   'preflight-promocion': { minArgs: 1, ejemplo: '/preflight-promocion AGE-245' },
   'hoy-historial': { minArgs: 1, ejemplo: '/hoy-historial <dominio>' },
@@ -782,6 +814,7 @@ const KNOWN_COMMAND_PARSERS = [
   parseDetalleCommand,
   parseToolScopedCommand,
   parseRevisarCommand,
+  parseAuditCommand,
   parseCrearPrCommand,
   parseCancelarPrCommand,
   parseAprobarPrCommand,
@@ -847,6 +880,7 @@ module.exports = {
   parseToolScopedCommand,
   SCOPED_TOOLS,
   parseRevisarCommand,
+  parseAuditCommand,
   parseCrearPrCommand,
   parseCancelarPrCommand,
   parseAprobarPrCommand,

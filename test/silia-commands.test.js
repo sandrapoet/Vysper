@@ -656,3 +656,34 @@ describe('parseModoCommand', () => {
     expect(parseModoCommand('')).toBeNull();
   });
 });
+
+describe('/audit: la skill silia-audit-pr sobre el arbol local', () => {
+  const { parseAuditCommand } = require('../src/core/silia-commands');
+
+  test('sin argumento deja que Cerebro elija el repo configurado', () => {
+    // La lista vive en el .env de Cerebro (MERGE_GATE_REPO_DIRS), no aca.
+    expect(parseAuditCommand('/audit')).toEqual({ repo: '' });
+  });
+
+  test('acepta un repo por nombre', () => {
+    expect(parseAuditCommand('/audit Silia-mx/Agent')).toEqual({ repo: 'Silia-mx/Agent' });
+  });
+
+  test('rechaza una url explicando la diferencia con /revisar', () => {
+    // Tratarla como nombre de repo auditaria el que no era, en silencio.
+    const r = parseAuditCommand('/audit https://github.com/o/r/pull/1');
+
+    expect(r.error).toMatch(/no lleva url/i);
+    expect(r.error).toMatch(/\/revisar/);
+  });
+
+  test('no se come otros comandos', () => {
+    expect(parseAuditCommand('/revisar https://github.com/o/r/pull/1')).toBeNull();
+    expect(parseAuditCommand('/auditar-bump x')).toBeNull();
+    expect(parseAuditCommand('hola')).toBeNull();
+  });
+
+  test('mas de un argumento es un error, no un repo con espacios', () => {
+    expect(parseAuditCommand('/audit uno dos').error).toMatch(/Uso:/);
+  });
+});

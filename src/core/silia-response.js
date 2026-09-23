@@ -312,6 +312,86 @@ function formatRevisarEstado(result) {
   return lines.join('\n');
 }
 
+const READINESS_ICONO = { READY: '✅', 'NEEDS FIXES': '⚠️', BLOCKED: '⛔' };
+
+/**
+ * /audit: el arranque. Lo que vuelve en segundos es el PREFLIGHT, no la
+ * auditoria -- seis lentes en paralelo no caben en los 480s del túnel.
+ *
+ * El preflight que corta NO es un error: que estés parado en develop, o que
+ * no haya ningún cambio, es una respuesta legítima y la más barata posible.
+ * Presentarla como fallo haría creer que algo se rompió.
+ */
+function formatAuditArranque(result) {
+  if (!result) return 'Sin respuesta de Cerebro.';
+  if (result.error) return `❌ ${result.error}`;
+
+  if (result.preflight_ok === false) {
+    return [
+      `ℹ️ No hay nada que auditar: ${result.detalle || result.motivo}`,
+      result.rama ? `Rama: ${result.rama}` : '',
+    ].filter(Boolean).join('\n');
+  }
+
+  const lines = [
+    `🔎 Auditando \`${result.rama}\` contra \`${result.base}\` (${result.repo})`,
+    `${(result.archivos || []).length} archivo(s) con cambios: sin commitear, en stage y commiteados.`,
+  ];
+  if (result.job_estado === 'en_curso' && result.job_id) {
+    lines.push(
+      '',
+      `⏳ Los seis lentes corren aparte. Job: ${result.job_id}`,
+      'Cuando termine avisa por Slack.',
+      `Para consultarla: /audit-estado ${result.job_id}`,
+    );
+    if (result.auditor_lanzado && result.auditor_lanzado.ok === false) {
+      lines.push(`⚠️ Pero el proceso no se pudo lanzar: ${result.auditor_lanzado.motivo}`);
+      lines.push('La auditoría NO va a llegar. Corréla de nuevo desde la PC.');
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
+ * /audit-estado <job-id>: en qué quedó una auditoría.
+ */
+function formatAuditEstado(result) {
+  if (!result) return 'Sin respuesta de Cerebro.';
+  if (result.error) return `❌ ${result.error}`;
+
+  if (result.job_estado === 'en_curso') {
+    return [
+      `⏳ Todavía corriendo. Job: ${result.job_id}`,
+      `Rama: ${result.rama} (${result.repo})`,
+      'Volvé a preguntar en unos minutos.',
+    ].join('\n');
+  }
+  if (result.job_estado === 'fallido') {
+    return [
+      `❌ La auditoría NO completó. Job: ${result.job_id}`,
+      `Rama: ${result.rama} (${result.repo})`,
+      `Motivo: ${result.job_detalle || 'sin detalle'}`,
+      // Nunca se presenta como "auditado y limpio": un veredicto ausente es
+      // uno que no llegó, no uno favorable.
+      'No hay veredicto: no lo leas como que está listo.',
+    ].join('\n');
+  }
+
+  const conteos = result.conteos || {};
+  const readiness = result.readiness || '';
+  const lines = [
+    `${READINESS_ICONO[readiness] || '❔'} **${readiness || 'SIN VEREDICTO'}** — \`${result.rama}\` (${result.repo})`,
+  ];
+  lines.push(
+    conteos.parseado
+      ? `${conteos.blocker || 0} blocker · ${conteos.major || 0} major · ` +
+        `${conteos.minor || 0} minor · ${conteos.suggestion || 0} sugerencia(s)`
+      : 'Sin desglose de severidades en el reporte.'
+  );
+  if (result.reporte) lines.push('', result.reporte);
+  return lines.join('\n');
+}
+
 /**
  * /cancelar-pr: confirma el cierre + la transicion de Jira si aplica.
  */
@@ -783,6 +863,8 @@ module.exports = {
   formatRevisarMergeResult,
   formatRevisarPendiente,
   formatRevisarEstado,
+  formatAuditArranque,
+  formatAuditEstado,
   formatJiraTransitions,
   formatCancelarPrResult,
   formatScriptResult,
