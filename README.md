@@ -1188,6 +1188,30 @@ haya bloqueado o no.
   intenta refutar el veredicto de la primera — solo puede bajar scores u
   agregar observaciones, nunca subirlos.
 
+### La revisión profunda corre aparte y te avisa
+
+Cerebro ahora invoca la skill `silia-review-pr` de verdad: tres lentes con
+tool-loop que leen el árbol, corren tus suites y pueden mutar código para
+comprobar que un test atrapa lo que dice atrapar. Eso tarda entre **6 y 20
+minutos** — medido: 370 s en el PR 313 — contra el techo de **480 s que esta
+cadena aplica dos veces**, con `SIGKILL`. Esperarlo no sería lento: perdería el
+trabajo entero justo antes de que termine.
+
+Por eso `/revisar` desde el chat o desde el celular devuelve **en segundos** la
+parte determinista (CI, conflictos, huérfanos, línea base) más un `job_id`, y
+deja el revisor corriendo en un proceso desacoplado que sobrevive a ese timeout.
+
+El resultado llega por tres vías, y ninguna depende de que sigas esperando:
+
+- **El comentario en el PR**, que la skill publica sola. Es la entrega principal.
+- **Slack**, cuando termina. Es la única notificación que llega sola: Termux abre
+  su request HTTP y se va, no hay canal de push hacia el teléfono.
+- **`/revisar-estado <job-id>`** en el chat, o `pr-estado <job-id>` en Termux.
+
+Si el PR avanzó mientras el trabajo esperaba, no se revisa: sería un review sobre
+código viejo. Y un trabajo ya terminado no se re-ejecuta — un reintento pagaría
+20 minutos de suscripción para volver a publicar lo mismo.
+
 **`/revisar` sirve para revisar los PRs de otras personas.** De ahí salen sus
 límites, que son deliberados:
 

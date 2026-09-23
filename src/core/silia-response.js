@@ -244,6 +244,75 @@ function formatRevisarMergeResult(result) {
 }
 
 /**
+ * La cola de un /revisar asincrono: que hacer ahora y como pedir el resto.
+ *
+ * Se agrega al reporte de /revisar cuando quedo un trabajo corriendo. El
+ * revisor con herramientas tarda entre 6 y 20 minutos contra un techo de
+ * 480s que se aplica dos veces en la cadena del tunel, asi que la parte
+ * profunda NO viene en esta respuesta -- y decirlo es la mitad del trabajo:
+ * un reporte que se lee completo cuando falta lo mas caro es peor que uno
+ * que avisa.
+ */
+function formatRevisarPendiente(result) {
+  if (!result || !result.job_id || result.job_estado !== 'en_curso') return '';
+  const lines = [
+    '',
+    `⏳ La revisión profunda sigue corriendo. Job: ${result.job_id}`,
+    'Tarda entre 6 y 20 minutos. Cuando termine publica su review en el PR y avisa por Slack.',
+    `Para consultarla: /revisar-estado ${result.job_id}`,
+  ];
+  if (result.revisor_lanzado && result.revisor_lanzado.ok === false) {
+    // El proceso desacoplado no arranco: el job quedaria en_curso para
+    // siempre y nadie sabria por que. Decirlo aca es la unica oportunidad.
+    lines.push(`⚠️ Pero el proceso no se pudo lanzar: ${result.revisor_lanzado.motivo}`);
+    lines.push('La revisión profunda NO va a llegar. Corré /revisar de nuevo desde la PC.');
+  }
+  return lines.join('\n');
+}
+
+/**
+ * /revisar-estado <job-id>: en que quedo un trabajo asincrono.
+ */
+function formatRevisarEstado(result) {
+  if (!result) return 'Sin respuesta de Cerebro.';
+  if (result.error) return `❌ ${result.error}`;
+
+  const revision = result.revision_skill || {};
+  if (result.job_estado === 'en_curso') {
+    return [
+      `⏳ Todavía corriendo. Job: ${result.job_id}`,
+      `PR: ${result.pr_url}`,
+      'Volvé a preguntar en unos minutos.',
+    ].join('\n');
+  }
+  if (result.job_estado === 'fallido') {
+    return [
+      `❌ La revisión profunda NO completó. Job: ${result.job_id}`,
+      `PR: ${result.pr_url}`,
+      `Motivo: ${result.job_detalle || revision.motivo || 'sin detalle'}`,
+      // Nunca se presenta como "revisado y sin hallazgos": un verde que no
+      // revisó nada es indistinguible de uno limpio, y es el peor resultado
+      // que esta herramienta puede producir.
+      'El veredicto de arriba NO incluye su análisis.',
+    ].join('\n');
+  }
+
+  const lines = [
+    `✅ Revisión profunda terminada. Job: ${result.job_id}`,
+    `PR: ${result.pr_url}`,
+    `Publicada como comentario en el PR (${revision.turnos || 0} turnos, ` +
+      `${Math.round(revision.duracion_s || 0)}s, facturado contra ${revision.facturacion || 'desconocido'}).`,
+  ];
+  if (Array.isArray(revision.denegaciones) && revision.denegaciones.length) {
+    lines.push(
+      `⚠️ Hubo denegaciones de permisos: ${revision.denegaciones.join(', ')} — ` +
+      'el veredicto puede ser pobre por falta de herramientas, no por un PR limpio.'
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
  * /cancelar-pr: confirma el cierre + la transicion de Jira si aplica.
  */
 function formatCancelarPrResult(result) {
@@ -712,6 +781,8 @@ module.exports = {
   formatPrReview,
   formatCrearPrResult,
   formatRevisarMergeResult,
+  formatRevisarPendiente,
+  formatRevisarEstado,
   formatJiraTransitions,
   formatCancelarPrResult,
   formatScriptResult,

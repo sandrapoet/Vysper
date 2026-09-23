@@ -269,3 +269,55 @@ else
     echo "$RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("error",""))' 2>/dev/null || echo "$RESPONSE"
     exit 1
 fi
+
+# ── La revision profunda sigue corriendo ──────────────────────────────────
+#
+# Cerebro ahora invoca la skill silia-review-pr con herramientas: lee el
+# arbol, corre las suites y puede mutar codigo. Eso tarda entre 6 y 20
+# minutos, contra el techo de 480s de esta cadena, asi que vuelve un job_id
+# y el trabajo sigue en un proceso desacoplado en la PC.
+#
+# Se ofrece esperar en vez de esperar solo: quien corre esto desde el
+# celular puede querer irse, y el review igual se publica en el PR y avisa
+# por Slack. Rechazar la espera NO cancela nada.
+JOB_ID=$(echo "$RESPONSE" | python3 -c '
+import json, re, sys
+try:
+    texto = json.load(sys.stdin).get("resultado", "")
+except Exception:
+    sys.exit(0)
+encontrado = re.search(r"/revisar-estado (\S+)", texto)
+print(encontrado.group(1) if encontrado else "")
+' 2>/dev/null)
+
+if [ -n "$JOB_ID" ]; then
+    echo ""
+    echo -e "${YELLOW}⏳ La revisión profunda sigue corriendo (job $JOB_ID).${NC}"
+    echo -e "${YELLOW}   Cuando termine publica su review en el PR y avisa por Slack.${NC}"
+    echo ""
+    read -r -p "¿Esperar acá a que termine? (s/N) " ESPERAR
+    if [ "$ESPERAR" = "s" ] || [ "$ESPERAR" = "S" ]; then
+        # 40 intentos x 45s = 30 min, con margen sobre los 20 del peor caso
+        # medido. Cada consulta es una lectura de SQLite: no cuesta nada.
+        for _ in $(seq 1 40); do
+            sleep 45
+            ESTADO_RESPONSE=$(enviar_comando "/revisar-estado $JOB_ID" 60)
+            ESTADO_TEXTO=$(echo "$ESTADO_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("resultado",""))' 2>/dev/null)
+            case "$ESTADO_TEXTO" in
+                *"Todavía corriendo"*) echo -n "." ;;
+                "") echo -n "?" ;;
+                *)
+                    echo ""
+                    echo -e "${BLUE}───────────────────────────────────────────────────────${NC}"
+                    echo "$ESTADO_TEXTO"
+                    echo -e "${BLUE}───────────────────────────────────────────────────────${NC}"
+                    exit 0
+                    ;;
+            esac
+        done
+        echo ""
+        echo -e "${YELLOW}Sigue corriendo después de 30 min. Consultá con:${NC} pr-estado $JOB_ID"
+    else
+        echo -e "${BLUE}Consultá cuando quieras con:${NC} pr-estado $JOB_ID"
+    fi
+fi

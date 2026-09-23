@@ -678,3 +678,68 @@ describe('formatRevisarMergeResult - tickets huerfanos', () => {
     expect(out).toContain('PR mergeado:');
   });
 });
+
+describe('El revisor asincrono en el chat', () => {
+  const { formatRevisarPendiente, formatRevisarEstado } = require('../src/core/silia-response');
+
+  test('un reporte con trabajo pendiente dice que falta lo mas caro', () => {
+    // Un reporte que se lee completo cuando todavia falta la revision
+    // profunda es peor que uno que avisa.
+    const texto = formatRevisarPendiente({ job_id: 'abc123', job_estado: 'en_curso' });
+
+    expect(texto).toContain('sigue corriendo');
+    expect(texto).toContain('abc123');
+    expect(texto).toContain('/revisar-estado abc123');
+  });
+
+  test('sin trabajo pendiente no agrega nada', () => {
+    expect(formatRevisarPendiente({ status: 'APPROVED' })).toBe('');
+    expect(formatRevisarPendiente(null)).toBe('');
+  });
+
+  test('si el proceso desacoplado no arranco, lo dice: el job quedaria colgado', () => {
+    const texto = formatRevisarPendiente({
+      job_id: 'abc', job_estado: 'en_curso',
+      revisor_lanzado: { ok: false, motivo: 'no se pudo abrir el log' },
+    });
+
+    expect(texto).toContain('no se pudo lanzar');
+    expect(texto).toContain('NO va a llegar');
+  });
+
+  test('un job terminado reporta turnos, duracion y contra que cuenta se facturo', () => {
+    const texto = formatRevisarEstado({
+      job_id: 'abc', job_estado: 'terminado', pr_url: 'https://github.com/o/r/pull/1',
+      revision_skill: { turnos: 9, duracion_s: 370.4, facturacion: 'claude.ai', denegaciones: [] },
+    });
+
+    expect(texto).toContain('terminada');
+    expect(texto).toContain('9 turnos');
+    expect(texto).toContain('370s');
+    expect(texto).toContain('claude.ai');
+  });
+
+  test('un job fallido nunca se presenta como una revision limpia', () => {
+    // Un verde que no reviso nada es indistinguible de uno limpio, y es el
+    // peor resultado que esta herramienta puede producir.
+    const texto = formatRevisarEstado({
+      job_id: 'abc', job_estado: 'fallido', pr_url: 'https://github.com/o/r/pull/1',
+      job_detalle: 'usage limit reached', revision_skill: {},
+    });
+
+    expect(texto).toContain('NO completó');
+    expect(texto).toContain('usage limit reached');
+    expect(texto).toContain('NO incluye su análisis');
+  });
+
+  test('las denegaciones de permisos se avisan en un job que si termino', () => {
+    const texto = formatRevisarEstado({
+      job_id: 'abc', job_estado: 'terminado', pr_url: 'u',
+      revision_skill: { turnos: 3, duracion_s: 10, facturacion: 'claude.ai', denegaciones: ['Bash: git log'] },
+    });
+
+    expect(texto).toContain('denegaciones de permisos');
+    expect(texto).toContain('Bash: git log');
+    expect(texto).toContain('no por un PR limpio');
+  });
+});

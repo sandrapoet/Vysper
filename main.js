@@ -60,6 +60,8 @@ const {
   formatPrReview,
   formatCrearPrResult,
   formatRevisarMergeResult,
+  formatRevisarPendiente,
+  formatRevisarEstado,
   formatCancelarPrResult,
   formatScriptResult,
   formatMergeResult,
@@ -6610,7 +6612,10 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         logger.warn('No se pudo guardar el reporte de /revisar en apoyos/', { error: error.message });
       }
 
-      const text = formatPrReview(result);
+      // La cola del asincrono va PEGADA al reporte, no en otro mensaje: un
+      // reporte que se lee completo cuando todavia falta lo mas caro es peor
+      // que uno que avisa. Vacio cuando no quedo nada corriendo.
+      const text = `${formatPrReview(result)}${formatRevisarPendiente(result)}`;
 
       if (result.slack_message) {
         clipboard.writeText(result.slack_message);
@@ -7060,8 +7065,17 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     logger.info('Comando passthrough recibido', { cli, args });
 
     try {
-      const result = await this.cerebroService.runPassthrough([cli, ...args]);
-      const texto = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+      // revisar-estado lleva su propio runner porque necesita aceptar los
+      // exit codes 1 y 2: "todavia en curso" (2) no es un fallo del comando,
+      // es la respuesta normal mientras el revisor trabaja, y tratarla como
+      // error perderia el payload que explica cuanto falta.
+      const esEstado = cli === 'revisar-estado';
+      const result = esEstado
+        ? await this.cerebroService.runRevisarEstado(args[0])
+        : await this.cerebroService.runPassthrough([cli, ...args]);
+      const texto = esEstado
+        ? formatRevisarEstado(result)
+        : (typeof result === 'string' ? result : JSON.stringify(result, null, 2));
       this.emitSiliaResult(texto, { ...metadata, siliaCommand: cli, error: Boolean(result && result.error) });
     } catch (error) {
       const friendlyMessage = error instanceof CerebroError

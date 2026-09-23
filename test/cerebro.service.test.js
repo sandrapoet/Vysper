@@ -292,7 +292,7 @@ describe('CerebroService', () => {
     await promise;
     expect(spawnFn).toHaveBeenCalledWith(
       expect.any(String),
-      ['-m', 'cerebro.cli', 'revisar', 'https://github.com/org/repo/pull/1', '--persona', 'silia'],
+      ['-m', 'cerebro.cli', 'revisar', 'https://github.com/org/repo/pull/1', '--async', '--persona', 'silia'],
       expect.any(Object)
     );
   });
@@ -309,7 +309,7 @@ describe('CerebroService', () => {
     await promise;
     expect(spawnFn).toHaveBeenCalledWith(
       expect.any(String),
-      ['-m', 'cerebro.cli', 'revisar', 'https://github.com/org/repo/pull/1', '--basico', '--persona', 'silia'],
+      ['-m', 'cerebro.cli', 'revisar', 'https://github.com/org/repo/pull/1', '--basico', '--async', '--persona', 'silia'],
       expect.any(Object)
     );
   });
@@ -326,7 +326,7 @@ describe('CerebroService', () => {
     await promise;
     expect(spawnFn).toHaveBeenCalledWith(
       expect.any(String),
-      ['-m', 'cerebro.cli', 'revisar', 'https://github.com/org/repo/pull/1', '--security', '--diablo', '--persona', 'silia'],
+      ['-m', 'cerebro.cli', 'revisar', 'https://github.com/org/repo/pull/1', '--security', '--diablo', '--async', '--persona', 'silia'],
       expect.any(Object)
     );
   });
@@ -624,5 +624,61 @@ describe('CerebroService', () => {
     child.emit('close', 2);
 
     await expect(promise).rejects.toBeInstanceOf(CerebroError);
+  });
+});
+
+describe('CerebroService: el revisor asincrono', () => {
+  test('runRevisar pide --async por defecto: el revisor tarda mas que el timeout', async () => {
+    // El revisor con herramientas tarda 6-20 min (medido: 370s en el PR
+    // 313) contra un techo de 480s que se aplica DOS veces en la cadena del
+    // tunel y que mata con SIGKILL. Esperarlo aqui no es lento: es perder el
+    // trabajo entero justo antes de que termine.
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runRevisar('https://github.com/org/repo/pull/1');
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ job_id: 'abc' })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn.mock.calls[0][1]).toContain('--async');
+  });
+
+  test('runRevisar deja pedir el modo sincrono explicitamente, para la PC', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runRevisar('https://github.com/org/repo/pull/1', { async: false });
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ status: 'APPROVED' })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn.mock.calls[0][1]).not.toContain('--async');
+  });
+
+  test('runRevisarEstado acepta el exit 2: "en curso" no es un fallo del comando', async () => {
+    // Tratarlo como error perderia el payload que explica cuanto falta, que
+    // es justo lo unico que el celular queria saber.
+    const child = makeFakeChild();
+    const service = new CerebroService({ spawnFn: () => child, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runRevisarEstado('abc');
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ job_id: 'abc', job_estado: 'en_curso' })));
+    child.emit('close', 2);
+
+    await expect(promise).resolves.toEqual({ job_id: 'abc', job_estado: 'en_curso' });
+  });
+
+  test('runRevisarEstado tambien acepta el exit 1: un job fallido trae su motivo', async () => {
+    const child = makeFakeChild();
+    const service = new CerebroService({ spawnFn: () => child, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runRevisarEstado('abc');
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ job_estado: 'fallido', job_detalle: 'usage limit' })));
+    child.emit('close', 1);
+
+    await expect(promise).resolves.toEqual({ job_estado: 'fallido', job_detalle: 'usage limit' });
   });
 });

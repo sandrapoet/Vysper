@@ -596,6 +596,11 @@ function parseCrearTicketCommand(text) {
  */
 const PASSTHROUGH_COMMANDS = {
   'auditar-bump': { minArgs: 1, ejemplo: '/auditar-bump <url-pr>' },
+  // Lee una fila de SQLite y no escribe nada: es como el celular pregunta
+  // por un /revisar que dejo corriendo. Sin el, un trabajo de 6-20 minutos
+  // no tendria forma de entregarse -- Termux abre su request y se va, y no
+  // hay canal de push hacia el telefono.
+  'revisar-estado': { minArgs: 1, ejemplo: '/revisar-estado <job-id>' },
   'estado-llm': { minArgs: 0, ejemplo: '/estado-llm' },
   'preflight-promocion': { minArgs: 1, ejemplo: '/preflight-promocion AGE-245' },
   'hoy-historial': { minArgs: 1, ejemplo: '/hoy-historial <dominio>' },

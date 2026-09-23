@@ -93,13 +93,36 @@ class CerebroService {
    * auditoria completa como default hay dos llamadas al LLM por corrida, asi
    * que el margen viejo ya no alcanzaba.
    */
-  runRevisar(url, { mode = 'silia', diablo = false, force = false, persona = 'silia', timeoutMs = 480000 } = {}) {
+  runRevisar(url, { mode = 'silia', diablo = false, force = false, persona = 'silia', timeoutMs = 480000, async: asincrono = true } = {}) {
     const args = ['revisar', url];
     if (mode && mode !== 'silia') args.push(`--${mode}`);
     if (diablo) args.push('--diablo');
     if (force) args.push('--force');
+    // ASINCRONO POR DEFECTO. Cerebro ahora invoca la skill silia-review-pr
+    // con herramientas: tres lentes que leen el arbol, corren las suites y
+    // pueden mutar codigo. Eso tarda entre 6 y 20 minutos -- medido: 370s
+    // en el PR 313 -- contra un techo de 480s que se aplica DOS VECES en
+    // esta cadena (main.js y aca) y que mata con SIGKILL. Esperarlo aqui no
+    // es lento: es perder el trabajo entero justo antes de que termine.
+    //
+    // Con --async el CLI devuelve en segundos la parte determinista (CI,
+    // conflictos, huerfanos, linea base) mas un job_id, y deja el revisor
+    // corriendo en un proceso desacoplado que sobrevive a este timeout.
+    if (asincrono) args.push('--async');
     args.push('--persona', persona);
     return this._runCli(args, { timeoutMs });
+  }
+
+  /**
+   * El estado de un /revisar --async. Es lo que consulta el celular cuando
+   * vuelve a preguntar por su job_id.
+   *
+   * okExitCodes incluye el 2 porque "todavia en curso" NO es un fallo del
+   * comando: es la respuesta normal mientras el revisor trabaja, y tratarla
+   * como error perderia el payload que explica cuanto falta.
+   */
+  runRevisarEstado(jobId) {
+    return this._runCli(['revisar-estado', jobId], { okExitCodes: [1, 2] });
   }
 
   /**

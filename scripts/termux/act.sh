@@ -9,6 +9,7 @@
 #   sube   -> upload-audio.sh   (sube un audio ya grabado y genera la minuta)
 #   pr     -> revisar-pr.sh     (corre /modo silia + /revisar sobre un PR)
 #   apr    -> aprobar-pr.sh     (/aprobar-pr: merge gate + confirmacion)
+#   pr-estado -> revisar-estado.sh (en que quedo una revision profunda que sigue corriendo)
 #   act    -> este mismo script (se actualiza solo)
 #
 # Cada archivo se baja a un temporal y solo se mueve al destino si la
@@ -31,7 +32,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # nombre_remoto:nombre_local
-ATAJOS="upload-audio.sh:sube revisar-pr.sh:pr aprobar-pr.sh:apr act.sh:act"
+ATAJOS="upload-audio.sh:sube revisar-pr.sh:pr revisar-estado.sh:pr-estado aprobar-pr.sh:apr act.sh:act"
 
 echo -e "${BLUE}🔄 Actualizando atajos desde $SERVER${NC}"
 
@@ -121,4 +122,4 @@ if ! command -v sube >/dev/null 2>&1; then
     exit 0
 fi
 
-echo -e "${GREEN}✅ Listos:${NC} escribe ${BLUE}sube${NC} para subir un audio, ${BLUE}pr${NC} para revisar un PR, ${BLUE}apr${NC} para aprobarlo"
+echo -e "${GREEN}✅ Listos:${NC} ${BLUE}sube${NC} un audio, ${BLUE}pr${NC} revisa un PR, ${BLUE}pr-estado${NC} consulta una revision en curso, ${BLUE}apr${NC} aprueba"
