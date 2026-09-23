@@ -1188,27 +1188,32 @@ haya bloqueado o no.
   intenta refutar el veredicto de la primera — solo puede bajar scores u
   agregar observaciones, nunca subirlos.
 
-**El comentario se publica en GitHub siempre** (`APROBADO`,
-`APROBACIÓN CONDICIONADA` o `BLOQUEADO*`), no solo en el caso condicionado —
-así el equipo ve la leyenda de la decisión en el PR aunque no esté siguiendo
-el chat de Vysper. Es un markdown limpio y profesional
+**`/revisar` sirve para revisar los PRs de otras personas.** De ahí salen sus
+límites, que son deliberados:
+
+- **La aprobación la decide solo el CI** (≥ 90% de los checks terminados en
+  verde). Un conflicto de merge, una matriz de documentación incompleta o un
+  hallazgo `blocker` **no retienen la aprobación**: se miden, se publican en
+  el comentario y se avisan por Slack, pero no vetan. Un conflicto aparece
+  porque la rama base avanzó, no por el código que estás revisando.
+- **No toca Jira.** Ni sub-tareas, ni transiciones — el ticket es de otra
+  persona. Los cambios de estado aplican a PRs propios y van por otro lado.
+- **No manda un review de aprobación a GitHub.** En `Silia-mx/silia` el
+  ruleset `pr-review` exige dos aprobaciones y una de Cerebro contaría para
+  la protección de rama. Para aprobar de verdad está `/aprobar-pr`, que es
+  explícito.
+
+**El comentario se publica en GitHub siempre**, sea cual sea el veredicto —
+es LA entrega del comando, y así el equipo la ve en el PR aunque no esté
+siguiendo el chat de Vysper. Es un markdown limpio y profesional
 (`## Revisión Ejecutiva del PR #N`, decisión, resumen de validación con el %
-de checks de CI, próximos pasos), **deliberadamente distinto del reporte
-que ves en el chat de Vysper**: nunca lleva los separadores ASCII ni los
-recordatorios de comandos internos ("corre /revisar --merge", etc.) que sí
-tiene el reporte de Vysper. Lo mismo aplica al comentario que se publica al
-mergear con `--merge`. Si el resultado es `APROBACIÓN CONDICIONADA`, además
-crea automáticamente una sub-tarea de Jira ("Atender observaciones PR #N",
-con vencimiento a +24h) bajo el ticket referenciado — esto sí es automático,
-no requiere confirmación. Si el resultado es `APROBADO`, `/revisar` también
-envía el **GitHub Review real** (`POST /pulls/{n}/reviews`, `event=APPROVE`
-— el mismo que un click en "Approve" desde la UI de GitHub), no solo el
-comentario de texto: eso es lo que cuenta para el gate de "reviews
-requeridos" del repo. Si `GITHUB_RW_TOKEN` no está configurado o GitHub
-rechaza el approve (por ejemplo, el autor del PR es la misma cuenta del
-token — GitHub no permite auto-aprobarse), el reporte del chat lo avisa
-explícitamente y sugiere correr `/aprobar-pr` para intentarlo de nuevo; el
-análisis y el comentario ya publicados no se pierden por esto. Si el PR es
+de checks de CI, próximos pasos) que además lleva una línea fija aclarando
+que la decisión depende solo del CI — para que un «APROBADO» con
+observaciones debajo no se lea como una contradicción. Es
+**deliberadamente distinto del reporte que ves en el chat de Vysper**: nunca
+lleva los separadores ASCII ni los recordatorios de comandos internos
+("corre /revisar --merge", etc.). Lo mismo aplica al comentario que se
+publica al mergear con `--merge`. Si el PR es
 tuyo (`PR_REVIEW_OWNER_GITHUB_LOGIN`), el reporte del chat (no el comentario
 del PR) incluye además una firma (`sha256(reporte + sha + timestamp)`) como
 evidencia de integridad.
@@ -1245,23 +1250,24 @@ rebote, por la cola de stderr, y enmarcado como un fallo del comando.
 Encontrado en vivo en el PR 272: la transición a `Done` falló, quedó solo en
 una línea de log intermedia, y el JSON decía `{"merged": true}`.
 
-La re-evaluación de un PR
-`CONDITIONAL_APPROVED` también es así: solo ocurre cuando volvés a correr
-`/revisar` sobre la misma URL (no hay polling en segundo plano). Si el sha
-cambió, re-evalúa únicamente las observaciones pendientes, no la matriz
-completa.
+La re-evaluación de un PR que quedó con observaciones también es así: solo
+ocurre cuando volvés a correr `/revisar` sobre la misma URL (no hay polling
+en segundo plano). Si el sha cambió, re-evalúa únicamente las observaciones
+pendientes, no la matriz completa.
 
 **Si el sha no cambió, el caché ya no te devuelve el veredicto entero.**
 Cubre solo la capa cara —los hallazgos del LLM, que dependen del *diff*— y
 los gates de **CI y conflictos se reevalúan siempre**, porque su evidencia
 depende del *tiempo*: el mismo commit pasa de "cero checks" a "seis en
-verde", y un PR bloqueado por conflictos se vuelve mergeable cuando alguien
-más mergea — sin que cambie un byte. Antes quedaban pegados al sha: correr
-`/revisar` justo después de pushear (lo natural) dejaba un `BLOQUEADO` que
-solo se destrababa con `--force`, y el mensaje te empujaba a subir un commit
-vacío. Hoy no hace falta `--force` para eso; el campo `cached` del payload
-significa "se reusó la capa LLM", no "no se evaluó nada", y un veredicto que
-**cambió** sí se vuelve a comentar en el PR.
+verde", y un PR que hoy choca contra `develop` ayer no lo hacía — sin que
+cambie un byte. Antes quedaban pegados al sha: correr `/revisar` justo
+después de pushear (lo natural) dejaba un `BLOQUEADO` que solo se destrababa
+con `--force`, y el mensaje te empujaba a subir un commit vacío. Hoy no hace
+falta `--force` para eso; el campo `cached` del payload significa "se reusó
+la capa LLM", no "no se evaluó nada". Se vuelve a comentar en el PR cuando
+cambió el veredicto **o cuando apareció un conflicto que antes no estaba** —
+ese tercer término hace falta desde que el conflicto dejó de mover el
+veredicto: sin él, el aviso no llegaría nunca.
 
 El reporte completo se guarda en `apoyos/revision-pr-<numero>.md`, y Cerebro
 además genera un resumen en texto plano (sintaxis mrkdwn de Slack:
@@ -1270,10 +1276,16 @@ además genera un resumen en texto plano (sintaxis mrkdwn de Slack:
 canal normal, el JSON se ve crudo y feo — Block Kit solo se renderiza vía la
 API de Slack o el Workflow Builder.)
 
-Si el resultado es `APPROVED` ese resumen se queda solo en el portapapeles
-(no hay nada que explicarle a nadie). Si es `CONDITIONAL_APPROVED` o
-`BLOCKED_CONFLICTS`, Cerebro además lo **publica automáticamente** en el
-canal de Slack `SLACK_DEFAULT_CHANNEL` (`.env` de Cerebro) — necesario
+Cuando no hay nada que explicarle a nadie, ese resumen se queda solo en el
+portapapeles. Cuando sí lo hay —el PR no se aprobó, **o** choca contra su
+rama base, **o** tiene hallazgos `blocker`/`major`, **o** quedaron
+observaciones pendientes— Cerebro además lo **publica automáticamente** en el
+canal de Slack `SLACK_DEFAULT_CHANNEL` (`.env` de Cerebro).
+
+La condición era «no es `APPROVED`» y dejó de alcanzar cuando la aprobación
+pasó a depender solo del CI: hoy un PR aprobado puede traer conflictos o un
+blocker, y ese es justo el caso que nadie va a ir a buscar si el mensaje no
+lo dice. Publicar es necesario
 porque copiar al portapapeles solo sirve si corriste `/revisar` en la PC:
 corriéndolo desde el celular por `/comando` (ver más abajo), el
 portapapeles al que escribe Vysper es el de la PC, no el del celular, así
