@@ -170,4 +170,86 @@ function puedeSerPregunta(texto) {
   return { candidato: true, motivo: null };
 }
 
-module.exports = { puedeSerPregunta, MIN_CARACTERES };
+/**
+ * Etapa 2 del detector (modelo rapido, una llamada).
+ *
+ * Solo corre sobre lo que la etapa 1 dejo pasar -- sin eso, cada fragmento
+ * de dictado costaria una llamada al modelo, incluido "ok" y "ajá".
+ *
+ * Recibe el candidato (el ultimo fragmento) mas los 2 fragmentos anteriores,
+ * porque una pregunta real puede partirse entre dos fragmentos de dictado
+ * ("y un endpoint" / "para ver eso?"). `preguntar(texto)` es inyectado -- en
+ * produccion llama a processTextWithSecondaryTextModel (main.js, Task 8);
+ * aca solo se le exige la forma: recibe un string y devuelve (o promete)
+ * `{esPregunta, preguntaNormalizada}`.
+ *
+ * Un fallo del clasificador (timeout, JSON invalido, lo que sea) NUNCA puede
+ * romper el dictado en vivo: se atrapa y se responde "no es pregunta" en vez
+ * de propagar la excepcion.
+ *
+ * @param {string[]} fragmentos - transcripcion reciente, en orden; el ultimo es el candidato.
+ * @param {(texto: string) => Promise<{esPregunta: boolean, preguntaNormalizada: string|null}>} preguntar
+ * @returns {Promise<{esPregunta: boolean, preguntaNormalizada: string|null, motivo: string|null}>}
+ */
+async function detectarPregunta(fragmentos, preguntar) {
+  const lista = Array.isArray(fragmentos) ? fragmentos : [];
+  const candidato = lista[lista.length - 1];
+
+  const { candidato: esCandidato, motivo } = puedeSerPregunta(candidato);
+  if (!esCandidato) {
+    return { esPregunta: false, preguntaNormalizada: null, motivo };
+  }
+
+  const previos = lista.slice(Math.max(0, lista.length - 3), lista.length - 1);
+  const texto = [...previos, candidato].join('\n');
+
+  try {
+    const resultado = await preguntar(texto);
+    if (!resultado || !resultado.esPregunta) {
+      return { esPregunta: false, preguntaNormalizada: null, motivo: 'el-modelo-descarto' };
+    }
+    return {
+      esPregunta: true,
+      preguntaNormalizada: resultado.preguntaNormalizada,
+      motivo: null
+    };
+  } catch (error) {
+    return {
+      esPregunta: false,
+      preguntaNormalizada: null,
+      motivo: `fallo del clasificador: ${error.message}`
+    };
+  }
+}
+
+const MAX_DEDUP = 3;
+
+/**
+ * Evita relanzar la misma consulta cuando el dictado la parte y la repite
+ * (la etapa 2 la normaliza distinto cada vez que se corta distinto). Solo
+ * recuerda las MAX_DEDUP mas recientes -- no hace falta mas: una asesoria
+ * en vivo no vuelve sobre un tema de hace 10 preguntas con la misma
+ * redaccion exacta, y guardar todo el historial no aporta nada mas.
+ */
+class Deduplicador {
+  constructor() {
+    this.recientes = [];
+  }
+
+  _normalizar(pregunta) {
+    return stripAccents(String(pregunta || '').trim().toLowerCase()).replace(/\s+/g, ' ');
+  }
+
+  yaConsultada(pregunta) {
+    return this.recientes.includes(this._normalizar(pregunta));
+  }
+
+  registrar(pregunta) {
+    this.recientes.push(this._normalizar(pregunta));
+    if (this.recientes.length > MAX_DEDUP) {
+      this.recientes = this.recientes.slice(-MAX_DEDUP);
+    }
+  }
+}
+
+module.exports = { puedeSerPregunta, detectarPregunta, Deduplicador, MIN_CARACTERES, MAX_DEDUP };
