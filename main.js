@@ -76,6 +76,7 @@ const {
 } = require("./src/core/silia-response");
 const { routeSystemDesignText, SYSTEM_DESIGN_PERSONA } = require("./src/core/cerebro-query-router");
 const { parseKeymapKeysyms, planTypedPaste, batchRuns } = require("./src/core/paste-keysyms");
+const { herramientasWaylandRequeridas, evaluarWtype } = require("./src/core/typing-tool-probe");
 
 const { execFile, execSync, spawnSync, spawn } = require('child_process');
 const fs = require('fs');
@@ -275,13 +276,55 @@ function resolveExecutable(names, envVarName = '') {
   return names[0];
 }
 
+/**
+ * `required[0]` era la herramienta de escritura por convencion, pero en
+ * Wayland+GNOME la lista ya no la incluye (no existe una que sirva), y
+ * cuando si existe hay que comprobar que el compositor la acepte antes de
+ * darla por buena. Devuelve `false` -- no una herramienta rota -- cuando no
+ * hay forma de teclear, para que el pegado degrade al portapapeles EN VOZ
+ * ALTA en vez de fallar mudo.
+ */
+function seleccionarHerramientaDeEscritura(required, isWayland) {
+  const escritura = required.find((t) => t.bin === 'wtype' || t.bin === 'xdotool');
+
+  if (!escritura) {
+    if (isWayland) {
+      logger.warn(
+        'Sin herramienta de escritura en esta sesion Wayland: el compositor no soporta ' +
+        'el protocolo de teclado virtual. El pegado automatico (Ctrl+1) no esta disponible; ' +
+        'el texto se deja en el portapapeles para pegarlo con Ctrl+V.'
+      );
+    }
+    return false;
+  }
+
+  if (escritura.bin === 'wtype') {
+    const { usable, motivo } = evaluarWtype((bin, args) =>
+      spawnSync(bin, args, { encoding: 'utf8' })
+    );
+    if (!usable) {
+      logger.warn(
+        `wtype esta instalado pero este compositor no lo acepta (${motivo}). ` +
+        'El pegado automatico (Ctrl+1) no esta disponible; el texto se deja en el ' +
+        'portapapeles para pegarlo con Ctrl+V.'
+      );
+      return false;
+    }
+  }
+
+  return escritura.bin;
+}
+
 async function ensureLinuxTools() {
   const isWayland = !!process.env.WAYLAND_DISPLAY || process.env.XDG_SESSION_TYPE === 'wayland';
 
   // { bin: binario para `which`, pkg: nombre del paquete apt }
+  // En Wayland la lista depende del compositor: GNOME no implementa
+  // virtual-keyboard-unstable-v1, asi que pedir (e instalar con sudo) wtype
+  // ahi es gastar la contrasena del usuario en algo que no puede funcionar.
+  // Ver el post-mortem en src/core/typing-tool-probe.js.
   const required = isWayland
-    ? [{ bin: 'wtype',   pkg: 'wtype'       },   // escritura
-       { bin: 'wl-paste', pkg: 'wl-clipboard' }]  // copia PRIMARY
+    ? herramientasWaylandRequeridas(process.env)
     : [{ bin: 'xdotool', pkg: 'xdotool'     },   // escritura
        { bin: 'xclip',   pkg: 'xclip'       },   // copia PRIMARY
        // Lee el keymap activo para el pegado tecleado (ver getKeymapKeysyms).
@@ -291,8 +334,8 @@ async function ensureLinuxTools() {
   const missing = required.filter(t => !isAvailable(t.bin));
 
   if (missing.length === 0) {
-    typingTool = required[0].bin;
-    logger.info(`Herramientas Linux listas: ${required.map(t => t.bin).join(', ')}`);
+    typingTool = seleccionarHerramientaDeEscritura(required, isWayland);
+    logger.info(`Herramientas Linux listas: ${required.map(t => t.bin).join(', ')}`, { typingTool });
     return;
   }
 
@@ -312,7 +355,7 @@ async function ensureLinuxTools() {
 
   if (!password) {
     logger.warn(`Instalación cancelada. Ejecuta manualmente: sudo apt install ${missingPkgs.join(' ')}`);
-    typingTool = isAvailable(required[0].bin) ? required[0].bin : false;
+    typingTool = seleccionarHerramientaDeEscritura(required, isWayland);
     return;
   }
 
@@ -322,12 +365,11 @@ async function ensureLinuxTools() {
   });
 
   if (result.status === 0) {
-    typingTool = required[0].bin;
     logger.info(`Instalados correctamente: ${missingPkgs.join(', ')}`);
   } else {
     logger.warn(`No se pudo instalar: ${missingPkgs.join(', ')}`, { stderr: result.stderr });
-    typingTool = isAvailable(required[0].bin) ? required[0].bin : false;
   }
+  typingTool = seleccionarHerramientaDeEscritura(required, isWayland);
 }
 
 async function ensureTypingTool() {
