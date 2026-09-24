@@ -45,4 +45,13 @@ describe('AsesoriaSession', () => {
     s.agregarFragmento(null);
     expect(s.contexto().transcripcion).toBe('');
   });
+
+  test('fragmentosRecientes(0) no devuelve todo el historial (M1)', () => {
+    // slice(-0) es slice(0): devuelve TODO el arreglo, no nada. La Tarea 8
+    // llama fragmentosRecientes(3) pero un 0 (o negativo) por error de
+    // llamador no puede filtrar la transcripcion entera a Cerebro.
+    const s = new AsesoriaSession();
+    ['a', 'b', 'c'].forEach((f) => s.agregarFragmento(f));
+    expect(s.fragmentosRecientes(0)).toEqual([]);
+  });
 });

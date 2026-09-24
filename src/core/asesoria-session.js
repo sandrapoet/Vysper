@@ -38,6 +38,10 @@ class AsesoriaSession {
   }
 
   fragmentosRecientes(n) {
+    // slice(-0) es slice(0): devuelve TODO el arreglo, no nada. Sin esta
+    // guarda, un 0 (o negativo) por error del llamador filtraria de vuelta
+    // la transcripcion entera hacia donde se esperaba solo los ultimos n.
+    if (!Number.isFinite(n) || n <= 0) return [];
     return this.fragmentos.slice(-n);
   }
 
