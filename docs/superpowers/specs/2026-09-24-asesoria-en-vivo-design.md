@@ -75,11 +75,21 @@ un cliente, que es justo el momento en que no se puede pensar en la herramienta.
 ### D3 — Doble respuesta: preliminar rápida, verificada después
 
 Una respuesta fundamentada tarda ~30s. En una reunión en vivo eso es silencio frente
-al cliente. Se responde en ~3s con lo que ya se tiene en memoria (marcado
-**preliminar**) y se reemplaza cuando Cerebro termina (marcado **verificada**).
+al cliente.
 
-**Riesgo asumido:** que se lea en voz alta una respuesta preliminar que luego
-resulte falsa. Se mitiga con marcado visual inequívoco, nunca sutil.
+La preliminar es una **respuesta real**, no un aviso de progreso. El modelo rápido
+recibe la transcripción y el hilo de la conversación y responde la pregunta con eso;
+la ida al LLM es de segundos y no debe alentarse con nada. Un "estoy trabajando en
+esto" no sirve: frente al cliente no se puede decir eso, y la mitad del valor de la
+asesora está en tener algo sustantivo que decir de inmediato.
+
+Cuando Cerebro termina, su respuesta **aterriza** la preliminar: la reemplaza con los
+datos reales de Jira/GitHub/Notion/RAG, con tickets, archivos y citas. La preliminar
+da la forma de la respuesta; la verificada le pone los hechos.
+
+**Riesgo asumido:** que se lea en voz alta una preliminar que luego resulte falsa. Se
+mitiga con marcado inequívoco de las dos (preliminar / verificada), nunca sutil — pero
+la preliminar se muestra siempre y completa, no se esconde.
 
 ### D4 — La transcripción es contenido NO confiable
 
@@ -142,8 +152,10 @@ fragmento. En `system-design`:
 
 1. Todo fragmento alimenta la sesión (siempre).
 2. El detector decide si además es una consulta.
-3. Si lo es: respuesta preliminar (~3s, `processTextWithSecondaryTextModel`) y, en
-   paralelo, `runDiagnose` con el contexto. La verificada reemplaza a la preliminar.
+3. Si lo es: respuesta preliminar (~3s, `processTextWithSecondaryTextModel`, con la
+   transcripción y el hilo como contexto — una respuesta sustantiva, no un aviso) y,
+   en paralelo, `runDiagnose` con el mismo contexto. La verificada reemplaza a la
+   preliminar cuando llega.
 
 El texto escrito a mano (no dictado) sigue yendo siempre a Cerebro: escribir es un
 acto deliberado, y ahí no hay ruido que filtrar.
