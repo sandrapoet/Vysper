@@ -681,4 +681,31 @@ describe('CerebroService: el revisor asincrono', () => {
 
     await expect(promise).resolves.toEqual({ job_estado: 'fallido', job_detalle: 'usage limit' });
   });
+
+  test('pasa --contexto-file al CLI cuando se le da', async () => {
+    const child = makeFakeChild();
+    let argv = null;
+    const service = new CerebroService({
+      spawnFn: (bin, args) => { argv = args; return child; },
+      logger: silentLogger(),
+      timeoutMs: 5000
+    });
+    const p = service.runDiagnose('x', { persona: 'arquitecto', contextoFile: '/tmp/ctx.json' });
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ summary: 'ok', citations: [] })));
+    child.emit('close', 0);
+    await p;
+    expect(argv).toContain('--contexto-file');
+    expect(argv).toContain('/tmp/ctx.json');
+  });
+
+  test('sin contextoFile no agrega la bandera', async () => {
+    const child = makeFakeChild();
+    let argv = null;
+    const service = new CerebroService({ spawnFn: (b, a) => { argv = a; return child; }, logger: silentLogger(), timeoutMs: 5000 });
+    const p = service.runDiagnose('x');
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ summary: 'ok', citations: [] })));
+    child.emit('close', 0);
+    await p;
+    expect(argv).not.toContain('--contexto-file');
+  });
 });

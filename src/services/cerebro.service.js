@@ -52,10 +52,11 @@ class CerebroService {
    * instead of the LLM guessing which source/breadth to search, which is
    * what produced false "no encontrado" reports when left unscoped.
    */
-  runDiagnose(problem, { persona = 'silia', tool = null } = {}) {
+  runDiagnose(problem, { persona = 'silia', tool = null, contextoFile = null } = {}) {
     const args = ['diagnose', problem];
     if (persona) args.push('--persona', persona);
     if (tool) args.push('--tool', tool);
+    if (contextoFile) args.push('--contexto-file', contextoFile);
     return this._runCli(args);
   }
 
