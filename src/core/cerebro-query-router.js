@@ -1,9 +1,21 @@
 /**
- * Pure text classification for routing "system-design" mode messages to
- * Cerebro (the Silia backend) when they read as operational/status
- * questions rather than pure architecture/design discussion.
- * Kept free of Electron so it can be unit-tested directly.
+ * Routing decisions for "system-design" mode messages.
+ *
+ * Hasta 2026-09-23 este modulo decidia SI una consulta merecia llegar a
+ * Cerebro, con una lista de palabras clave operativas. La lista nunca podia
+ * estar completa: ese dia, 11 consultas seguidas en system-design se
+ * respondieron con el LLM generico y ninguna llego a Cerebro -- incluida
+ * "como se implementaron los guardrails en el nuevo motor de agente", que un
+ * minuto despues, en modo silia, si consulto Jira/GitHub/Notion y respondio
+ * con el ticket real. Ahora TODA consulta va a Cerebro (igual que silia) y
+ * lo que cambia es el lente: la persona "arquitecto" en vez de "silia".
+ *
+ * classifyOperationalQuery sobrevive, pero ya no es un porton: solo
+ * distingue los pedidos de ACCION, que siguen pidiendo confirmacion antes
+ * de correr. Kept free of Electron so it can be unit-tested directly.
  */
+
+const { isUnknownSlashCommand } = require('./silia-commands');
 
 const OPERATIONAL_KEYWORDS = [
   'incidente', 'incidentes',
@@ -85,4 +97,72 @@ function isExplicitCerebroCommand(text) {
   return EXPLICIT_COMMAND_PATTERN.test(typeof text === 'string' ? text.trim() : '');
 }
 
-module.exports = { classifyOperationalQuery, isExplicitCerebroCommand };
+/**
+ * La persona de Cerebro con la que responde el modo system-design. No es
+ * "silia" (lente de gestion de proyecto) sino "arquitecto" (lente de
+ * diseno: mecanismo real, propuesta de implementacion, trade-offs), ver
+ * ARQUITECTO_SYSTEM_PROMPT en Cerebro.
+ */
+const SYSTEM_DESIGN_PERSONA = 'arquitecto';
+
+/**
+ * Longitud minima para tratar un texto como consulta. El dictado continuo
+ * de una sesion parte la voz en fragmentos ("ok", "sí", "ajá") y sin este
+ * piso cada uno lanzaria un subproceso de Cerebro de ~30s.
+ */
+const MIN_QUERY_LENGTH = 3;
+
+/**
+ * Decide que hacer con texto libre escrito o dictado en modo
+ * "system-design".
+ *
+ * Un "/comando-que-no-existe" NO se manda a Cerebro: mandarlo a diagnose
+ * lo devolveria redactado por el modelo con pinta de resultado, que es
+ * peor que un error visible (mismo criterio que processTextWithSilia).
+ * El guardia vive aca dentro, y no como dependencia inyectada, para que
+ * ningun llamador pueda olvidarse de pasarlo.
+ *
+ * @param {string} text
+ * @returns {{toCerebro: boolean, persona: string|null, requiresConfirmation: boolean, matchedKeyword: string|null, reason: string|null}}
+ */
+function routeSystemDesignText(text) {
+  const no = (reason) => ({
+    toCerebro: false,
+    persona: null,
+    requiresConfirmation: false,
+    matchedKeyword: null,
+    reason
+  });
+
+  if (typeof text !== 'string' || !text.trim()) {
+    return no('empty');
+  }
+
+  const trimmed = text.trim();
+
+  if (trimmed.length < MIN_QUERY_LENGTH) {
+    return no('too-short');
+  }
+
+  if (isUnknownSlashCommand(trimmed)) {
+    return no('unknown-command');
+  }
+
+  const classification = classifyOperationalQuery(trimmed);
+
+  return {
+    toCerebro: true,
+    persona: SYSTEM_DESIGN_PERSONA,
+    requiresConfirmation: classification.isAction,
+    matchedKeyword: classification.matchedKeyword,
+    reason: null
+  };
+}
+
+module.exports = {
+  classifyOperationalQuery,
+  isExplicitCerebroCommand,
+  routeSystemDesignText,
+  SYSTEM_DESIGN_PERSONA,
+  MIN_QUERY_LENGTH
+};

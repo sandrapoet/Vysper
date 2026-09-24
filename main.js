@@ -74,7 +74,7 @@ const {
   formatCrearTicketPreview,
   formatCrearTicketResult
 } = require("./src/core/silia-response");
-const { classifyOperationalQuery, isExplicitCerebroCommand } = require("./src/core/cerebro-query-router");
+const { routeSystemDesignText, SYSTEM_DESIGN_PERSONA } = require("./src/core/cerebro-query-router");
 const { parseKeymapKeysyms, planTypedPaste, batchRuns } = require("./src/core/paste-keysyms");
 
 const { execFile, execSync, spawnSync, spawn } = require('child_process');
@@ -6250,12 +6250,28 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
         return;
       }
 
+      // system-design manda TODA consulta a Cerebro, igual que silia: lo
+      // que cambia es la persona (arquitecto vs silia), no si hay datos
+      // detras. El porton por palabras clave que vivia aca dejaba afuera
+      // justo las preguntas por las que existe el modo -- ver el
+      // post-mortem en cerebro-query-router.js.
       if (normalizedSkill === 'system-design') {
-        const classification = classifyOperationalQuery(text);
-        if (classification.isOperational || isExplicitCerebroCommand(text)) {
-          await this.processTextWithSystemDesignCerebro(text, classification);
+        const ruteo = routeSystemDesignText(text);
+        if (ruteo.toCerebro) {
+          await this.processTextWithSystemDesignCerebro(text, ruteo);
           return;
         }
+        if (ruteo.reason === 'unknown-command') {
+          this.emitSiliaResult(
+            `No reconozco el comando "${normalizeSlashCommandName(text)}". No se consultó a Cerebro: ` +
+            'si existe en su CLI pero no aquí, córrelo desde la terminal. Para una pregunta en ' +
+            'lenguaje libre, escríbela sin la barra inicial.',
+            { skill: 'system-design', source: 'cerebro', error: true }
+          );
+          return;
+        }
+        // 'empty'/'too-short': un fragmento de dictado, no una consulta.
+        // Cae al flujo generico de abajo, que ya sabe descartarlo.
       }
 
       // Validate input text
@@ -8131,7 +8147,12 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     }
   }
 
-  async processTextWithSystemDesignCerebro(text, classification = {}) {
+  /**
+   * `ruteo` viene de routeSystemDesignText: ya decidio que esto va a
+   * Cerebro, y solo queda saber si es un pedido de accion (que se
+   * confirma antes de correr) o una consulta.
+   */
+  async processTextWithSystemDesignCerebro(text, ruteo = {}) {
     const cerebroMetadata = { skill: 'system-design', source: 'cerebro' };
 
     try {
@@ -8152,7 +8173,7 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
       return;
     }
 
-    if (classification.isAction) {
+    if (ruteo.requiresConfirmation) {
       const choice = await dialog.showMessageBox({
         type: 'question',
         buttons: ['Consultar', 'Cancelar'],
@@ -8173,7 +8194,9 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     }
 
     try {
-      const result = await this.cerebroService.runDiagnose(text);
+      // La persona es la diferencia entre este modo y silia: mismo
+      // grounding (Jira/GitHub/Notion/RAG), lente de arquitectura.
+      const result = await this.cerebroService.runDiagnose(text, { persona: SYSTEM_DESIGN_PERSONA });
       this.emitSiliaResult(formatCerebroFinalAnswer(result), cerebroMetadata);
     } catch (error) {
       const friendlyMessage = error instanceof CerebroError

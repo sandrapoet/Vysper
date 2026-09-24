@@ -1876,13 +1876,11 @@ sigue haciendo falta para reindexar.
 ```
 /actualizaRag
 ```
-Para esta consulta específica te conviene silia, no system-design.
-
-Motivo concreto: en modo silia, todo texto libre pasa sin condición por cerebroService.runDiagnose(text) (processTextWithSilia en main.js), que dispara el ReAct loop de Cerebro con acceso real a Jira/GitHub/RAG — así que "¿AGE-212 va en agent o silia-mx/skills?" se respondería consultando el ticket AGE-212 real en Jira, buscando module.manifest.yaml en los repos, y trayendo contexto de decisiones pasadas del RAG. Es literalmente el caso de uso que describe el README para silia: "¿por qué se decidió usar X en el módulo Y?".
-
-En system-design, en cambio, tu pregunta solo se enruta a Cerebro si classifyOperationalQuery() la detecta como operativa (palabras como "incidente", "pipeline", "sprint", "propuesta"...) o si usás un comando explícito (/silia daily, /optimizaciones, /propuesta, /incidente). Tu pregunta no contiene ninguna de esas — así que hoy caería en el asistente de arquitectura genérico, sin grounding real en el ticket ni en los repos, y probablemente te daría una opinión razonada pero no verificada contra el AC real de AGE-212.
-
-Recomendación: pegá el mensaje tal cual en silia.
+Desde el 2026-09-23, `silia` y `system-design` tienen el mismo grounding:
+ambos mandan **todo** texto libre a `cerebroService.runDiagnose(text)`, que
+dispara el ReAct loop de Cerebro con acceso real a Jira/GitHub/Notion/RAG.
+Lo que cambia entre los dos es la **persona** con la que Cerebro sintetiza,
+no si hay datos detrás. Ver [Modo System Design](#modo-system-design).
 
 **Configuración** (`.env`): `VYSPER_SANDRA_RAG_DIR` (default
 `/media/san/Miscosas6/Desarrollo/SandraRagCreAI`) y
@@ -1986,6 +1984,81 @@ el modo optimización con `Alt+O`, funcionan sin importar el skill activo —
 curso — el sidecar de audio la mantiene viva independientemente del skill
 activo, y el pipeline de transcripción/diarización/minuta no vuelve a
 consultar el skill una vez que la sesión arrancó.
+
+## Modo System Design (arquitecto)
+
+**Activación:** Settings → Active Skill → `System Design`, o `Ctrl+↑/↓`.
+
+Igual que [Silia](#modo-silia-líder-de-proyecto-interino), el modo
+**System Design** delega **todo** texto libre a Cerebro
+(`cerebroService.runDiagnose`), con el mismo acceso a Jira, GitHub, Notion
+y el RAG de transcripciones. La diferencia es la **persona** con la que
+Cerebro sintetiza: `arquitecto` en vez de `silia`
+(`ARQUITECTO_SYSTEM_PROMPT` en
+[`cerebro/prompts/system_prompt.py`](/media/san/Miscosas6/Desarrollo/Cerebro/cerebro/prompts/system_prompt.py)).
+
+| | `silia` | `system-design` |
+|---|---|---|
+| Fuentes | Jira, GitHub, Notion, RAG | las mismas |
+| Persona de Cerebro | `silia` | `arquitecto` |
+| Lente | estado de proyecto, cronograma, riesgos, quién tiene qué | mecanismo real del código, decisiones de diseño, propuestas de implementación |
+
+**Para qué sirve.** Dos tipos de pedido, y el arquitecto responde distinto
+a cada uno:
+
+1. **Dudas sobre algo que ya existe** — "¿cómo se implementaron los
+   guardrails en el nuevo motor de agente?", "¿qué es AGE-369 y qué
+   debería lograrse al implementarla?", "¿qué impide avanzar con
+   AGE-466?". Responde con el mecanismo real: qué módulos y archivos
+   participan, qué ticket lo introdujo, qué decisión previa lo explica.
+
+2. **Propuestas de implementación** — "necesito una propuesta para que el
+   motor exponga los pasos que ejecuta un agente". Responde con estado
+   actual (qué existe ya, con citas), propuesta (componentes a tocar o
+   crear), **trade-offs** (al menos una alternativa descartada y por qué),
+   riesgos y dependencias, y los pasos en `action_items`.
+
+La regla que define a esta persona: **no inventar arquitectura**. Si tras
+buscar no encontró el dato, lo dice ("no encontré X en
+Jira/GitHub/Notion/RAG") en vez de rellenar el hueco con lo que suele
+hacerse en la industria.
+
+### Por qué ya no hay un filtro de palabras clave
+
+Hasta el 2026-09-23, `system-design` sólo consultaba a Cerebro si el texto
+matcheaba una lista de palabras operativas (`incidente`, `pipeline`,
+`sprint`, `deploy`...) — todo lo demás caía en un asistente de
+arquitectura genérico, sin datos.
+
+Esa lista nunca podía estar completa. El 2026-09-23, **11 consultas
+seguidas** en `system-design` se respondieron con el LLM genérico y
+**ninguna** llegó a Cerebro
+(`~/.Vysper/logs/application-2026-09-23.log`). Entre ellas, *"como se
+implementaron los guardrails en el nuevo motor de agente"*: un minuto
+después, la **misma frase** en modo `silia` sí consultó Jira/GitHub/Notion
+y respondió con el ticket real. La lista no tenía `ticket`, ni el patrón
+`AGE-###`, ni `motor de agentes`, ni `propuesta de implementación`.
+
+Ampliar la lista sólo hubiera movido el borde: ahora toda consulta va a
+Cerebro. `classifyOperationalQuery()` sobrevive en
+[`src/core/cerebro-query-router.js`](src/core/cerebro-query-router.js),
+pero ya no es un portón — sólo distingue los pedidos de **acción**
+(`optimiza`, `ejecuta`, `despliega`...), que siguen pidiendo confirmación
+explícita en un diálogo antes de correr.
+
+**Lo que sigue sin llegar a Cerebro** (`routeSystemDesignText`):
+
+- texto vacío, o fragmentos de dictado de menos de 3 caracteres ("ok",
+  "sí") — sin este piso, cada fragmento de una sesión Alt+S lanzaría un
+  subproceso de Cerebro de ~30 s;
+- un comando con barra que no existe (`/comando-que-no-existe`) — se
+  responde con un error visible, en vez de mandarlo a `diagnose` y
+  devolver una respuesta redactada por el modelo con pinta de resultado.
+
+**Comandos:** todos los de Silia (`/silia daily`, `/hoy`, `/detalle`,
+`/jira`, `/notion`, `/github`, `/revisar`, `/crear-pr`,
+`/actualizar-jira`, `/incidente`...) funcionan igual acá, más
+[`/optimiza`](#optimiza), que es exclusivo de este modo.
 
 ## 🤝 Contributing
 
