@@ -1,0 +1,57 @@
+#!/usr/bin/env node
+/**
+ * Ejecutable que invocan los atajos de GNOME: `vysper-accion <accion>`.
+ *
+ * Lee la credencial de ~/.Vysper/accion-token (0600, la escribe Vysper al
+ * arrancar) y hace POST a /accion/<accion> en el servidor local. Si algo
+ * falla lo imprime en stderr y sale con codigo distinto de 0, para poder
+ * diagnosticarlo corriendolo a mano desde una terminal.
+ *
+ * Tiene que funcionar con el node del sistema (GNOME no carga nvm), asi que
+ * usa solo http de la biblioteca estandar.
+ */
+
+const fs = require('fs');
+const os = require('os');
+const http = require('http');
+const { construirPeticion, leerToken, rutasAccion } = require('../src/core/accion-http');
+
+function fallar(mensaje, codigo = 1) {
+  process.stderr.write(`vysper-accion: ${mensaje}\n`);
+  process.exit(codigo);
+}
+
+function leerPuerto(ruta) {
+  if (process.env.VYSPER_HTTP_PORT) return Number(process.env.VYSPER_HTTP_PORT);
+  try {
+    return Number(fs.readFileSync(ruta, 'utf8').trim()) || 8080;
+  } catch (_error) {
+    return 8080;
+  }
+}
+
+const accion = process.argv[2];
+if (!accion) fallar('uso: vysper-accion <accion>', 2);
+
+const rutas = rutasAccion(os.homedir());
+const { token, error } = leerToken(rutas.token, (r) => fs.readFileSync(r, 'utf8'), (r) => fs.statSync(r));
+if (!token) fallar(`${error}. Arranca Vysper para que lo genere.`);
+
+let peticion;
+try {
+  peticion = construirPeticion(accion, { puerto: leerPuerto(rutas.puerto), token });
+} catch (e) {
+  fallar(e.message, 2);
+}
+
+const req = http.request(peticion.url, { method: peticion.method, headers: peticion.headers, timeout: 5000 }, (res) => {
+  let cuerpo = '';
+  res.on('data', (trozo) => { cuerpo += trozo; });
+  res.on('end', () => {
+    if (res.statusCode >= 200 && res.statusCode < 300) process.exit(0);
+    fallar(`el servidor respondio ${res.statusCode}: ${cuerpo.trim()}`);
+  });
+});
+req.on('timeout', () => req.destroy(new Error('sin respuesta en 5s')));
+req.on('error', (e) => fallar(`no se pudo hablar con Vysper en ${peticion.url}: ${e.message}`));
+req.end();
