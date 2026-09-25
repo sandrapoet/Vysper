@@ -77,6 +77,11 @@ const {
 const { routeSystemDesignText, SYSTEM_DESIGN_PERSONA } = require("./src/core/cerebro-query-router");
 const { parseKeymapKeysyms, planTypedPaste, batchRuns } = require("./src/core/paste-keysyms");
 const { herramientasWaylandRequeridas, evaluarWtype } = require("./src/core/typing-tool-probe");
+const { elegirBackends } = require("./src/core/backend-selector");
+const { ACCIONES } = require("./src/core/acciones");
+const { rutasAccion } = require("./src/core/accion-http");
+const { GnomeKeybindingsService } = require("./src/services/gnome-keybindings.service");
+const { PortalRemoteDesktop, crearClienteHelper } = require("./src/services/portal-remote-desktop.service");
 
 const { execFile, execSync, spawnSync, spawn } = require('child_process');
 const fs = require('fs');
@@ -85,6 +90,12 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 
 let typingTool = null; // null = pendiente, false = no disponible, string = herramienta lista
+// Bajo GNOME/Wayland, cuando typingTool === 'portal': escribe por el portal
+// RemoteDesktop (ver src/services/portal-remote-desktop.service.js).
+let portalEscritura = null;
+// Por que no hay pegado automatico, para decirselo al usuario en vez de
+// fallar mudo. Lo llena ensureTypingTool.
+let motivoSinEscritura = 'no hay herramienta de escritura disponible';
 
 // Pegado tipeado por "cubetazos": acota el trabajo por rafaga para no saturar la CPU
 // ni la app destino con texto grande. Ajustables si hace falta.
@@ -372,18 +383,75 @@ async function ensureLinuxTools() {
   typingTool = seleccionarHerramientaDeEscritura(required, isWayland);
 }
 
+function portalTieneInterfaz(interfaz) {
+  const r = spawnSync('gdbus', [
+    'introspect', '--session', '--dest', 'org.freedesktop.portal.Desktop',
+    '--object-path', '/org/freedesktop/portal/desktop'
+  ], { encoding: 'utf8', timeout: 3000 });
+  return r.status === 0 && String(r.stdout).includes(`interface ${interfaz} `);
+}
+
+// Sondas reales de src/core/backend-selector.js: cada una prueba la
+// capacidad, no la supone.
+const SONDAS_BACKEND = {
+  portalRemoteDesktop: () => portalTieneInterfaz('org.freedesktop.portal.RemoteDesktop'),
+  portalGlobalShortcuts: () => portalTieneInterfaz('org.freedesktop.portal.GlobalShortcuts'),
+  gsettings: () => spawnSync('gsettings', ['get', 'org.gnome.settings-daemon.plugins.media-keys', 'custom-keybindings'],
+    { encoding: 'utf8', timeout: 3000 }).status === 0,
+  xdotool: () => isAvailable('xdotool'),
+  wtype: () => isAvailable('wtype') && evaluarWtype((bin, args) => spawnSync(bin, args, { encoding: 'utf8' })).usable
+};
+
 async function ensureTypingTool() {
+  const backends = elegirBackends(process.env, SONDAS_BACKEND);
+  logger.info(`Backend de atajos: ${backends.atajos.nombre} (${backends.atajos.motivo})`);
+
   if (process.platform === 'darwin') {
     typingTool = 'osascript';
     logger.info('Herramienta lista: osascript (macOS built-in)');
-    return;
+    return backends;
   }
   if (process.platform === 'win32') {
     typingTool = 'powershell';
     logger.info('Herramienta lista: powershell (Windows built-in)');
-    return;
+    return backends;
   }
   await ensureLinuxTools();
+
+  // Una herramienta que ya funciona se respeta (xdotool en X11, wtype en
+  // sway o Hyprland). El portal entra solo donde no habia ninguna: GNOME.
+  if (!typingTool && backends.escritura.nombre === 'PortalRemoteDesktop') {
+    portalEscritura = new PortalRemoteDesktop({
+      dbus: crearClienteHelper({ logger }),
+      almacen: almacenTestigoPortal(),
+      logger
+    });
+    typingTool = 'portal';
+  } else if (!typingTool) {
+    motivoSinEscritura = backends.escritura.motivo;
+  }
+  logger.info(`Backend de escritura: ${typingTool || 'ClipboardOnly'} (${typingTool === 'portal' || !typingTool ? backends.escritura.motivo : 'herramienta probada al arrancar'})`);
+  return backends;
+}
+
+// El testigo de restauracion del portal no es una credencial de Vysper, pero
+// si deja escribir teclas sin preguntar: mismos permisos 0600 que el token.
+function almacenTestigoPortal() {
+  const ruta = path.join(os.homedir(), '.Vysper', 'portal-remote-desktop-token');
+  return {
+    leer: () => {
+      try { return fs.readFileSync(ruta, 'utf8').trim() || null; } catch (_error) { return null; }
+    },
+    guardar: (testigo) => {
+      try {
+        fs.mkdirSync(path.dirname(ruta), { recursive: true });
+        fs.writeFileSync(ruta, testigo, { mode: 0o600 });
+        fs.chmodSync(ruta, 0o600);
+      } catch (error) {
+        logger.warn('No se pudo guardar el permiso del portal RemoteDesktop', { error: error.message });
+      }
+    }
+  };
 }
 
 function wait(ms) {
@@ -553,10 +621,27 @@ async function typeTextWithXdotool(text, onProgress) {
   return await typeTextWithXdotoolType(text, onProgress);
 }
 
+// Toda degradacion se anuncia en el chat: el fallo del 2026-09-24 fue mudo de
+// principio a fin.
+function avisarSinPegadoAutomatico(motivo) {
+  signalUserNotice(`Pegado automatico no disponible (${motivo}). El texto esta en el portapapeles: pegalo con Ctrl+V.`);
+}
+
 async function typeTextAtCursor(text, onProgress) {
   if (!typingTool) {
-    signalShortcut('Ctrl+Shift+V recibido, pero no hay herramienta de escritura disponible');
+    avisarSinPegadoAutomatico(motivoSinEscritura);
     return false;
+  }
+
+  if (typingTool === 'portal') {
+    await wait(140);
+    const r = await portalEscritura.typeText(text);
+    if (!r.ok) {
+      clipboard.writeText(text);
+      avisarSinPegadoAutomatico(r.motivo);
+      return false;
+    }
+    return true;
   }
 
   if (typingTool === 'osascript') {
@@ -595,11 +680,20 @@ async function typeTextAtCursor(text, onProgress) {
 
 async function pasteClipboardAtCursor() {
   if (!typingTool) {
-    signalShortcut('Pegado solicitado, pero no hay herramienta de escritura disponible');
+    avisarSinPegadoAutomatico(motivoSinEscritura);
     return false;
   }
 
   await wait(140);
+
+  if (typingTool === 'portal') {
+    const r = await portalEscritura.sendKeys('ctrl+v');
+    if (!r.ok) {
+      avisarSinPegadoAutomatico(r.motivo);
+      return false;
+    }
+    return true;
+  }
 
   if (typingTool === 'osascript') {
     spawn('osascript', ['-e', 'tell application "System Events" to keystroke "v" using command down']);
@@ -882,7 +976,7 @@ class ApplicationController {
       await new Promise((resolve) => setTimeout(resolve, 200));
 
       await windowManager.initializeWindows();
-      await ensureTypingTool();
+      this.backends = await ensureTypingTool();
       this.setupGlobalShortcuts();
 
       // Initialize default stealth mode with terminal icon
@@ -900,6 +994,7 @@ class ApplicationController {
       // Servidor HTTP remoto (audio desde el celular via Tailscale). Solo se
       // activa si vys.sh se corrio con --server (ver stt/http_server.js).
       this.remoteAudioServer = startRemoteAudioServer(this, speechService);
+      this.activarAtajosGnome();
     } catch (error) {
       logger.error("Application initialization failed", {
         error: error.message,
@@ -1113,21 +1208,121 @@ class ApplicationController {
       "CommandOrControl+Right": () => this.handleRightArrow(),
     };
 
+    // /accion/<nombre> dispara estos mismos manejadores (ver dispararAtajo).
+    this.atajosElectron = shortcuts;
+
+    // Con GnomeKeybinding, las teclas de ACCIONES las atrapa GNOME: registrarlas
+    // tambien en Electron seria pedir un conflicto por la misma tecla.
+    const cubiertosPorGnome = this.usaAtajosGnome()
+      ? new Set(Object.values(ACCIONES).map((a) => a.atajo))
+      : new Set();
+
     Object.entries(shortcuts).forEach(([accelerator, handler]) => {
-      try {
-        const success = globalShortcut.register(accelerator, handler);
-        const status = success ? "registrado" : "FALLO al registrar";
-        console.log(`[Vysper shortcut] ${accelerator}: ${status}`);
-        logger.info("Global shortcut registration", { accelerator, success });
-        if (!success) logger.warn("Global shortcut failed to register", { accelerator });
-      } catch (error) {
-        console.log(`[Vysper shortcut] ${accelerator}: ERROR ${error.message}`);
-        logger.warn("Global shortcut threw during registration", {
-          accelerator,
-          error: error.message
-        });
-      }
+      if (cubiertosPorGnome.has(accelerator)) return;
+      this.registrarAtajoElectron(accelerator, handler);
     });
+  }
+
+  registrarAtajoElectron(accelerator, handler) {
+    try {
+      const success = globalShortcut.register(accelerator, handler);
+      const status = success ? "registrado" : "FALLO al registrar";
+      console.log(`[Vysper shortcut] ${accelerator}: ${status}`);
+      logger.info("Global shortcut registration", { accelerator, success });
+      if (!success) logger.warn("Global shortcut failed to register", { accelerator });
+    } catch (error) {
+      console.log(`[Vysper shortcut] ${accelerator}: ERROR ${error.message}`);
+      logger.warn("Global shortcut threw during registration", {
+        accelerator,
+        error: error.message
+      });
+    }
+  }
+
+  // Los atajos de GNOME llaman a vysper-accion, que habla con el servidor
+  // HTTP: sin servidor (vys.sh sin --server) no hay a quien llamar.
+  usaAtajosGnome() {
+    if (this.backends?.atajos?.nombre !== 'GnomeKeybinding') return false;
+    const servidor = process.env.VYSPER_HTTP_SERVER === '1'
+      && process.env.VYSPER_HTTP_USER && process.env.VYSPER_HTTP_PASSWORD;
+    if (!servidor && !this.avisoSinServidorDado) {
+      this.avisoSinServidorDado = true;
+      signalUserNotice('Atajos globales no disponibles bajo Wayland: arranca Vysper con vys.sh --server. Mientras, los atajos solo funcionan con una ventana de Vysper enfocada.');
+    }
+    return Boolean(servidor);
+  }
+
+  // Dispara el manejador de un acelerador como si la tecla hubiera llegado.
+  async dispararAtajo(accelerator) {
+    const handler = this.atajosElectron?.[accelerator];
+    if (!handler) return false;
+    await handler();
+    return true;
+  }
+
+  activarAtajosGnome() {
+    if (process.platform !== 'linux') return;
+    const servicio = new GnomeKeybindingsService({ logger });
+
+    if (!this.usaAtajosGnome()) {
+      // Atajos de una sesion Wayland anterior (p.ej. Vysper murio sin
+      // desinstalarlos) robarian las teclas a Electron en X11.
+      if (SONDAS_BACKEND.gsettings()) servicio.desinstalar();
+      return;
+    }
+
+    const cubiertos = Object.values(ACCIONES).map((a) => a.atajo);
+    const registrarEnElectron = (aceleradores, motivo) => {
+      if (!aceleradores.length) return;
+      aceleradores.forEach((a) => this.atajosElectron[a] && this.registrarAtajoElectron(a, this.atajosElectron[a]));
+      signalUserNotice(`Atajos ${aceleradores.join(', ')} sin instalar en GNOME (${motivo}): solo funcionan con una ventana de Vysper enfocada.`);
+    };
+
+    const servidor = this.remoteAudioServer;
+    if (!servidor) {
+      registrarEnElectron(cubiertos, 'el servidor HTTP no arranco');
+      return;
+    }
+
+    const alFallar = () => registrarEnElectron(cubiertos, 'el servidor HTTP no pudo escuchar');
+    servidor.once('error', alFallar);
+    servidor.once('listening', () => {
+      servidor.off('error', alFallar);
+      try {
+        this.escribirCredencialAccion(servidor.address().port);
+      } catch (error) {
+        logger.error('No se pudo escribir la credencial de vysper-accion', { error: error.message });
+        registrarEnElectron(cubiertos, `no se pudo escribir ~/.Vysper/accion-token: ${error.message}`);
+        return;
+      }
+
+      const acciones = Object.entries(ACCIONES).map(([nombre, { combo }]) => ({ nombre, combo }));
+      const { instalados, saltados } = servicio.instalar(acciones, path.join(__dirname, 'bin', 'vysper-accion'));
+      this.atajosGnome = servicio;
+
+      // instalar() omite lo que ya estaba instalado tal cual: la verdad es lo
+      // que hay ahora en GNOME, no lo que se escribio en esta corrida.
+      const presentes = new Set(servicio.leerExistentes().map((e) => e.id));
+      const faltan = Object.entries(ACCIONES)
+        .filter(([nombre]) => !presentes.has(`vysper-${nombre}`))
+        .map(([, { atajo }]) => atajo);
+      logger.info('Atajos de GNOME activos', {
+        instaladosAhora: instalados.map((a) => a.id),
+        saltados: saltados.map((s) => `${s.binding} (ocupado por ${s.ocupadoPor})`)
+      });
+      registrarEnElectron(faltan, saltados.length ? 'el combo ya lo usa otro atajo' : 'gsettings fallo');
+    });
+  }
+
+  // vysper-accion lee de aqui la credencial del Basic Auth: nunca va en el
+  // comando del atajo, que se ve en Ajustes y en ps.
+  escribirCredencialAccion(puerto) {
+    const rutas = rutasAccion(os.homedir());
+    fs.mkdirSync(path.dirname(rutas.token), { recursive: true });
+    fs.writeFileSync(rutas.token, `${process.env.VYSPER_HTTP_USER}:${process.env.VYSPER_HTTP_PASSWORD}`, { mode: 0o600 });
+    // writeFileSync no cambia el modo de un archivo que ya existia.
+    fs.chmodSync(rutas.token, 0o600);
+    fs.writeFileSync(rutas.puerto, String(puerto));
   }
 
   setupServiceEventHandlers() {
@@ -8284,6 +8479,10 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
 
   onWillQuit() {
     globalShortcut.unregisterAll();
+    // Instalados en GNOME, seguirian atrapando Alt+S y compania en todas las
+    // aplicaciones con Vysper cerrado.
+    if (this.atajosGnome) this.atajosGnome.desinstalar();
+    if (portalEscritura) portalEscritura.dbus.cerrar();
     speechService.cleanup();
     windowManager.destroyAllWindows();
     if (this.remoteAudioServer) {
