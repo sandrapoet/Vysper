@@ -34,6 +34,7 @@ const { execFile } = require('child_process');
 const express = require('express');
 const multer = require('multer');
 const winston = require('winston');
+const { ejecutarAccion } = require('../src/core/acciones');
 
 const ALLOWED_EXTENSIONS = new Set(['.opus', '.ogg', '.m4a', '.wav']);
 const ALLOWED_COMMANDS = new Set(['minuta', 'transcribir', 'optimizar']);
@@ -273,6 +274,27 @@ function startRemoteAudioServer(controller, speechService) {
       log.error('Comando de texto fallo', { comando: text, error: error.message });
       return res.status(500).json({ ok: false, error: error.message });
     }
+  });
+
+  // ── POST /accion/:nombre: acciones de teclado ───────────────────────────
+  // Bajo Wayland los atajos globales de Electron no enganchan (mutter no
+  // honra los grabs de XWayland), asi que GNOME ejecuta bin/vysper-accion,
+  // que llega aca. /comando no se toca: sigue siendo para comandos de chat.
+  // Solo desde la misma maquina: una accion como "pegar" escribe en la
+  // ventana enfocada, y eso no se dispara desde el celular por Tailscale.
+  app.post('/accion/:nombre', async (req, res) => {
+    const remota = req.socket.remoteAddress || '';
+    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remota)) {
+      log.warn('Accion rechazada: no viene de la maquina local', { nombre: req.params.nombre, ip: remota });
+      return res.status(403).json({ ok: false, error: 'las acciones solo se aceptan desde 127.0.0.1' });
+    }
+    const { status, body } = await ejecutarAccion(controller, req.params.nombre);
+    if (status === 200) {
+      log.info('Accion ejecutada', { nombre: req.params.nombre });
+    } else {
+      log.warn('Accion no ejecutada', { nombre: req.params.nombre, status, error: body.error });
+    }
+    return res.status(status).json(body);
   });
 
   // ── GET /scripts[/:nombre]: descarga de los scripts de Termux ────────────
