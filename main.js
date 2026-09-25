@@ -230,6 +230,24 @@ function signalShortcut(message, meta = {}) {
   logger.info(message, meta);
 }
 
+/**
+ * Lo que se le dice al usuario cuando NO se puede teclear el pegado.
+ *
+ * En Wayland+GNOME no hay herramienta de escritura posible: mutter no
+ * implementa virtual-keyboard-unstable-v1, asi que wtype no puede funcionar
+ * (ver src/core/typing-tool-probe.js). El texto SI queda en el portapapeles
+ * -- se copia antes de intentar teclear -- pero hasta ahora eso no se
+ * decia: el aviso iba por signalShortcut, que solo escribe en consola y
+ * log. La usuaria pulsaba Ctrl+1, no pasaba nada, y no habia forma de
+ * saber que el texto ya estaba listo para un Ctrl+V.
+ */
+function avisarPegadoNoDisponible(atajo) {
+  signalUserNotice(
+    `${atajo}: no puedo escribir en otra aplicacion en esta sesion (Wayland/GNOME no lo permite). ` +
+    'El texto YA esta en tu portapapeles: pegalo con Ctrl+V donde lo necesites.'
+  );
+}
+
 function signalUserNotice(message, meta = {}) {
   signalShortcut(message, meta);
   windowManager.broadcastToAllWindows('clipboard-notice', { text: message });
@@ -558,7 +576,7 @@ async function typeTextWithXdotool(text, onProgress) {
 
 async function typeTextAtCursor(text, onProgress) {
   if (!typingTool) {
-    signalShortcut('Ctrl+Shift+V recibido, pero no hay herramienta de escritura disponible');
+    avisarPegadoNoDisponible('Ctrl+Shift+V');
     return false;
   }
 
@@ -598,7 +616,7 @@ async function typeTextAtCursor(text, onProgress) {
 
 async function pasteClipboardAtCursor() {
   if (!typingTool) {
-    signalShortcut('Pegado solicitado, pero no hay herramienta de escritura disponible');
+    avisarPegadoNoDisponible('El pegado');
     return false;
   }
 
@@ -5839,9 +5857,16 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
           chunks: chunksToPaste.length,
           length: text.length
         });
+      } else {
+        // Sin este aviso el usuario pulsa Ctrl+1 y no ocurre NADA visible,
+        // aunque su transcripcion ya este en el portapapeles.
+        avisarPegadoNoDisponible('Ctrl+1');
       }
     } catch (error) {
-      signalShortcut(`Ctrl+1 fallo al pegar transcripcion de secretaria: ${error.message}`);
+      signalUserNotice(
+        `Ctrl+1 fallo al pegar la transcripcion: ${error.message}. ` +
+        'El texto quedo en tu portapapeles: pegalo con Ctrl+V.'
+      );
     }
   }
 
