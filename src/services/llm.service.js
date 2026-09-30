@@ -759,6 +759,21 @@ class LLMService {
     }
   }
 
+  /**
+   * Gemini a secas, para la asesoria en vivo: sin historial de sesion, sin
+   * RAG y SIN el generateFallbackResponse de processTextWithSkill -- si
+   * falla, falla. Ver src/core/asesoria-modelos.js.
+   */
+  async processTextWithGeminiDirect(prompt, { maxOutputTokens = 2048, temperature = 0.2 } = {}) {
+    if (!this.isInitialized) {
+      throw new Error('Gemini no esta inicializado (falta la API key)');
+    }
+    return this.executeRequest({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { temperature, maxOutputTokens }
+    });
+  }
+
   async processTextWithSecondaryCodingModel(text, activeSkill, sessionMemory = [], programmingLanguage = null) {
     if (this.normalizeSkillName(activeSkill) !== 'programming') {
       return this.processTextWithSkill(text, activeSkill, sessionMemory, programmingLanguage);

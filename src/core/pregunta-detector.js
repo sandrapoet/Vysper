@@ -263,18 +263,24 @@ async function detectarPregunta(fragmentos, preguntar) {
   try {
     const resultado = await preguntar(texto);
     if (!resultado || !resultado.esPregunta) {
-      return { esPregunta: false, preguntaNormalizada: null, motivo: 'el-modelo-descarto' };
+      return { esPregunta: false, preguntaNormalizada: null, motivo: 'el-modelo-descarto', clasificadorFallo: false };
     }
     return {
       esPregunta: true,
       preguntaNormalizada: resultado.preguntaNormalizada,
-      motivo: null
+      motivo: null,
+      clasificadorFallo: false
     };
   } catch (error) {
+    // No rompe el dictado, pero tampoco se hace pasar por un "no es
+    // pregunta": `clasificadorFallo` le deja al llamador avisar. Callarlo
+    // dejaba el modo pasmado, sin respuesta y sin decir por que.
     return {
       esPregunta: false,
       preguntaNormalizada: null,
-      motivo: `fallo del clasificador: ${error.message}`
+      motivo: `fallo del clasificador: ${error.message}`,
+      clasificadorFallo: true,
+      error: error.message
     };
   }
 }

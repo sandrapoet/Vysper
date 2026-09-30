@@ -143,6 +143,22 @@ describe('detectarPregunta (etapa 2)', () => {
     expect(r.motivo).toMatch(/fallo/i);
   });
 
+  test('un clasificador caido se distingue de un "no es pregunta"', async () => {
+    // Visto en vivo el 2026-09-29: las dos cuentas de Anthropic fallaron
+    // (503 y sin credito), el detector devolvio esPregunta:false y el modo
+    // se quedo callado. Sin esta marca el llamador no puede avisar.
+    const caido = await detectarPregunta(
+      ['que son los subagentes en el motor'], async () => { throw new Error('HTTP 503'); }
+    );
+    expect(caido.clasificadorFallo).toBe(true);
+    expect(caido.error).toBe('HTTP 503');
+
+    const descartada = await detectarPregunta(
+      ['que son los subagentes en el motor'], async () => ({ esPregunta: false })
+    );
+    expect(descartada.clasificadorFallo).toBe(false);
+  });
+
   test('una charla social con "?" pasa la etapa 1 pero la etapa 2 la descarta', async () => {
     // Ver la nota junto a SALUDO_CON_SIGNO: la etapa 1 ya no puede rechazar
     // esto (trae "?"), asi que primero se confirma que efectivamente llega

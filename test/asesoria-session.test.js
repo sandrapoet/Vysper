@@ -54,4 +54,37 @@ describe('AsesoriaSession', () => {
     ['a', 'b', 'c'].forEach((f) => s.agregarFragmento(f));
     expect(s.fragmentosRecientes(0)).toEqual([]);
   });
+
+  describe('tieneContextoPrevio', () => {
+    // La preliminar no consulta fuentes: solo vale la pena si hay algo de la
+    // reunion en que apoyarse. Sin eso es una respuesta generica, y se
+    // prefiere esperar a la verificada.
+    test('con solo el fragmento de la pregunta no hay contexto', () => {
+      const s = new AsesoriaSession();
+      s.agregarFragmento('como deberiamos particionar la tabla de eventos');
+      expect(s.tieneContextoPrevio()).toBe(false);
+    });
+
+    test('fragmentos anteriores a la pregunta son contexto', () => {
+      const s = new AsesoriaSession();
+      s.agregarFragmento('estamos migrando los eventos de facturacion a una tabla nueva en postgres');
+      s.agregarFragmento('como deberiamos particionarla');
+      expect(s.tieneContextoPrevio()).toBe(true);
+    });
+
+    test('un saludo previo no cuenta como contexto', () => {
+      const s = new AsesoriaSession();
+      s.agregarFragmento('hola');
+      s.agregarFragmento('como deberiamos particionar la tabla de eventos');
+      expect(s.tieneContextoPrevio()).toBe(false);
+    });
+
+    test('una consulta previa del hilo es contexto', () => {
+      const s = new AsesoriaSession();
+      s.agregarTurno('que base usamos', 'postgres 16');
+      s.agregarFragmento('y como la particionamos');
+      expect(s.tieneContextoPrevio()).toBe(true);
+    });
+  });
 });
+

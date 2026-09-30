@@ -2033,6 +2033,95 @@ buscar no encontró el dato, lo dice ("no encontré X en
 Jira/GitHub/Notion/RAG") en vez de rellenar el hueco con lo que suele
 hacerse en la industria.
 
+### Asesoría en vivo (dictado durante una reunión)
+
+Con `system-design` activo y el dictado corriendo, Vysper escucha la
+reunión y responde **solo** lo que es una pregunta para el equipo. El
+diseño completo está en
+`docs/superpowers/specs/2026-09-24-asesoria-en-vivo-design.md`.
+
+**1. La memoria vive en Vysper, no en Cerebro.** Cerebro es un subproceso
+de un solo tiro y no recuerda nada entre consultas. Antes, cada seguimiento
+("¿y eso cómo se conecta?") llegaba sin contexto y volvía con un "¿a qué te
+refieres?". Ahora `src/core/asesoria-session.js` guarda cada fragmento
+dictado (una ventana de **6000 caracteres**, unos 10 minutos) y las últimas
+**5 preguntas con su respuesta**. Todo eso viaja a Cerebro en cada consulta
+con `diagnose --contexto-file`. La sesión se vacía al salir de
+`system-design` y no sobrevive a un reinicio.
+
+**2. Solo las preguntas llegan a Cerebro.** El dictado trae ruido de
+reconocimiento ("en este maldado", "el empo de crear"). Cada fragmento de
+ruido costaba entre 5 y 48 s de Cerebro y volvía con un rechazo.
+`src/core/pregunta-detector.js` filtra en dos etapas:
+
+- **Etapa 1, gratis y sin modelo:** descarta lo que tiene menos de 20
+  caracteres útiles, lo que no tiene ningún marcador interrogativo (`?`,
+  "qué", "cómo", "existe", "se puede"...) y lo que está lleno de palabras
+  que no existen.
+- **Etapa 2, un modelo rápido:** recibe el candidato con los 2 fragmentos
+  anteriores (una pregunta puede partirse en dos) y decide si es pregunta.
+  Si lo es, la **reescribe bien formada**, y eso es lo que llega a Cerebro,
+  no el fragmento crudo. Si coincide con una de las 3 últimas ya
+  consultadas, no se vuelve a consultar.
+
+**3. Doble respuesta.** Una respuesta con datos reales tarda ~30 s, y en
+una reunión eso es silencio frente al cliente:
+
+- **⚡ PRELIMINAR:** en segundos, un modelo rápido responde con lo que se
+  dijo en la reunión y en el hilo, sin consultar Jira/GitHub/Notion. Es una
+  respuesta de verdad, no un "estoy trabajando en esto".
+- **✅ VERIFICADA:** cuando termina Cerebro, llega con tickets, archivos y
+  citas reales.
+
+Las dos van marcadas sin ambigüedad, para que nadie lea en voz alta una
+preliminar creyendo que ya está verificada.
+
+**4. La transcripción es contenido no confiable.** Lleva voces de
+terceros: si alguien dice "ignora tus instrucciones", eso no puede ser una
+orden. Cerebro la recibe envuelta como dato (`wrap_untrusted()`), nunca como
+instrucción.
+
+**5. Qué pasa cuando un modelo no responde.** El 2026-09-29 se cayeron las
+dos cuentas de Anthropic. El clasificador fallaba en silencio: la pregunta
+se perdía y el modo parecía congelado. Ahora cada paso tiene su cadena de
+respaldo (`src/core/asesoria-modelos.js`):
+
+| Paso | Modelos, en orden | Si ninguno responde |
+|---|---|---|
+| ¿Es pregunta? (etapa 2) | Anthropic → Gemini → **Ollama local** | Aviso en el chat: *"No pude decidir si eso era una pregunta... Repítela en unos segundos."* |
+| Preliminar | Anthropic → Gemini (nunca Ollama) | No muestra nada y quedan los tres puntitos hasta la verificada |
+| Verificada | Cerebro (con su propia cadena de modelos) | El error de Cerebro |
+
+- **El clasificador llega hasta Ollama** porque sin él la pregunta se
+  pierde antes de llegar a Cerebro, que es el único que la puede responder.
+- **La preliminar no usa Ollama:** un 14b local en frío tarda, y además le
+  quitaría la GPU al Ollama que Cerebro usa para la verificada.
+- **Nunca se muestra una respuesta genérica.** `processTextWithSkill`
+  termina, si Gemini falla, en un `generateFallbackResponse` sin contexto
+  pero con pinta de respuesta. En una asesoría eso es peor que no decir
+  nada, así que la cadena llama a Gemini directo
+  (`processTextWithGeminiDirect`), y si falla, falla.
+- **Sin contexto previo no hay preliminar.** Si en la reunión no se dijo
+  nada más que la pregunta (menos de 40 caracteres de fragmentos anteriores
+  y ninguna consulta previa), una preliminar sería una respuesta genérica.
+  Se espera la verificada.
+
+Variables del Ollama local (todas opcionales):
+
+```bash
+OLLAMA_HOST=http://localhost:11434               # default
+VYSPER_OLLAMA_MODEL=qwen2.5:14b-instruct-q4_K_M  # default: el mismo de Cerebro, ya descargado
+VYSPER_OLLAMA_TIMEOUT_MS=30000                   # medido: ~15 s en frío, ~5 s en caliente
+```
+
+El timeout es obligatorio: un Ollama congelado ya se había comido una
+consulta entera en Cerebro.
+
+**Requiere Cerebro con `diagnose --contexto-file`**, que está en la rama
+`feat/asesoria-contexto`. Con Cerebro en otra rama, la verificada falla con
+`No such option: --contexto-file`. Pasó el 2026-09-25, entre las 12:05 y
+las 12:09.
+
 ### Por qué ya no hay un filtro de palabras clave
 
 Hasta el 2026-09-23, `system-design` sólo consultaba a Cerebro si el texto

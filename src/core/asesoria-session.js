@@ -11,6 +11,8 @@
 
 const MAX_TRANSCRIPCION_CHARS = 6000;
 const MAX_TURNOS = 5;
+// Por debajo de esto lo previo es un saludo o un "a ver", no contexto.
+const MIN_CONTEXTO_CHARS = 40;
 
 class AsesoriaSession {
   constructor() {
@@ -45,6 +47,16 @@ class AsesoriaSession {
     return this.fragmentos.slice(-n);
   }
 
+  /**
+   * Si hay algo de la reunion, ademas de la pregunta misma, en que apoyar
+   * una respuesta preliminar: consultas previas del hilo, o fragmentos
+   * anteriores al ultimo (el ultimo es el que trae la pregunta).
+   */
+  tieneContextoPrevio() {
+    if (this.turnos.length > 0) return true;
+    return this.fragmentos.slice(0, -1).join('\n').trim().length >= MIN_CONTEXTO_CHARS;
+  }
+
   contexto() {
     return { transcripcion: this.fragmentos.join('\n'), turnos: [...this.turnos] };
   }
@@ -62,4 +74,4 @@ class AsesoriaSession {
   }
 }
 
-module.exports = { AsesoriaSession, MAX_TRANSCRIPCION_CHARS, MAX_TURNOS };
+module.exports = { AsesoriaSession, MAX_TRANSCRIPCION_CHARS, MAX_TURNOS, MIN_CONTEXTO_CHARS };
