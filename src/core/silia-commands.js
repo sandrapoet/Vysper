@@ -178,12 +178,12 @@ function parseToolScopedCommand(text) {
 // combinacion. Dejo de ser el default (ver parseRevisarCommand) -- ahora
 // /revisar sin flags corre la auditoria completa.
 const REVISAR_DEPTH_FLAGS = ['--basico', '--profundo', '--arq', '--security'];
-const REVISAR_KNOWN_FLAGS = [...REVISAR_DEPTH_FLAGS, '--diablo', '--merge', '--release', '--force'];
+const REVISAR_KNOWN_FLAGS = [...REVISAR_DEPTH_FLAGS, '--diablo', '--merge', '--release', '--force', '--aprobar'];
 
 /**
- * Returns {url, mode, diablo, merge, release, force} if text is
+ * Returns {url, mode, diablo, merge, release, force, aprobar} if text is
  * "/revisar <url> [--basico|--profundo|--arq|--security] [--diablo] [--merge]
- * [--release] [--force]", or {error} if dos modos se combinan o hay un flag
+ * [--release] [--force] [--aprobar]", or {error} if dos modos se combinan o hay un flag
  * desconocido (nunca silencioso). Otherwise null. `mode` is one of
  * 'silia'|'basico'|'profundo'|'arq'|'security'.
  *
@@ -239,6 +239,9 @@ function parseRevisarCommand(text) {
     merge: flags.includes('--merge'),
     release: flags.includes('--release'),
     force: flags.includes('--force'),
+    // Opt-in: Cerebro manda el review APPROVE real a GitHub solo con este
+    // flag y solo con veredicto APROBADO (cuenta como voto de la rama).
+    aprobar: flags.includes('--aprobar'),
   };
 }
 

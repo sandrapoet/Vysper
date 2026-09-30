@@ -297,6 +297,23 @@ describe('CerebroService', () => {
     );
   });
 
+  test('runRevisar passes --aprobar through only when asked', async () => {
+    const child = makeFakeChild();
+    const spawnFn = jest.fn(() => child);
+    const service = new CerebroService({ spawnFn, logger: silentLogger(), timeoutMs: 5000 });
+
+    const promise = service.runRevisar('https://github.com/org/repo/pull/1', { aprobar: true });
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ status: 'APPROVED' })));
+    child.emit('close', 0);
+
+    await promise;
+    expect(spawnFn).toHaveBeenCalledWith(
+      expect.any(String),
+      ['-m', 'cerebro.cli', 'revisar', 'https://github.com/org/repo/pull/1', '--aprobar', '--async', '--persona', 'silia'],
+      expect.any(Object)
+    );
+  });
+
   test('runRevisar passes --basico through: the default mode is silia, so basico needs the flag', async () => {
     const child = makeFakeChild();
     const spawnFn = jest.fn(() => child);

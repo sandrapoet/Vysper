@@ -46,7 +46,7 @@ Comandos de texto (en el chat o por voz):
 - /jira, /notion, /github <consulta>  Acota una consulta libre a esa sola fuente (secretaria, silia, system-design)
 - /silia daily [identificador]  Actividades del último día hábil (Jira/GitHub/Notion/minutas locales) + checkpoint de riesgo abierto (silia, system-design — ver sección "Modo Silia")
 - /silia retro [--dominio <alias>] [sprint_ref], /silia retro [--dominio <alias>] comparar <sprint_a> <sprint_b>  Retrospectiva estructurada de un sprint (Jira Agile API + métricas + Notion/RAG + incidentes del SMC), default "agentes", o diff entre dos retros ya generadas (silia, system-design — ver sección "Modo Silia")
-- /revisar <url-pr> [--basico|--profundo|--arq|--security] [--diablo] [--merge] [--release]  Revisión automatizada de PR: conflictos + CI + matriz de cumplimiento ponderada + checklist de 12 dimensiones con severidades + OpenSpec/Jira (silia, system-design — ver sección "Modo Silia")
+- /revisar <url-pr> [--basico|--profundo|--arq|--security] [--diablo] [--merge] [--release] [--aprobar]  Revisión automatizada de PR: conflictos + CI + matriz de cumplimiento ponderada + checklist de 12 dimensiones con severidades + OpenSpec/Jira (silia, system-design — ver sección "Modo Silia")
 - /crear-ticket --proyecto AGE --resumen "..." [--padre AGE-147] [--sprint "Sprint 6"] [--link "bloquea:AGE-219"] --descripcion <texto>  Levanta un ticket nuevo en Jira desde un hallazgo (silia)
 - /auditar-bump <url-pr>, /estado-llm, /preflight-promocion <ticket>, /hoy-historial <dominio>, /hoy-comparar <dominio>  Comandos de solo lectura, por la ruta genérica (silia)
 - /crear-pr <rama> [--draft|--publish] [--labels a,b,c] [--ticket AGE-123, AGE-124], /cancelar-pr <url-pr>, /aprobar-pr <url-pr> [--revisar] [--merge] [--tag] [--ignorar-checks "a,b"]  Creación/cancelación/aprobación de PRs (silia, system-design — ver sección "Modo Silia"). Desde la terminal, `crear-pr --dry-run` ahora **no escribe nada** — antes creaba el PR igual, ver "Flags de Cerebro que cambiaron de significado"
@@ -1091,7 +1091,7 @@ constancia de por qué se rechazó o pospuso.
 /propuesta 2 posponer revisar despues del sprint
 ```
 
-**`/revisar <url-pr> [--basico|--profundo|--arq|--security] [--diablo] [--merge] [--release]`**
+**`/revisar <url-pr> [--basico|--profundo|--arq|--security] [--diablo] [--merge] [--release] [--aprobar]`**
 — pipeline fijo de revisión de PR: clona el repo por SSH en aislado
 (`git@<PR_REVIEW_GIT_SSH_HOST>:owner/repo.git`, nunca ejecuta código del
 PR) y verifica conflictos de merge contra el branch base real del PR
@@ -1187,6 +1187,16 @@ haya bloqueado o no.
 - **`--diablo`** ("abogado del diablo"): segunda pasada adversarial que
   intenta refutar el veredicto de la primera — solo puede bajar scores u
   agregar observaciones, nunca subirlos.
+- **`--aprobar`**: además del comentario, Cerebro manda el review
+  **APPROVE** real a GitHub — solo si el PR **cumple**: CI verde y ningún
+  hallazgo `blocker` (ni de Cerebro ni del revisor profundo), aunque el sha
+  ya estuviera revisado. Si no puede leer los hallazgos del revisor, no
+  aprueba. Desde Vysper `/revisar` corre en async, así que la aprobación se
+  decide cuando termina el revisor profundo y el resultado llega en el
+  aviso de Slack. En el celular: opción "Aprobar en GitHub si cumple" del
+  menú de `revisar-pr.sh`, o `pr silia:<n> --aprobar`. Sin el flag `/revisar` nunca aprueba: en
+  `Silia-mx/silia` el ruleset `pr-review` exige dos aprobaciones y la de
+  Cerebro cuenta como una, así que ese voto solo se gasta si lo pedís.
 
 ### `/audit`: auditar tu trabajo ANTES de abrir el PR
 

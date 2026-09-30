@@ -10,9 +10,10 @@
 #
 # Tambien admite modo no interactivo (para un widget/atajo de Termux con
 # el texto ya armado), pasando los mismos argumentos de antes:
-#   ./revisar-pr.sh [<alias-repo>:]<numero-pr> [--basico|--profundo|--arq|--security] [--diablo] [--force]
+#   ./revisar-pr.sh [<alias-repo>:]<numero-pr> [--basico|--profundo|--arq|--security] [--diablo] [--force] [--aprobar]
 #   ./revisar-pr.sh agent:42 --profundo
 #   ./revisar-pr.sh https://github.com/Silia-mx/Agent/pull/42
+#   ./revisar-pr.sh silia:2686 --aprobar   # aprueba en GitHub solo si cumple
 #
 # Requisitos:
 #   - Tailscale activo (misma cuenta que la PC).
@@ -179,10 +180,22 @@ else
     [ "$DIABLO_IDX" = "2" ] && DIABLO_FLAG="--diablo" || DIABLO_FLAG=""
     echo ""
 
+    # Aprobar gasta uno de los votos de la proteccion de rama, por eso el
+    # default es No. Con Si, Cerebro aprueba SOLO si cumple (CI verde y sin
+    # blockers); como el revisor profundo corre aparte, la respuesta llega
+    # en el aviso de Slack cuando termina, no en esta pantalla.
+    echo -e "${BOLD}Aprobar en GitHub si cumple (CI verde + sin blockers)?${NC}"
+    echo "  1) No *"
+    echo "  2) Si"
+    APROBAR_IDX=$(leer_opcion "Elige (ENTER = *): " 2 1)
+    [ "$APROBAR_IDX" = "2" ] && APROBAR_FLAG="--aprobar" || APROBAR_FLAG=""
+    echo ""
+
     PR_URL="https://github.com/$REPO/pull/$PR_NUM"
     COMANDO="/revisar $PR_URL"
     [ -n "$MODE_FLAG" ] && COMANDO="$COMANDO $MODE_FLAG"
     [ -n "$DIABLO_FLAG" ] && COMANDO="$COMANDO $DIABLO_FLAG"
+    [ -n "$APROBAR_FLAG" ] && COMANDO="$COMANDO $APROBAR_FLAG"
 fi
 
 echo -e "${YELLOW}Comando:${NC} $COMANDO"

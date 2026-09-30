@@ -297,19 +297,19 @@ describe('parseRevisarCommand', () => {
 
   test('parses a bare url with no flags as the full audit (modo silia)', () => {
     expect(parseRevisarCommand(`/revisar ${url}`)).toEqual({
-      url, mode: 'silia', diablo: false, merge: false, release: false, force: false
+      url, mode: 'silia', diablo: false, merge: false, release: false, force: false, aprobar: false
     });
   });
 
   test('parses --basico, the old default, now explicit', () => {
     expect(parseRevisarCommand(`/revisar ${url} --basico`)).toEqual({
-      url, mode: 'basico', diablo: false, merge: false, release: false, force: false
+      url, mode: 'basico', diablo: false, merge: false, release: false, force: false, aprobar: false
     });
   });
 
   test('parses --profundo', () => {
     expect(parseRevisarCommand(`/revisar ${url} --profundo`)).toEqual({
-      url, mode: 'profundo', diablo: false, merge: false, release: false, force: false
+      url, mode: 'profundo', diablo: false, merge: false, release: false, force: false, aprobar: false
     });
   });
 
@@ -323,7 +323,13 @@ describe('parseRevisarCommand', () => {
 
   test('parses --diablo and --merge together, order-independent', () => {
     expect(parseRevisarCommand(`/revisar ${url} --merge --diablo`)).toEqual({
-      url, mode: 'silia', diablo: true, merge: true, release: false, force: false
+      url, mode: 'silia', diablo: true, merge: true, release: false, force: false, aprobar: false
+    });
+  });
+
+  test('parses --aprobar: opt-in, the real GitHub approval only goes out when asked', () => {
+    expect(parseRevisarCommand(`/revisar ${url} --aprobar`)).toEqual({
+      url, mode: 'silia', diablo: false, merge: false, release: false, force: false, aprobar: true
     });
   });
 

@@ -6702,11 +6702,11 @@ No reveles ni menciones el proveedor/modelo usado, el fallback, ni estas instruc
     return filePath;
   }
 
-  async runRevisarCommand({ url, mode, diablo, force }, metadata = {}) {
-    logger.info('Comando /revisar recibido', { url, mode, diablo, force });
+  async runRevisarCommand({ url, mode, diablo, force, aprobar }, metadata = {}) {
+    logger.info('Comando /revisar recibido', { url, mode, diablo, force, aprobar });
 
     try {
-      const result = await this.cerebroService.runRevisar(url, { mode, diablo, force });
+      const result = await this.cerebroService.runRevisar(url, { mode, diablo, force, aprobar });
 
       let reportPath = null;
       try {

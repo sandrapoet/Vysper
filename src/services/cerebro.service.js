@@ -94,11 +94,12 @@ class CerebroService {
    * auditoria completa como default hay dos llamadas al LLM por corrida, asi
    * que el margen viejo ya no alcanzaba.
    */
-  runRevisar(url, { mode = 'silia', diablo = false, force = false, persona = 'silia', timeoutMs = 480000, async: asincrono = true } = {}) {
+  runRevisar(url, { mode = 'silia', diablo = false, force = false, aprobar = false, persona = 'silia', timeoutMs = 480000, async: asincrono = true } = {}) {
     const args = ['revisar', url];
     if (mode && mode !== 'silia') args.push(`--${mode}`);
     if (diablo) args.push('--diablo');
     if (force) args.push('--force');
+    if (aprobar) args.push('--aprobar');
     // ASINCRONO POR DEFECTO. Cerebro ahora invoca la skill silia-review-pr
     // con herramientas: tres lentes que leen el arbol, corren las suites y
     // pueden mutar codigo. Eso tarda entre 6 y 20 minutos -- medido: 370s
