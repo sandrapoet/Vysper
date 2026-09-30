@@ -336,6 +336,103 @@ of once per accent.
 * Click thorugh screen works only when interaction mode is disabled
 * In **Stealth Mode**, windows are invisible to screen share & mouse.
 
+### Linux con Wayland (GNOME): atajos globales y pegado
+
+Bajo Wayland, GNOME (mutter) no entrega a los clientes XWayland las teclas que
+registran como globales. `globalShortcut.register()` de Electron devuelve `true`
+para los 32 atajos, pero la tecla **solo llega con una ventana de Vysper
+enfocada**. Si están todas ocultas, Alt+S no responde y no hay manera de detener
+una grabación. Pasó el 2026-09-25, con una sesión que grabó 2.5 horas de más.
+Tampoco hay forma de pegar en otra aplicación: `wtype` sale con *"Compositor does
+not support the virtual keyboard protocol"*, y `xdotool` solo llega a ventanas
+XWayland.
+
+Al arrancar, Vysper **prueba** qué funciona (`src/core/backend-selector.js`) y
+deja en el log qué backend eligió y por qué:
+
+| | X11, Windows, macOS | Wayland + GNOME |
+|---|---|---|
+| Atajos globales | Electron, igual que siempre | Atajos personalizados de GNOME (`gsettings`) |
+| Pegado / escritura | xdotool, PowerShell, osascript | Portal `org.freedesktop.portal.RemoteDesktop` |
+
+Si ya hay una herramienta de escritura que funciona, se respeta. Por ejemplo,
+`wtype` en sway o Hyprland: el portal solo entra donde no había ninguna.
+
+**Atajos por GNOME.** Estas acciones se instalan como atajos personalizados de
+GNOME con el prefijo `vysper-`:
+
+| Tecla | Acción |
+|---|---|
+| `Alt+S` | `sesion` |
+| `Alt+R` | `grabar` |
+| `Alt+B` | `captura` |
+| `Alt+O` | `optimizacion` |
+| `Alt+9` | `optimizacion-retro` |
+| `Ctrl+1` | `pegar` |
+| `Ctrl+Shift+C` | `chat` |
+| `Ctrl+↑` | `modo-anterior` |
+| `Ctrl+↓` | `modo-siguiente` |
+
+GNOME las recibe tenga el foco la ventana que sea. Cada atajo ejecuta
+`bin/vysper-accion <acción>`, que hace `POST /accion/<acción>` al servidor HTTP
+local. El servidor dispara el mismo manejador que la tecla, así que un atajo y su
+acción no pueden divergir (`src/core/acciones.js`).
+
+- **Requiere el servidor HTTP: arranca con `vys.sh --server`.** Sin servidor, Vysper
+  avisa en el chat, y los atajos siguen funcionando solo con una ventana de Vysper
+  enfocada.
+- **Nunca pisa un atajo tuyo.** Si un combo ya está ocupado, no lo instala: lo deja
+  en Electron y te dice cuál y por qué.
+- **Al salir, desinstala exactamente lo que instaló** (lo que lleva el prefijo
+  `vysper-`), y la lista de GNOME vuelve a su valor original.
+- **Si Vysper muere sin cerrarse bien** (Ctrl+Z en la terminal, un reinicio), los
+  atajos se quedan en GNOME y esas teclas no hacen nada en otras apps hasta que
+  vuelvas a abrir Vysper. Al arrancar se reinstalan solos. En una sesión X11 se
+  borran al arrancar, para que no le roben las teclas a Electron.
+- Igual que en X11, GNOME atrapa esas teclas en todas las aplicaciones. Por
+  ejemplo, `Ctrl+1` ya no cambia de pestaña en el navegador.
+
+**La credencial nunca viaja en el atajo.** Los atajos de GNOME se ven en Ajustes y
+en `ps`, así que el comando solo lleva la ruta y el nombre de la acción. El
+usuario y la contraseña del Basic Auth (`VYSPER_HTTP_USER:VYSPER_HTTP_PASSWORD`)
+los escribe Vysper al arrancar en `~/.Vysper/accion-token`, con permisos `0600`.
+`vysper-accion` se niega a usarlo si alguien más puede leerlo. El puerto va aparte,
+en `~/.Vysper/accion-puerto`. `/accion` solo acepta peticiones desde `127.0.0.1`:
+`pegar` escribe en la ventana enfocada, y eso no se dispara desde el celular por
+Tailscale.
+
+**Pegado por el portal.** La primera vez que pegues, GNOME pide permiso de control
+remoto. Con `persist_mode 2` el permiso se recuerda: el testigo se guarda en
+`~/.Vysper/portal-remote-desktop-token` (0600). Si un permiso guardado ya no
+sirve, se pide **una sola vez** más; reintentar en bucle convertiría un permiso
+revocado en una lluvia de diálogos. Si lo deniegas, no se vuelve a preguntar en
+cada pegado hasta reiniciar Vysper. La sesión del portal vive atada a su conexión
+D-Bus, así que la sostiene un helper persistente en Python/Gio
+(`src/services/portal_remote_desktop_helper.py`, con el `python3` del sistema).
+
+**Toda degradación se anuncia.** Si no se puede pegar, el chat dice *"Pegado
+automático no disponible (motivo). El texto está en el portapapeles: pégalo con
+Ctrl+V."* Nunca falla en silencio.
+
+**Diagnóstico:**
+
+```bash
+# ¿Qué atajos de Vysper hay en GNOME?
+gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings
+
+# Disparar una acción a mano (sale con código != 0 y explica el error si falla)
+bin/vysper-accion sesion
+
+# ¿Qué backends eligió Vysper y por qué?
+grep "Backend de" ~/.Vysper/logs/application-$(date +%F).log
+```
+
+Está en la rama `feat/wayland-atajos` y **falta la verificación manual** en una
+sesión Wayland (paso 4 del plan `docs/superpowers/plans/2026-09-24-wayland-atajos-y-escritura.md`):
+Alt+S desde Chrome y desde VS Code con la ventana de chat cerrada, Ctrl+1 sobre un
+documento de terceros, denegar el permiso del portal, y comprobar que GNOME queda
+como estaba al salir.
+
 ## 🔧 Key Features
 
 ### Stealth Technology
@@ -673,6 +770,9 @@ o fallo durante la transcripción/generación).
 - La conversión de formato (a WAV 16kHz mono 16-bit) se hace con `ffmpeg`
   antes de transcribir; requiere tenerlo instalado (`sudo apt install
   ffmpeg`, ya lo instala `setup_vysper_stt.sh`).
+- `POST /accion/<nombre>` también vive en este servidor, pero **no** es para el
+  celular: solo acepta peticiones desde `127.0.0.1` y lo usan los atajos de GNOME
+  bajo Wayland. Ver [Linux con Wayland (GNOME)](#linux-con-wayland-gnome-atajos-globales-y-pegado).
 
 ### Comandos de chat desde el celular (`/comando`)
 
