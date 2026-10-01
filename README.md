@@ -14,7 +14,7 @@ Alt+O	Arma / desarma el modo optimización para la próxima sesión de Alt+S, de
 Ctrl+5	Secretaria: sube un archivo de audio existente, lo transcribe completo en una sola pasada (como Ctrl+4, guardando en transcripciones/) y genera la minuta final a partir del texto, minimizando llamadas al LLM
 Ctrl+6	Secretaria: abrir un archivo en la ventana shadow translúcida para ver lo que hay debajo
 Ctrl+7	Secretaria: convierte una transcripción de texto existente ("Hablante: texto" por línea, sin timestamps) al formato Microsoft Teams, estimando tiempos por cantidad de palabras
-Ctrl+Shift+L	Liberar todo el buffer en cualquier modo (secretaria: buffer de dictado; resto: contexto + imágenes acumuladas, equivale a °°°). También cancela un pegado/copiado en curso
+Ctrl+Shift+L	Liberar todo el buffer en cualquier modo (secretaria: buffer de dictado; resto: contexto + imágenes acumuladas + memoria de sesión L1/L2/L3 de Silia/system-design, equivale a °°°). También cancela un pegado/copiado en curso
 Ctrl+Shift+B	Copiar selección con el mouse, sin teclazos (sigiloso): pulsa, selecciona, y al soltar el mouse copia al portapapeles. Funciona en todos los modos
 Ctrl+Shift+V	Pegar el portapapeles en el cursor, tecleado tecla a tecla (la app destino ve teclas reales, no un evento de pegado). Funciona en todos los modos; cancelable con Ctrl+Shift+L. Para pegado normal y instantáneo usa el Ctrl+V del sistema
 Alt+,	Escribe el símbolo < en el cursor (todos los modos)
@@ -328,7 +328,7 @@ of once per accent.
 ### Session Management
 | Shortcut | Action |
 |----------|--------|
-| `Ctrl/Cmd + Shift + L` | Release all buffers / reset accumulated context (same as `°°°`); also cancels an in-progress paste/copy |
+| `Ctrl/Cmd + Shift + L` | Release all buffers / reset accumulated context (same as `°°°`), including the Silia/system-design session memory (L1/L2/L3 + expediente); also cancels an in-progress paste/copy |
 
 ### Important Interaction Usage Tip 
 * Enable **Interaction Mode** to scroll, click, or select inside windows.
@@ -950,6 +950,85 @@ equipo — "¿cómo va el sprint?", "¿por qué se decidió usar X en el módulo
 se responde consultando Jira/GitHub (estado, cronograma) o Notion/RAG
 (decisiones, contexto histórico), con riesgos de cronograma señalados
 proactivamente cuando aplica.
+
+### Memoria de sesión (L1/L2/L3)
+
+Silia ya no responde cada pregunta como si fuera la primera. Vysper lleva una
+**memoria de toda la sesión**, compartida con system-design (no se borra al
+cambiar de modo), y Cerebro la recibe en cada consulta por `--contexto-file`
+(Cerebro sigue sin estado). Diseño completo:
+[`docs/superpowers/specs/2026-10-01-memoria-de-sesion-design.md`](docs/superpowers/specs/2026-10-01-memoria-de-sesion-design.md).
+
+| Capa | Qué guarda | Tope |
+|---|---|---|
+| L1 | los últimos turnos completos | 10 turnos y 2 500 tokens |
+| L2 | resúmenes al ~30 % (decisiones, tickets, PRs, personas, pendientes) | 3 000 tokens |
+| L3 | semillas `[min N] tema → conclusión` al ~10 %, se recomprimen | 1 500 tokens |
+| Expediente | hechos que Cerebro ya trajo, con su fuente (`jira:AGE-321`, `github:Silia-mx/Agent#400`) | 1 000 tokens |
+
+La memoria total nunca pasa de **8 000 tokens**. La rotación se cuenta en
+tokens, no en turnos: un log pegado pesa lo que pesa. Lo que vuelves a consultar
+después de comprimido queda con ⭐ y no se comprime más. Las semillas de más de
+200 turnos que nadie consultó se olvidan. Para comprimir se usa la misma cadena
+de la asesoría (Anthropic → Gemini → Ollama local); si ninguna responde, hay un
+compresor determinista que conserva las oraciones con tickets, PRs y verbos de
+decisión.
+
+**Antes de responder, Silia clasifica la pregunta:**
+
+- **contextual** (algo ya hablado): se responde en segundos con la memoria, y la
+  respuesta lleva la marca 🧠. Nunca inventa: si no alcanza, lo dice y ofrece
+  consultar Cerebro.
+- **proyecto** (estado, documentación, decisiones del equipo): consulta Cerebro
+  con la memoria y el **proyecto en foco**. Por defecto es el motor de agentes:
+  `AGE`, `Silia-mx/Agent` y la épica `AGE-133`, configurable en
+  `memoria.proyectos`. También le sugiere fuentes según la pregunta:
+
+  | Si la pregunta es sobre... | Fuente |
+  |---|---|
+  | documentación | Notion |
+  | estado | Jira |
+  | ambiente (dev/staging/main) | GitHub (`github_estado_de_pr`) |
+  | lo que se dijo | Slack y RAG |
+
+  Lo que Cerebro trae queda en el expediente.
+- **off_topic**: respuesta directa, sin memoria ni Cerebro.
+
+Si el clasificador falla o duda (confianza menor a 0.6), se consulta Cerebro.
+Mencionar una entidad (`AGE-123`, `#445`) o una fuente (Jira, staging, ...) va
+directo a Cerebro, sin gastar una llamada para clasificar.
+
+**System Design reutiliza todo esto:** la verificada de la asesoría y las
+consultas a Cerebro de ese modo reciben la misma memoria, el mismo expediente y
+el mismo proyecto. Así puedes preguntar en Silia "¿cómo va el checkpointer?" y
+luego pedir en System Design "propón una arquitectura para eso" sin repetir el
+contexto. La preliminar también ve el resumen de la sesión.
+
+**Comandos (en cualquier modo):**
+
+- `/memoria` o `/memoria status`: tokens por capa, ⭐, compresiones (ratio,
+  modo, proveedor) y cuántas veces se usó cada capa (`l1`, `l2`, `l3`,
+  `expediente`, `cerebro`, `directo`).
+- `/memoria comprimir`: deja solo los 2 últimos turnos en L1 y comprime el
+  resto.
+- Para borrarla: `Ctrl+Shift+L` o `°°°`. Se guarda la sesión ya vacía, para que
+  reabrir Vysper no resucite lo borrado.
+
+**Persistencia:** al salir y después de cada compresión se guardan L2, L3, el
+expediente, las métricas y el registro de compresiones en
+`~/.Vysper/memoria/session_<id>.json` (0600). L1, la conversación cruda, no se
+guarda. Al abrir, Vysper retoma la sesión más reciente si tiene menos de 7 días.
+
+| Variable | Default | Para qué |
+|---|---|---|
+| `VYSPER_MEMORIA_DIR` | `~/.Vysper/memoria` | dónde se guardan las sesiones |
+| `VYSPER_MEMORIA_CONTINUIDAD` | `true` | `false` para empezar siempre de cero |
+| `VYSPER_MEMORIA_CONTINUIDAD_DIAS` | `7` | antigüedad máxima de la sesión que se retoma |
+| `VYSPER_MEMORIA_REPO_DEFAULT` | `Silia-mx/Agent` | repo del proyecto por defecto (su `project_key` sale de `VYSPER_SILIA_DEFAULT_PROJECT`) |
+
+Para que Cerebro pueda buscar en Slack hay que configurar
+`SLACK_CONTEXTO_CANALES` en su `.env`. El bot tiene que ser miembro de esos
+canales. Ver el README de Cerebro.
 
 **`/silia daily [identificador]`** — resumen diario en dos partes: (1) las
 actividades reales que `[identificador]` realizó el **último día hábil**

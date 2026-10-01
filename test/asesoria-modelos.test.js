@@ -44,6 +44,17 @@ describe('crearClienteOllama', () => {
     expect(pedido.body).toMatchObject({ model: 'qwen', stream: false, format: 'json' });
   });
 
+  test('chat pide texto libre: sin format json (los resumenes de la memoria)', async () => {
+    let body;
+    const fetchFalso = async (url, init) => {
+      body = JSON.parse(init.body);
+      return { ok: true, json: async () => ({ message: { content: '- AGE-1 pospuesto' } }) };
+    };
+    const ollama = crearClienteOllama({ fetchImpl: fetchFalso });
+    await expect(ollama.chat('resume')).resolves.toBe('- AGE-1 pospuesto');
+    expect(body.format).toBeUndefined();
+  });
+
   test('un Ollama que no contesta a tiempo se corta, no congela la asesoria', async () => {
     const colgado = (url, init) => new Promise((_, reject) => {
       init.signal.addEventListener('abort', () => reject(new Error('aborted')));

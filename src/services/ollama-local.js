@@ -1,6 +1,7 @@
 /**
- * Cliente minimo de Ollama local, para el clasificador de la asesoria cuando
- * las nubes no responden (ver src/core/asesoria-modelos.js).
+ * Cliente minimo de Ollama local, para el clasificador de la asesoria y la
+ * memoria de sesion cuando las nubes no responden (ver
+ * src/core/asesoria-modelos.js).
  *
  * El timeout NO es opcional: en Cerebro ya paso que un Ollama congelado se
  * comia la consulta entera. Un modelo frio que no carga a tiempo se corta y
@@ -22,7 +23,9 @@ function crearClienteOllama({
   timeoutMs = Number(process.env.VYSPER_OLLAMA_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
   fetchImpl = globalThis.fetch
 } = {}) {
-  async function chatJson(prompt) {
+  // `json`: el clasificador de la asesoria pide JSON y Ollama lo puede
+  // forzar; la memoria de sesion (resumenes) necesita texto libre.
+  async function pedir(prompt, { json }) {
     const control = new AbortController();
     const reloj = setTimeout(() => control.abort(), timeoutMs);
     try {
@@ -33,7 +36,7 @@ function crearClienteOllama({
           model: modelo,
           messages: [{ role: 'user', content: prompt }],
           stream: false,
-          format: 'json',
+          ...(json ? { format: 'json' } : {}),
           keep_alive: '10m',
           options: { temperature: 0 }
         }),
@@ -52,7 +55,10 @@ function crearClienteOllama({
     }
   }
 
-  return { chatJson, modelo };
+  const chatJson = (prompt) => pedir(prompt, { json: true });
+  const chat = (prompt) => pedir(prompt, { json: false });
+
+  return { chatJson, chat, modelo };
 }
 
 module.exports = { crearClienteOllama, DEFAULT_MODELO, DEFAULT_TIMEOUT_MS };

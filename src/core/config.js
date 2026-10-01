@@ -110,6 +110,27 @@ class ConfigManager {
         siliaDefaultProject: process.env.VYSPER_SILIA_DEFAULT_PROJECT || 'AGE'
       },
 
+      // Memoria de sesion del modo Silia, compartida con system-design.
+      // Ver docs/superpowers/specs/2026-10-01-memoria-de-sesion-design.md
+      memoria: {
+        dir: process.env.VYSPER_MEMORIA_DIR || path.join(os.homedir(), '.Vysper', 'memoria'),
+        // Al abrir Vysper, retomar L2/L3/expediente de la ultima sesion
+        // guardada (L1 nunca se guarda).
+        continuidad: process.env.VYSPER_MEMORIA_CONTINUIDAD !== 'false',
+        continuidadMaxDias: Number(process.env.VYSPER_MEMORIA_CONTINUIDAD_DIAS || 7),
+        // El primero es el proyecto por defecto (identificarProyecto).
+        proyectos: [
+          {
+            dominio: 'agentes',
+            nombre: 'motor de agentes',
+            projectKey: process.env.VYSPER_SILIA_DEFAULT_PROJECT || 'AGE',
+            repo: process.env.VYSPER_MEMORIA_REPO_DEFAULT || 'Silia-mx/Agent',
+            epic: 'AGE-133',
+            alias: ['motor de agentes', 'agentes', 'agent', 'engine', 'motor']
+          }
+        ]
+      },
+
       sandraRag: {
         path: process.env.VYSPER_SANDRA_RAG_DIR || '/media/san/Miscosas6/Desarrollo/SandraRagCreAI',
         actualizaTimeoutMs: Number(process.env.VYSPER_SANDRA_RAG_ACTUALIZA_TIMEOUT_MS || 900000)

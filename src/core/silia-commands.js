@@ -149,6 +149,25 @@ function parseDetalleCommand(text) {
   return { dominio: dominio.length > 0 ? dominio : null };
 }
 
+/**
+ * "/memoria [status|comprimir]" -> {accion}. Sin argumento es status. La
+ * memoria es UNA para toda la sesion (no de un modo), asi que el comando
+ * vale en cualquier modo. Borrarla no es un subcomando: eso ya lo hace
+ * Ctrl+Shift+L (y °°°).
+ */
+const MEMORIA_ACCIONES = ['status', 'comprimir'];
+
+function parseMemoriaCommand(text) {
+  const normalized = normalize(text);
+  const match = normalized.match(/^\/memoria(?:\s+(\S+))?\s*$/i);
+  if (!match) return null;
+  const accion = (match[1] || 'status').toLowerCase();
+  if (!MEMORIA_ACCIONES.includes(accion)) {
+    return { error: `Uso: /memoria status | /memoria comprimir (para borrarla: Ctrl+Shift+L). No conozco "${accion}".` };
+  }
+  return { accion };
+}
+
 // Tools Cerebro can scope a free-form query to (see
 // TOOL_DESCRIPTIONS in cerebro/prompts/system_prompt.py — the prefix
 // before "_" for every LLM-facing tool). Keeping this list explicit (not
@@ -827,6 +846,7 @@ const KNOWN_COMMAND_PARSERS = [
   parseMergeCommand,
   parseContextoCommand,
   parseModoCommand,
+  parseMemoriaCommand,
 ];
 
 // Comandos que maneja main.js con parsers que NO viven en este modulo
@@ -871,6 +891,8 @@ function normalizeSlashCommandName(text) {
 }
 
 module.exports = {
+  parseMemoriaCommand,
+  MEMORIA_ACCIONES,
   parseSiliaDailyCommand,
   parseSiliaDailyArgument,
   parseIncidenteCommand,
