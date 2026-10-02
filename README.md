@@ -1030,7 +1030,16 @@ Para que Cerebro pueda buscar en Slack hay que configurar
 `SLACK_CONTEXTO_CANALES` en su `.env`. El bot tiene que ser miembro de esos
 canales. Ver el README de Cerebro.
 
-**`/silia daily [identificador]`** — resumen diario en dos partes: (1) las
+**`/silia daily [identificador]`** — desde 2026-10-02 abre con la sección
+**🚩 Pendientes del responsable**: tus directos te piden retro (te mencionan o
+proponen un cambio de enfoque sin respuesta tuya), recortan el alcance (bajan
+la estimación, lo sacan del sprint o de su feature, lo pasan a Won't Do) o
+toman decisiones sin consultarte, siempre que no haya un comentario tuyo
+después en el ticket. Cubre desde tu último daily. La arma Cerebro con
+evidencia y enlace por ítem, y los riesgos (vencidos, bloqueados, PRs
+abiertos) los calcula el código al final. Para que revise siempre a tu equipo,
+define `directos:` en el `equiv.yaml` de Cerebro (ver su README, "Focos rojos
+del daily"). Debajo sigue el resumen diario en dos partes: (1) las
 actividades reales que `[identificador]` realizó el **último día hábil**
 (ayer, o el viernes si hoy es lunes), sintetizadas en bullets de
 logro/descripción/siguientes pasos a partir de Jira (tickets
