@@ -937,11 +937,17 @@ mensaje se pasa a `python -m cerebro.cli` como subproceso
 (`src/services/cerebro.service.js`) y la respuesta JSON (`summary`,
 `citations`, `action_items`) se muestra en el chat. Cerebro tiene su propia
 cadena de fallback de LLM independiente de la de Vysper (Claude/DeepSeek →
-OpenRouter → un modelo local via Ollama como último recurso sin costo) —
+OpenRouter → el proxy LiteLLM de Silia → un modelo local via Ollama como
+último recurso sin costo) —
 ver [`LLMRouter` en el README de Cerebro](/media/san/Miscosas6/Desarrollo/Cerebro/README.md#motor-de-razonamiento-claude--anthropic)
 si algún comando de Silia falla con "No se pudo generar una respuesta
 final: fallo la llamada al modelo" (típicamente ambas cuentas sin
-crédito).
+crédito). Si un `/revisar` termina en "Cerebro no respondió dentro de
+480s", lo más probable es que Claude y OpenRouter estén sin crédito y la
+cadena haya caído a Ollama, que con el prompt de un PR tarda minutos. Para
+eso existe LiteLLM antes de Ollama: configura `LITELLM_API_KEY` en el
+`.env` **de Cerebro**, no en el de Vysper, y revisa con
+`python -m cerebro.cli estado-llm`.
 
 **Activación:** Settings → Active Skill → `Silia (Lider de Proyecto)`.
 
