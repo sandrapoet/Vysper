@@ -23,3 +23,6 @@ contextoTmp/
 transcripciones/
 .claude/settings.local.json
 minutas/
+
+# Reportes y diffs de trabajo de las skills de superpowers (no son codigo)
+.superpowers/
