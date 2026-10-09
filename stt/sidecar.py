@@ -318,6 +318,15 @@ def _transcribe_file_with_segments(path: str) -> dict:
     # detecta una posible alucinacion. Con VAD apagado + idioma fijo (ver
     # LANGUAGE) las tres sesiones quedaron con repeticion inmediata por debajo
     # del 0.5% de las palabras y cobertura desde el segundo 0.
+    #
+    # condition_on_previous_text=False a proposito: si el audio arranca con
+    # silencio (lo normal en una reunion, ~25 s en reunion-2026-10-07-15-02-22),
+    # Whisper emite "..." en esa ventana, y con el texto previo como prompt
+    # cada ventana siguiente repite "..." aunque haya voz. Ahi se perdieron los
+    # 5 min del fragmento 1 y los 8.5 min de la re-transcripcion completa;
+    # compression_ratio y hallucination_silence_threshold no lo frenan porque
+    # "..." no es una repeticion larga. Sin condicionar, el mismo audio sale
+    # con texto desde el segundo 25.
     segments, _ = _whisper.transcribe(
         path,
         language=LANGUAGE,
@@ -325,14 +334,16 @@ def _transcribe_file_with_segments(path: str) -> dict:
         beam_size=BEAM_SIZE,
         best_of=BEST_OF,
         vad_filter=False,
-        condition_on_previous_text=True,
+        condition_on_previous_text=False,
         hallucination_silence_threshold=2.0,
     )
     seg_list = []
     text_parts = []
     for seg in segments:
         text = seg.text.strip()
-        if not text:
+        # Solo puntuacion ("...", "…", "-"): es lo que Whisper emite sobre
+        # silencio, no habla.
+        if not any(ch.isalnum() for ch in text):
             continue
         seg_list.append({
             "start": round(float(seg.start), 3),
